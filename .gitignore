@@ -1,0 +1,37 @@
+# Browser-automation recon artifacts — contain analytics client IDs, coarse geo,
+# UA fingerprints and verbatim scrapes of third-party page content.
+.playwright-mcp/
+
+# Credentials and cache — never committed. The runtime cache legitimately holds
+# the user's own member data; the repo never does.
+.cache/
+session.json
+*.session.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Recon/scratch artifacts — screenshots and page captures contain third-party
+# content and browser fingerprints. Findings belong in RECON.md as text.
+*.png
+*.jpg
+*.har
+scratch/

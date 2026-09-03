@@ -1,0 +1,324 @@
+{
+  "_comment": "Baseline for the release-time enforcement re-scan (see CLAUDE.md > Release). Anonymous data only. 'enforces_paywall' is DERIVED from observed unblurred on insider_only rows, excluding published:false products. Re-scan and diff before every version bump; a change here is a spec change, not a test failure.",
+  "scanned_at": "2026-09-03",
+  "method": {
+    "source": "table_tool__column_options + table_tool__test_results, anonymous, no cookie",
+    "scope": "current bench per silo (test_benches[0]), first 40 number/word leaf tests",
+    "rule": "blurred <=> product.published==false OR (test.insider_only AND silo enforces)"
+  },
+  "totals": {
+    "silos": 28,
+    "enforcing": 12,
+    "open": 16
+  },
+  "silos": {
+    "headphones": {
+      "bench_scanned": "252",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 7208,
+      "review_count": 912,
+      "test_benches": 9,
+      "tests_current_bench": 234,
+      "first_published": "2016-02-26",
+      "silo_group": "audio"
+    },
+    "keyboard": {
+      "bench_scanned": "220",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 4255,
+      "review_count": 297,
+      "test_benches": 6,
+      "tests_current_bench": 140,
+      "first_published": "2020-01-20",
+      "silo_group": "computer"
+    },
+    "laptop": {
+      "bench_scanned": "242",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 1794,
+      "review_count": 179,
+      "test_benches": 4,
+      "tests_current_bench": 248,
+      "first_published": "2021-11-01",
+      "silo_group": "computer"
+    },
+    "monitor": {
+      "bench_scanned": "238",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 4563,
+      "review_count": 408,
+      "test_benches": 6,
+      "tests_current_bench": 355,
+      "first_published": "2017-10-12",
+      "silo_group": "computer"
+    },
+    "mouse": {
+      "bench_scanned": "233",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 4140,
+      "review_count": 408,
+      "test_benches": 8,
+      "tests_current_bench": 115,
+      "first_published": "2019-12-11",
+      "silo_group": "computer"
+    },
+    "printer": {
+      "bench_scanned": "251",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 1836,
+      "review_count": 183,
+      "test_benches": 6,
+      "tests_current_bench": 160,
+      "first_published": "2020-05-11",
+      "silo_group": "computer"
+    },
+    "projector": {
+      "bench_scanned": "249",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 2320,
+      "review_count": 98,
+      "test_benches": 4,
+      "tests_current_bench": 166,
+      "first_published": "2024-02-13",
+      "silo_group": "home-entertainment"
+    },
+    "robot-vacuum": {
+      "bench_scanned": "239",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 684,
+      "review_count": 99,
+      "test_benches": 5,
+      "tests_current_bench": 123,
+      "first_published": "2020-07-06",
+      "silo_group": "home"
+    },
+    "router": {
+      "bench_scanned": "253",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 3145,
+      "review_count": 79,
+      "test_benches": 1,
+      "tests_current_bench": 74,
+      "first_published": "2024-07-22",
+      "silo_group": "computer"
+    },
+    "soundbar": {
+      "bench_scanned": "133",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 5382,
+      "review_count": 254,
+      "test_benches": 4,
+      "tests_current_bench": 192,
+      "first_published": "2019-09-30",
+      "silo_group": "home-entertainment"
+    },
+    "speaker": {
+      "bench_scanned": "271",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 2220,
+      "review_count": 200,
+      "test_benches": 3,
+      "tests_current_bench": 95,
+      "first_published": "2020-12-14",
+      "silo_group": "audio"
+    },
+    "tv": {
+      "bench_scanned": "227",
+      "enforces_paywall": true,
+      "pct_insider_rows_unblurred": 0.0,
+      "insider_rows_sampled": 3880,
+      "review_count": 548,
+      "test_benches": 14,
+      "tests_current_bench": 402,
+      "first_published": "2011-11-22",
+      "silo_group": "home-entertainment"
+    },
+    "running-shoes": {
+      "bench_scanned": "272",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 77.0,
+      "insider_rows_sampled": 460,
+      "review_count": 284,
+      "test_benches": 8,
+      "tests_current_bench": 137,
+      "first_published": "2025-04-02",
+      "silo_group": "shoes"
+    },
+    "toaster-oven": {
+      "bench_scanned": "247",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 90.9,
+      "insider_rows_sampled": 1023,
+      "review_count": 28,
+      "test_benches": 1,
+      "tests_current_bench": 61,
+      "first_published": "2025-02-07",
+      "silo_group": "kitchen"
+    },
+    "camera": {
+      "bench_scanned": "278",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 98.7,
+      "insider_rows_sampled": 2775,
+      "review_count": 127,
+      "test_benches": 4,
+      "tests_current_bench": 203,
+      "first_published": "2021-02-08",
+      "silo_group": "photo-video"
+    },
+    "air-conditioner": {
+      "bench_scanned": "39",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 960,
+      "review_count": 22,
+      "test_benches": 1,
+      "tests_current_bench": 56,
+      "first_published": "2025-06-06",
+      "silo_group": "home"
+    },
+    "air-fryer": {
+      "bench_scanned": "231",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 1334,
+      "review_count": 53,
+      "test_benches": 2,
+      "tests_current_bench": 45,
+      "first_published": "2024-09-23",
+      "silo_group": "kitchen"
+    },
+    "air-purifier": {
+      "bench_scanned": "267",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 1040,
+      "review_count": 53,
+      "test_benches": 2,
+      "tests_current_bench": 40,
+      "first_published": "2024-05-13",
+      "silo_group": "home"
+    },
+    "blender": {
+      "bench_scanned": "232",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 2520,
+      "review_count": 138,
+      "test_benches": 3,
+      "tests_current_bench": 82,
+      "first_published": "2020-09-08",
+      "silo_group": "kitchen"
+    },
+    "dehumidifier": {
+      "bench_scanned": "40",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 1019,
+      "review_count": 21,
+      "test_benches": 1,
+      "tests_current_bench": 49,
+      "first_published": "2024-07-03",
+      "silo_group": "home"
+    },
+    "humidifier": {
+      "bench_scanned": "57",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 713,
+      "review_count": 20,
+      "test_benches": 1,
+      "tests_current_bench": 45,
+      "first_published": "2024-11-22",
+      "silo_group": "home"
+    },
+    "keyboard-switch": {
+      "bench_scanned": "209",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 2848,
+      "review_count": 153,
+      "test_benches": 1,
+      "tests_current_bench": 31,
+      "first_published": "2023-11-06",
+      "silo_group": "computer"
+    },
+    "mattress": {
+      "bench_scanned": "236",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 2916,
+      "review_count": 69,
+      "test_benches": 1,
+      "tests_current_bench": 142,
+      "first_published": "2025-07-15",
+      "silo_group": "home"
+    },
+    "microwave": {
+      "bench_scanned": "228",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 1110,
+      "review_count": 37,
+      "test_benches": 1,
+      "tests_current_bench": 54,
+      "first_published": "2024-07-10",
+      "silo_group": "kitchen"
+    },
+    "refrigerator": {
+      "bench_scanned": "218",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 1160,
+      "review_count": 40,
+      "test_benches": 1,
+      "tests_current_bench": 74,
+      "first_published": "2025-10-08",
+      "silo_group": "kitchen"
+    },
+    "toaster": {
+      "bench_scanned": "248",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 900,
+      "review_count": 28,
+      "test_benches": 1,
+      "tests_current_bench": 56,
+      "first_published": "2023-12-15",
+      "silo_group": "kitchen"
+    },
+    "vacuum": {
+      "bench_scanned": "208",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 2128,
+      "review_count": 115,
+      "test_benches": 5,
+      "tests_current_bench": 126,
+      "first_published": "2020-07-06",
+      "silo_group": "home"
+    },
+    "vpn": {
+      "bench_scanned": "256",
+      "enforces_paywall": false,
+      "pct_insider_rows_unblurred": 100.0,
+      "insider_rows_sampled": 814,
+      "review_count": 23,
+      "test_benches": 2,
+      "tests_current_bench": 104,
+      "first_published": "2025-03-31",
+      "silo_group": "computer"
+    }
+  }
+}
