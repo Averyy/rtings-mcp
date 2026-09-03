@@ -391,6 +391,9 @@ uv venv && uv pip install -e ".[dev]"
 
 Run lint and tests before every commit.
 
+- **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Verified
+  current 2026-09-03: `mcp>=2.1.1`, `pytest>=9.1`, `pytest-asyncio>=1.4`, `ruff>=0.16`. Re-check at
+  each release re-scan (below).
 - **Fixtures come from anonymous fetches. Never commit a fixture containing unblurred member values.**
 - **Redact every `GLOBALS.session` fixture before committing.** The member/free auth-state fixtures
   are captured from a real logged-in session, so `current_user` carries the user's own name, email
