@@ -1156,7 +1156,8 @@ everything in that session; a missed item costs another membership month. Run on
 `table_tool__test_results` call and confirm the cookie fills `value`/`score` across products. If it
 comes back blurred, the ladder is: (a) add any missing browser headers; (b) try
 `app/product_vue_page__page_body` with `url_path` (the **bare path**, no `?share_token=` — `RECON.md`
-§5); only then (c) treat q1 as failed → §13 q1 is the ship/no-ship call.
+§5); only then (c) record q1 as failed. That is not a ship/no-ship call — the anonymous surface,
+including full data on 16 silos, ships either way; only the member layer is affected.
 
 **The capture list — everything the member layer is built from.** The first item is the one the
 auth classifier cannot be written without, and it was missing from the earlier draft:
@@ -1196,7 +1197,7 @@ carry no `insider_only`. See CLAUDE.md > Release.
 
 | Risk | Mitigation |
 |---|---|
-| **Member cookie does not flip the blur on the API** (`RECON.md` §10 q1) | Phase 0 verifies before member-mode is built. If it fails, product is graph+catalog only (§13 q1) |
+| **Member cookie does not flip the blur on the API** (`RECON.md` §10 q1) | Phase 0 verifies before member-mode is built. A failure costs the numeric surface on the 12 enforcing silos only — the other 16 are full-data anonymously (§5) |
 | **Auth marker (HTML) and data (JSON) come from different requests** and can race | `session` from an HTML probe, `data_tier` from the data in the safe direction, `auth_state` derived, race documented (§6) — never infer auth from null data |
 | API query renamed / `variables` shape changed | `payload_missing`/`api_error` are loud (§7); raw JSON cached, so a parser fix needs no re-fetch |
 | Session lapses; wafer rotation empties the jar → anonymous `200` | `max_rotations=0, max_failures=None`; compare the jar cookie against the **configured** value before `session_expired`; `identity_rotated` never cached (§6) |
@@ -1268,13 +1269,9 @@ carry no `insider_only`. See CLAUDE.md > Release.
 
 ## 13. Open questions
 
-1. **If Phase 0 fails (member cookie does not flip the blur), does the server still ship?** Much
-   less consequential than when this was written: **16 of 28 silos are full-data anonymously**
-   (`RECON.md` §11), so a Phase-0 failure costs the numeric surface on 12 silos, not the product.
-   Superseded framing follows. ~~does a graph+catalog-only server
-   ship?** A fallback decision, **no longer a gate on buying the membership** — the JS investigation
-   puts q1 at ~90% (`RECON.md` §5), and the whole anonymous surface now ships regardless (§10).
-   `RECON.md` §10 q1.
+1. ~~If Phase 0 fails, does the server still ship?~~ **Not planned for.** 16 of 28 silos are
+   full-data anonymously (`RECON.md` §11); a Phase-0 failure costs the numeric surface on 12 silos,
+   not the product.
 2. **Does a member cookie flip `unblurred`?** `RECON.md` §10 q1. **Blocking** for member mode only.
 3. **Is a free/metered tier worth modelling?** Not optional any more: the meter sits on the
    `rt_product` endpoint (`RECON.md` §10 q2), so free-vs-member must be distinguished or a preview

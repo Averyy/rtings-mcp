@@ -15,10 +15,6 @@ the working checklist. Facts land in `RECON.md`, not here.
       (wafer session + headers) so it cannot come first, and nothing anonymous depends on it. Ship
       the `cache_tier` filename segment and coverage records from day one so member mode is never a
       migration. (`SPEC.md` §10)
-- [ ] **If Phase 0 fails (member cookie does NOT flip the blur over the API): does a graph+catalog-
-      only server still ship?** Now low-stakes: the JS investigation puts Phase 0 at **~90% likely to
-      succeed** (`RECON.md` §5), so this contingency probably never triggers. Keep as a fallback
-      decision, no longer a gate on buying the membership. (`SPEC.md` §13 q1)
 
 ## Research — needs a bought membership (Phase 0, capture all in one logged-in session)
 
