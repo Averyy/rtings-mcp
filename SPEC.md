@@ -994,7 +994,9 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
 
 ## 9. Stack
 
-- Python ≥3.12, `uv`.
+- **Python `>=3.12`, developed and run on 3.14.** 3.12 is supported to Oct 2028 and gives the widest
+  install base for a locally-run tool; CI matrix 3.12 / 3.13 / 3.14.
+- **`uv`** for everything (never `pip`).
 - **HTTP via `wafer-py`** (`~/code/wafer`, `llms.txt`) — never `urllib`/`requests`/`httpx`. The
   `/api/v2/safe/` endpoints are clean JSON, but they sit behind CloudFront and the member traffic is
   repeated and authenticated, which is what wafer is for.
@@ -1100,7 +1102,18 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   `variables` wrapper** (`RECON.md` §1). `named_version` is always `"public"`.
 - **Never log or return a response body** — a WAF challenge page carries tokens and a member page
   carries profile data. Status, `reason` and `<title>` only.
-- `mcp` (FastMCP); logs to **stderr** (stdout is the protocol channel). No browser automation in v1.
+- **The official `mcp` SDK (`mcp>=2.1.1`), NOT the standalone `fastmcp` package.** They are now
+  separate, diverged projects — `mcp` is the canonical SDK from modelcontextprotocol.io, `fastmcp`
+  (4.x, gofastmcp.com) is a third-party layer with more ergonomics and its own release cadence. For a
+  public server whose value is protocol correctness, take the canonical one and the smaller dependency
+  surface: `from mcp.server.fastmcp import FastMCP`. The bundled `FastMCP` class already covers
+  decorator tools, `outputSchema` and stdio, which is everything the seven tools need. An earlier
+  draft said "`mcp` (FastMCP)", which was ambiguous once the two packages split.
+- **Pin floors, not exact versions** (this is a library-style app, and `uv.lock` handles
+  reproducibility): `mcp>=2.1.1`, `wafer-py`, and dev extras `pytest>=9.1`, `pytest-asyncio>=1.4`,
+  `ruff>=0.16`. Versions verified current 2026-09-03; re-check at the release re-scan (CLAUDE.md >
+  Release).
+- Logs to **stderr** (stdout is the protocol channel). No browser automation in v1.
   Cache-first: network only on a miss or explicit `refresh`.
 - Registered by absolute path to the user's own checkout, e.g.
   `sh -lc uv --directory /path/to/rtings-mcp run rtings-mcp`.

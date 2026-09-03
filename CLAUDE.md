@@ -1,7 +1,9 @@
 # rtings-mcp
 
 MCP server exposing an RTINGS member's own subscription as structured test-data and ratings tools.
-Public, open source, Python 3.12+.
+Public, open source. **Python `>=3.12`, developed on 3.14.** Built on the **official `mcp` SDK
+(`mcp>=2.1.1`)** — `from mcp.server.fastmcp import FastMCP` — **not** the standalone `fastmcp` 4.x
+package; they are separate diverged projects.
 
 - `SPEC.md` — design of record. Read before proposing anything structural.
 - `RECON.md` — measured facts about RTINGS' API, paywall and auth. Cite it; don't re-derive it.
@@ -417,12 +419,15 @@ So, as a release gate, before every version bump:
 3. **A diff is a SPEC CHANGE, not a test failure.** Do not "fix" the test to match. Update the
    snapshot, `RECON.md` §11.1, and the framing in `SPEC.md` §5 / this file's preamble, and say so in
    the release notes — the honest description of what anonymous gets is the product's main claim.
-4. **Re-check the invariants too, not just the split** — they are what the normalizer is built on:
+4. **Re-check dependency currency** — `mcp`, `wafer-py`, `ruff`, `pytest`, `pytest-asyncio`, and the
+   Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
+   drifted two majors is a bug waiting to surface.
+5. **Re-check the invariants too, not just the split** — they are what the normalizer is built on:
    - blur is still exactly `published:false ∨ (insider_only ∧ silo enforces)` — no third mechanism;
    - gating within a silo is still **per-product, never per-test**;
    - `status` domain is still `{tested, na, untested}`;
    - usage definitions still carry no `insider_only`.
-5. **Never let the runtime read the snapshot.** It is a release-time diff baseline and documentation
+6. **Never let the runtime read the snapshot.** It is a release-time diff baseline and documentation
    only. The server derives the boundary from observed `unblurred` per (silo, bench) on every fetch
    (`SPEC.md` §5) — a hardcoded map is exactly the bug this rule exists to catch.
 
