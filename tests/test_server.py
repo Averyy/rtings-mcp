@@ -83,3 +83,69 @@ async def test_an_error_comes_back_as_a_structured_value_not_a_protocol_error(mo
     assert result.error.code == "unknown_silo"
     assert result.data is None
     assert result.auth_state == "unproven_session"
+
+
+# -- the lean-row serializer must never drop the safety fields ----------------------
+
+
+def test_a_null_value_survives_serialization():
+    """The output model omits null optionals to halve the payload. `value` and `gated` are
+    exempt: "a gated value is null, never absent" is the project's core promise, and an
+    agent must read row["value"] as None rather than hit a KeyError."""
+    from rtings_mcp.models import ValueOut
+
+    row = ValueOut(
+        original_id="11",
+        name="Native Contrast",
+        kind="number",
+        status="tested_gated",
+        value=None,
+        gated=True,
+        insider_only=True,
+    )
+    dumped = row.model_dump(mode="json")
+    assert "value" in dumped and dumped["value"] is None
+    assert dumped["gated"] is True
+    assert dumped["status"] == "tested_gated"
+    # ...and the noise is gone.
+    for empty in ("raw_value", "unit", "precision", "score", "display", "warning", "media"):
+        assert empty not in dumped, f"{empty} was null and should have been omitted"
+
+
+def test_a_visible_row_keeps_its_value_and_gated_false():
+    from rtings_mcp.models import ValueOut
+
+    dumped = ValueOut(
+        original_id="208",
+        name="Resolution",
+        kind="word",
+        status="tested_visible",
+        value="4k",
+        gated=False,
+    ).model_dump(mode="json")
+    assert dumped["value"] == "4k"
+    assert dumped["gated"] is False
+
+
+def test_an_empty_visible_row_keeps_the_null_pair():
+    """A visible row can be genuinely empty; `{value: null, gated: null}` must survive."""
+    from rtings_mcp.models import ValueOut
+
+    dumped = ValueOut(
+        original_id="32186", name="Odd", kind="number", status="tested_visible",
+        value=None, gated=None,
+    ).model_dump(mode="json")
+    assert "value" in dumped and dumped["value"] is None
+    assert "gated" in dumped and dumped["gated"] is None
+
+
+def test_envelope_fields_are_never_dropped():
+    """`error: null` means "no error" — a caller checking `out["error"] is None` must not
+    get a KeyError, so envelopes deliberately do not inherit the lean serializer."""
+    from rtings_mcp.models import SearchEnvelope
+
+    dumped = SearchEnvelope(
+        auth_state="anonymous", data_tier="unproven", session="anonymous"
+    ).model_dump(mode="json")
+    for key in ("error", "data", "scores_available", "sorted_by", "previews_remaining"):
+        assert key in dumped, f"{key} must stay on the envelope even when null"

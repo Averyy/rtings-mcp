@@ -11,9 +11,9 @@ third-party API: a new key must widen the response, never fail the call.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 RowStatus = Literal[
     "tested_visible",
@@ -38,6 +38,40 @@ class Permissive(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class LeanRow(Permissive):
+    """A row model that omits its null optional fields on the wire.
+
+    The services already build lean dicts — their ``to_json`` skips null optionals — but the
+    output model re-adds every declared field as ``null`` when it serializes, and that is
+    what an agent actually receives. Measured on one ``rt_product`` response: 55,857 bytes of
+    content became **113,406** on the wire, and a single gated row went from 168 to 424
+    bytes, 256 of them nulls carrying nothing.
+
+    **``value`` and ``gated`` are never dropped, even when null.** That pair is the safety
+    property: "a gated value is null, never absent". An agent must be able to read
+    ``row["value"]`` and get ``None`` rather than a KeyError, and see ``gated: true`` next to
+    it. ``status`` stays for the same reason — it is the field that says *why*.
+
+    Envelope models deliberately do NOT inherit this: `error: null` means "no error" and
+    `scores_available: null` means "not applicable here", and a caller checking those with
+    `out["error"] is None` must not get a KeyError instead.
+    """
+
+    #: Present on the wire even when null.
+    ALWAYS_PRESENT: ClassVar[frozenset[str]] = frozenset({"value", "gated", "status"})
+
+    @model_serializer(mode="wrap")
+    def _drop_empty(self, handler: Any) -> dict[str, Any]:
+        dumped = handler(self)
+        if not isinstance(dumped, dict):  # pragma: no cover - defensive
+            return dumped
+        return {
+            key: value
+            for key, value in dumped.items()
+            if value is not None or key in self.ALWAYS_PRESENT
+        }
+
+
 class ScoresAvailableOut(Permissive):
     """Never a boolean. Derived from observed ``unblurred`` per (silo, bench).
 
@@ -51,7 +85,7 @@ class ScoresAvailableOut(Permissive):
     usage_ratings: Availability | None = None
 
 
-class BenchOut(Permissive):
+class BenchOut(LeanRow):
     id: str | None = None
     display_name: str | None = None
 
@@ -79,7 +113,7 @@ class ErrorOut(Permissive):
     details: dict[str, Any] | None = None
 
 
-class ValueOut(Permissive):
+class ValueOut(LeanRow):
     """One ``(product, test)`` answer.
 
     ``gated`` is ``null``, never ``false``, whenever there is no value to gate: the pair
@@ -126,7 +160,7 @@ class ValueOut(Permissive):
     has_graph: bool | None = None
 
 
-class RatingOut(Permissive):
+class RatingOut(LeanRow):
     original_id: str
     name: str
     product_id: str | None = None
@@ -163,7 +197,7 @@ class BaseEnvelopeOut(Permissive):
 # -- per-tool payloads --------------------------------------------------------------
 
 
-class SiloOut(Permissive):
+class SiloOut(LeanRow):
     silo: str
     name: str | None = None
     silo_group: str | None = None
@@ -208,7 +242,7 @@ class SchemaEnvelope(BaseEnvelopeOut):
     data: SchemaData | None = None
 
 
-class ProductRowOut(Permissive):
+class ProductRowOut(LeanRow):
     product_id: str
     name: str | None = None
     brand: str | None = None
@@ -270,7 +304,7 @@ class RatingsEnvelope(BaseEnvelopeOut):
     data: RatingsData | None = None
 
 
-class VerdictOut(Permissive):
+class VerdictOut(LeanRow):
     """RTINGS' written judgement for one usage, with its score when that is served."""
 
     original_id: str | None = None
@@ -289,7 +323,7 @@ class VerdictOut(Permissive):
     )
 
 
-class HighlightOut(Permissive):
+class HighlightOut(LeanRow):
     sentiment: Literal["pro", "con"] | None = None
     text: str | None = None
     title: str | None = None
@@ -354,7 +388,7 @@ class GraphEnvelope(BaseEnvelopeOut):
     data: GraphData | None = None
 
 
-class SearchHitOut(Permissive):
+class SearchHitOut(LeanRow):
     kind: str | None = None
     title: str | None = None
     url: str | None = None
@@ -376,7 +410,7 @@ class SearchEnvelope(BaseEnvelopeOut):
     data: SearchData | None = None
 
 
-class RecommendationPickOut(Permissive):
+class RecommendationPickOut(LeanRow):
     rank: int | None = None
     title: str | None = None
     subtitle: str | None = None

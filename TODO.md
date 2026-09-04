@@ -90,13 +90,13 @@ session, so a missed item costs another membership month. Highlights:
 ## Product
 
 - [ ] Flip the repository public.
-- [ ] **Null fields survive the output model, so `_strip_response_constants` saves less than
-      it should.** Observed in live MCP output: the helper pops `product_id`/`as_of` from
-      each `rt_product` row, but `ValueOut` declares them as optional fields, so Pydantic
-      re-emits them as `null` — the keys come back, only the values are gone. The same is
-      true of ~10 other optional fields per row. A selective `exclude_none` would cut this
-      substantially, but **`value` and `gated` must always be present even when null** —
-      that is the safety property — so it cannot be a blanket setting.
+- [x] ~~Null fields survive the output model.~~ **DONE 2026-09-04.** Measured on the wire,
+      not the raw dict: the model was re-adding every declared field as `null`, so one
+      `rt_product` response went from 55,857 bytes of content to **113,406** delivered, and a
+      gated row from 168 to 424 bytes. Row models now omit their null optionals
+      (`rt_product` −51%, ~36% across the six most common responses). `value`, `gated` and
+      `status` are exempt, and envelopes are untouched, so `out["error"] is None` still
+      works — with four tests pinning exactly that.
 - [ ] **Nest `data.results` by hierarchy** (SPEC §7 says "grouped by hierarchy"; the code
       returns a flat list repeating `hierarchy` on every row, ~23% of a 56 KB response).
       Recommended by review, deliberately deferred as its own change.
