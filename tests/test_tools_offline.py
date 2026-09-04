@@ -19,7 +19,7 @@ from rtings_mcp.cache import Cache
 from rtings_mcp.config import load_config
 from rtings_mcp.context import Context
 from rtings_mcp.errors import RtingsError
-from rtings_mcp.http import FetchResult, Transport
+from rtings_mcp.http import FetchResult, Transport, _count_request
 from rtings_mcp.repository import Repository
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -214,6 +214,9 @@ class StubTransport(Transport):
 
     async def api_post(self, query, body, *, referer=None, browser_headers=True):
         self.calls.append(query)
+        # The real transport counts every request it sends; `from_cache` reads that counter.
+        # A stub that skips it makes a test of that field pass against the double.
+        _count_request()
         value = self.payloads.get(query)
         if value is None:
             raise RtingsError("fetch_failed", f"no stub for {query}")
@@ -228,6 +231,7 @@ class StubTransport(Transport):
 
     async def api_get_html(self, path):
         self.calls.append(f"GET {path}")
+        _count_request()
         if "/reviews/best/" in path:
             html = REC_HTML
         elif self.session_page == "member":
@@ -252,6 +256,7 @@ class StubTransport(Transport):
 
     async def cdn_get_json(self, path):
         self.calls.append(f"CDN {path}")
+        _count_request()
         return {"header": ["x", "y"], "data": [[i, i * 2] for i in range(500)]}
 
 
@@ -1451,3 +1456,22 @@ async def test_a_spent_budget_still_fails_when_verdicts_were_not_asked_for(ctx):
     with pytest.raises(RtingsError) as excinfo:
         await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
     assert excinfo.value.code == "preview_exhausted"
+
+
+async def test_from_cache_means_this_call_made_no_request(ctx):
+    """It used to mean "the data is more than 2 seconds old", so two back-to-back calls both
+    reported `from_cache: false` while the second made zero requests."""
+    first = await services.rt_ratings(ctx, "tv", tests=["208"])
+    assert first["from_cache"] is False, "a cold fetch is not from cache"
+    before = len(ctx.transport.calls)
+
+    second = await services.rt_ratings(ctx, "tv", tests=["208"])
+    assert len(ctx.transport.calls) == before, "no request was made"
+    assert second["from_cache"] is True, "so it must say so, immediately, not after 2s"
+
+
+async def test_a_numeric_id_miss_names_the_silo_that_was_searched(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await ctx.repo.resolve_product("99999", "tv")
+    assert "not in the tv catalog" in excinfo.value.message
+    assert "pass silo=" not in excinfo.value.message  # a silo WAS passed

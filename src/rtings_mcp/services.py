@@ -25,6 +25,7 @@ from .envelope import (
     observe_test_rows,
 )
 from .errors import RtingsError
+from .http import request_scope, requests_made
 from .normalize import (
     COVERAGE_UNKNOWN,
     NOT_TESTED,
@@ -51,7 +52,7 @@ def collects_warnings(fn):
 
     @functools.wraps(fn)
     async def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
-        with ctx.repo.warning_scope():
+        with ctx.repo.warning_scope(), request_scope():
             return await fn(ctx, *args, **kwargs)
 
     return wrapper
@@ -139,7 +140,7 @@ async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
         },
         session=probe.session if probe else "unknown",
         fetched_at=iso(envelope.fetched_at),
-        from_cache=envelope.age() > 1.0,
+        from_cache=requests_made() == 0,
         stale=envelope.is_stale(TTL_SILOS),
         source_url=envelope.source_url,
         previews_remaining=probe.previews_remaining if probe else None,
@@ -240,7 +241,7 @@ async def rt_schema(
         # The schema's own age, not "now": a 29-day-old cached copy reported as freshly
         # fetched is the quiet dishonesty the envelope exists to prevent.
         fetched_at=iso(schema_fetched_at or time.time()),
-        from_cache=schema_fetched_at is not None and (time.time() - schema_fetched_at) > 2.0,
+        from_cache=requests_made() == 0,
         stale=schema_stale,
         source_url=f"https://www.rtings.com/{silo}/tools/table",
         previews_remaining=probe.previews_remaining if probe else None,
@@ -527,9 +528,8 @@ async def rt_ratings(
         or [_bench_json(schema, b) for b in benches],
         sorted_by=sorted_by,
         fetched_at=iso(freshest or time.time()),
-        # Whether the slices were already on disk, not a constant: a cold fetch is not
-        # "from cache", and saying so makes every freshness signal in the envelope suspect.
-        from_cache=bool(freshest) and (time.time() - freshest) > 2.0,
+        # Did THIS call touch the network — not "is the data a couple of seconds old".
+        from_cache=requests_made() == 0,
         stale=stale,
         source_url=f"https://www.rtings.com/{silo}/tools/table",
         previews_remaining=probe.previews_remaining if probe else None,
@@ -1369,7 +1369,7 @@ async def rt_product(
         scores_available=scores.to_json(),
         test_benches=[{"id": bench_id, "display_name": bench.get("display_name")}],
         fetched_at=iso(envelope.fetched_at),
-        from_cache=envelope.age() > 2.0,
+        from_cache=requests_made() == 0,
         stale=stale,
         source_url=envelope.source_url,
         previews_remaining=probe.previews_remaining if probe else None,
@@ -1572,7 +1572,7 @@ async def _verdicts_only(
         data=data,
         session=probe.session if probe else "unknown",
         fetched_at=iso(verdict_env.fetched_at),
-        from_cache=verdict_env.age() > 2.0,
+        from_cache=requests_made() == 0,
         stale=verdict_stale,
         source_url=verdict_env.source_url,
         previews_remaining=probe.previews_remaining if probe else None,
@@ -1685,7 +1685,7 @@ async def rt_graph(
         data=data,
         session=probe.session if probe else "unknown",
         fetched_at=iso(envelope.fetched_at),
-        from_cache=envelope.age() > 2.0,
+        from_cache=requests_made() == 0,
         source_url=envelope.source_url,
         previews_remaining=probe.previews_remaining if probe else None,
         warnings=list(repo.warnings),
@@ -1798,7 +1798,7 @@ async def rt_recommendations(
             },
             session=probe.session if probe else "unknown",
             fetched_at=iso(envelope.fetched_at),
-            from_cache=envelope.age() > 2.0,
+            from_cache=requests_made() == 0,
             source_url=envelope.source_url,
             previews_remaining=probe.previews_remaining if probe else None,
             warnings=list_warnings(repo),
@@ -1868,7 +1868,7 @@ async def rt_recommendations(
         session=probe.session if probe else "unknown",
         data_tier=derive_data_tier(featured_rows, {"featured"}),
         fetched_at=iso(envelope.fetched_at),
-        from_cache=envelope.age() > 2.0,
+        from_cache=requests_made() == 0,
         stale=envelope.is_stale(TTL_RECS),
         source_url=envelope.source_url,
         previews_remaining=probe.previews_remaining if probe else None,

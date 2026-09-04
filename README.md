@@ -109,6 +109,12 @@ each new review spends one of your limited previews. It refuses by default and r
 | `RTINGS_RATE_INTERVAL_S` | `2.0` | seconds per request to rtings.com (a refill rate, not a floor) |
 | `RTINGS_RATE_BURST` | `5` | requests available immediately after an idle period |
 | `RTINGS_MAX_PREVIEW_SPEND` | `1` | metered previews `rt_product` may spend per run; `0` forbids it |
+| `RTINGS_CONFIG_DIR` | `~/.config/rtings-mcp` | where the credential is stored |
+| `RTINGS_CACHE_TTL_DAYS` | `30` | TTL for measurements and reviews; routing data has its own shorter clocks |
+| `RTINGS_CONCURRENCY` | `1` | in-flight requests to rtings.com |
+| `RTINGS_GRAPH_MAX_POINTS` | `200` | default curve resampling target |
+| `RTINGS_CDN_RATE_INTERVAL_S` / `RTINGS_CDN_RATE_BURST` | `0.25` / `10` | the asset CDN's own budget |
+| `RTINGS_TELEMETRY` | `true` | append header-only request records to `telemetry/requests.jsonl` |
 | `RTINGS_MEMBER_MODE` | `false` | enables member-tier caching once a membership has been verified |
 | `RTINGS_SESSION_OVERRIDE` | unset | `member`/`free`/`anonymous` — assert your own tier if the probe reads it wrong |
 

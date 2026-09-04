@@ -22,6 +22,8 @@ Design points that are load-bearing rather than stylistic:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import time
@@ -47,6 +49,40 @@ from .fsutil import ensure_dir
 from .ratelimit import HostCooldown, TokenBucket
 
 log = logging.getLogger(__name__)
+
+#: Requests actually sent during one tool call.
+#:
+#: `from_cache` used to be `age > 2s`, which answers "is this data a couple of seconds old"
+#: — not "did this call touch the network". Two back-to-back calls both reported
+#: `from_cache: false` while the second made zero requests. An agent checking whether a call
+#: cost anything was told the wrong thing.
+_REQUESTS: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "rtings_requests", default=None
+)
+
+
+@contextlib.contextmanager
+def request_scope():
+    """Count the requests made inside one tool call. Re-entrant, like the warning scope."""
+    if _REQUESTS.get() is not None:
+        yield
+        return
+    token = _REQUESTS.set([0])
+    try:
+        yield
+    finally:
+        _REQUESTS.reset(token)
+
+
+def requests_made() -> int:
+    counter = _REQUESTS.get()
+    return counter[0] if counter else 0
+
+
+def _count_request() -> None:
+    counter = _REQUESTS.get()
+    if counter is not None:
+        counter[0] += 1
 
 #: ``test_results`` scales with rows, so the request side caps the test count and this
 #: bounds the response side. ``ResponseTooLarge`` is an exception, not a status — it maps
@@ -285,6 +321,7 @@ class Transport:
             # Order matters: cooldown before the token, so a cooling host does not burn one.
             self._preflight_cooldown(host)
             limiter_wait = await bucket.acquire()
+            _count_request()
             # Compute the budget AFTER the wait, or the queueing eats the attempt budget.
             started = time.monotonic()
             try:

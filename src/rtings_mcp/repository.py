@@ -1289,8 +1289,12 @@ class Repository:
                 return found
             raise RtingsError(
                 errors.UNKNOWN_PRODUCT,
-                f"product id {text} is not in any cached catalog; pass the review URL "
-                "or a silo to look it up",
+                (
+                    f"product id {text} is not in the {silo} catalog"
+                    if silo
+                    else f"product id {text} is not in any cached catalog; pass silo= or "
+                    "the review URL so it can be looked up"
+                ),
             )
 
         hit = await self._search_product(text, silo)
