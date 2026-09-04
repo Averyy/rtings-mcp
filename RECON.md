@@ -903,7 +903,7 @@ kinds were **not** swept — do not generalize to them.
 **A row is blurred if and only if:**
 
 ```
-blurred  ⇔  product.published == false            (review in progress — no membership lifts it)
+blurred  ⇔  product.published == false            (Early Access — an Insider perk, see §12.10)
          ∨  (test.insider_only == true  ∧  the SILO enforces the paywall)
 ```
 
@@ -996,7 +996,8 @@ where an anonymous caller gets values, scores, ranking and comparison. `SPEC.md`
 updated accordingly.
 
 **`published:false` must never be reported as `tested_gated`.** It is a review-in-progress blur that
-no membership lifts, and it occurs in gated *and* open silos alike. `published` ships in
+the paywall does not explain, and it occurs in gated *and* open silos alike. **See §12.10:
+it is Early Access, and a membership does lift it.** `published` ships in
 `products_list`, so it is detectable anonymously and must be checked before any blur is attributed to
 the paywall.
 
@@ -1076,3 +1077,338 @@ only path**, confirming `SPEC.md` §7's isolated `rt_recommendations` design.
 Two incidental findings: `price_box__batch_prices` and `comment_list__comments` are previously
 unrecorded queries; and **best-of slugs redirect** — `/tv/reviews/best/tvs` → `/tv/reviews/best/
 tvs-on-the-market`. `rt_recommendations` must follow redirects and cache the canonical slug.
+
+---
+
+## 12. Implementation pass, 2026-09-03/04 — facts the build measured
+
+Everything below was measured while writing the server, anonymously, against the live API.
+It **corrects or extends** earlier sections; where it corrects one, the correction is
+marked. The 28-silo enforcement re-scan run at the end of the build reproduced
+**12 enforcing / 16 open exactly**, with zero drift against `docs/enforcement-snapshot.json`.
+
+### 12.1 Response paths, confirmed by fetching each one
+
+| Query | Payload path | Notes |
+|---|---|---|
+| `table_tool__column_options` | `data.silo` | `test_bench` = `{tests, usages}` and carries **no `id`** — the current bench's id is not in the schema |
+| `table_tool__products_list` | `data.products` | product carries `review.test_bench.{id,display_name}`, `published`, `page.url` |
+| `table_tool__test_results` | `data.test_results` | row carries `product_id` directly — that is the join key |
+| `table_tool__ratings` | `data.ratings` | see §12.3 |
+| `graph_tool__product_graph_data_url` | `data.product.review.test_results[0].graph_data_url` | |
+| `app/search__search_results` | `data.search_results` | `{query, max_score, total_count, results[]}` |
+| `app/product_vue_page__page_body` | **`data.page`** | the review is at `data.page.product.review`; **corrects** any assumption of a `data.page_body` key |
+
+### 12.2 `test_results` has a WIDER product population than `products_list`
+
+Requesting TV benches `[227,210,197]` returns **118** products from `products_list` but rows
+for **127** distinct products from `test_results`. The 9 extra ids (`108448`, `125243`,
+`127553-8`, `127950`, `127954`) appear in **no** `products_list` response across all 18
+benches, and every one of their rows is blurred.
+
+**This is structural, not staleness.** A row for a product the catalog does not carry is
+therefore *not* evidence the catalog is behind — an earlier draft of the warning said it was.
+Such rows are filed under `tests/_unassigned/` rather than dropped (a dropped row becomes a
+false `not_tested` if the catalog later catches up) and are not reported as results, because
+there is no catalog row to attach them to.
+
+### 12.3 `table_tool__ratings` rows carry NO `status` field
+
+```json
+{"original_id":"1","product_id":"92248","score":null,"suitable":true,"unblurred":false,
+ "usage":{"kind":"usage","performance_tooltip_text":"...","is_unscored":false}}
+```
+
+There is no `status`, so the "branch `status` before `unblurred`" ordering has nothing to
+branch on here: a usage rating is present-and-unblurred, present-and-gated, or absent. The
+usage normalizer is therefore a **different function** from the test normalizer, not a
+parameterization of it.
+
+**And usage ratings are NOT uniformly gated on the open silos.** §5's "assume gated there"
+caveat is falsified for at least mattress: `Side Sleeping` came back `score: 7.7,
+unblurred: true` anonymously. TV's usage rows are 100% blurred, as recorded.
+
+### 12.4 `latest_test_bench_id` can name a bench that does not exist yet
+
+**The most consequential correction in this section.** §8 recorded that the page's bench
+list is longer than `column_options`'. It goes further: on **5 of 28 silos**
+`GLOBALS.static.silo.latest_test_bench_id` names a bench that is absent from
+`column_options` **and** absent from the `is_recent` set — apparently a bench under
+development:
+
+| silo | `latest_test_bench_id` | `is_recent` set |
+|---|---|---|
+| air-conditioner | 258 | 39 |
+| air-fryer | 265 | 231, 201 |
+| laptop | 285 | 242, 198, 194 |
+| router | 269 | 253, 235, 224, 195 |
+| toaster-oven | 266 | 247, 148 |
+
+Taking it at face value is a real correctness cost: nothing ever matches it, so every slice
+on those silos falls to the 30-day legacy TTL instead of the 7-day current-bench one — which
+is the named mitigation for the coverage hole that has no other signal (§11.6). **"Current
+bench" must be derived as the newest bench that is both rendered by the site and has a
+published schema**, not read off `latest_test_bench_id`.
+
+The per-page bench list lives at **`GLOBALS.static.silo`** (verified: `/mouse/tools/table`
+→ latest 233, recent `[233,199]`). Its entries are `{id, is_recent, major}` and carry **no
+`display_name`** — that comes from `column_options.test_benches[]`, which is also where
+`display_name` and the reference `tests[]`/`usages[]` lists live.
+
+### 12.5 Recommendations — discovery, payload, and a row shape with no join key
+
+- **Discovery is `silo_layout.best`**, in a `data-props` blob on the silo landing page: 20
+  entries on TV as `{title, url, short, type, group_id, img}`. §10 q9's href scan finds only
+  **5 of those 20**, because most list paths are **two segments**
+  (`/tv/reviews/best/by-size/65-inch`, `by-usage/video-gaming`, `by-type/oled`). A
+  single-segment slug pattern silently rejects the majority.
+- **The ranking lives at `page_data.page.recommendation`** in another `data-props` blob:
+  `{seasonal_title, introduction, conclusion, product_recommendations[], ...}`. Each pick is
+  `{title, subtitle, description, product_id, product, featured_test_results[], ratings[]}`,
+  and `product.preferred_scoreset_score` is served anonymously (9 for the Samsung S95H).
+- **`featured_test_results[].test` carries no `original_id`** — only `{id, name, kind,
+  insider_only, featured_name}`. Those rows therefore **cannot be joined to the schema**, so
+  units and precision are unavailable for them and no value may be coerced. They are still
+  reported with the same states, using the stub's own name and kind.
+
+### 12.6 `has_insider_access` is inside an HTML-escaped attribute
+
+It appears exactly once on `/tv`, inside `data-props="{&quot;has_insider_access&quot;:false,…}"`.
+A raw-text regex over the page **never matches it**, silently returning "the page does not
+carry this signal" on every page that does. The probe must unescape `data-props` before
+looking.
+
+### 12.7 Review-path prose sits on `group` rows and survives the blur
+
+On the Sony X90L (bench 227, 402 rows), **53 rows carry a `linked_description`** and **all
+53 are `kind:"group"`** — RTINGS hangs its commentary on section headers, not on leaves.
+All 53 are `unblurred:false`, and the prose is present anyway, confirming §3's "words free,
+numbers not" on this path.
+
+Consequence: a normalizer that (correctly) skips `group`/`category` rows as structure will
+discard **all** of a review's prose unless it collects it separately. It must never be
+attached as a result — a `group` with a `status` is a category header reported as a
+measurement.
+
+### 12.8 Search hits carry `published`
+
+`app/search__search_results` results include `"published": true`. It describes the **page**,
+not the product's review row, and `kind` may be `page` rather than `product` — so it must not
+be used for the blur decision. That still comes from the bench catalog.
+
+### 12.9 The SDK renamed the class
+
+`mcp` 2.x renamed `FastMCP` to `MCPServer`: `from mcp.server.fastmcp import FastMCP` raises
+`ModuleNotFoundError` on `mcp==2.1.1`, with a migration message pointing at
+`from mcp.server.mcpserver import MCPServer`. Tool schema attributes are snake_case
+(`tool.input_schema` / `tool.output_schema`). This is the canonical SDK; the standalone
+`fastmcp` 4.x package remains a separate, diverged project.
+
+### 12.10 `published:false` is EARLY ACCESS — an Insider perk, not a permanent blur
+
+**This reverses a documented rule.** §11.2 called `published:false` "a review-in-progress blur
+that no membership lifts", inferred from anonymous data alone. RTINGS says the opposite, in
+its own words (`/monitor/learn/how-we-test`, fetched 2026-09-04, same copy on router, vpn,
+printer, keyboard, blender):
+
+> "Once the results have been approved, **the writer publishes it for Early Access so that
+> Insiders who support us can see the data without any text.**"
+
+The catalog corroborates it structurally. Both `published:false` TVs on bench 227 carry an
+`/early-access/` URL:
+
+```
+136668  LG B6 OLED 2026  page.url = /early-access/tv/reviews/lg/b6-oled-2026
+136479  TCL RM9L         page.url = /early-access/tv/reviews/tcl/rm9l
+```
+
+So the state means **"the data exists and is published for Insiders, but was withheld from
+*this* session"** — a membership is exactly what lifts it. Two consequences:
+
+- **Check `unblurred` BEFORE the `published` flag.** A normalizer that branches on
+  `published:false` first returns `review_unpublished, value:null` for a member's real
+  early-access values and throws them away. The safe ordering is: any `unblurred:true` row is
+  `tested_visible` whatever the flag says; `published:false ∧ unblurred:false` is
+  `review_unpublished`; anything else gated is the paywall.
+- **`/early-access/` puts the silo in the SECOND path segment.** Deriving it from the first
+  yields `"early-access"`, which is not a silo. Live consequence before the fix:
+  `rt_product("/early-access/tv/reviews/lg/b6-oled-2026")` fell through to search and
+  returned **LG B6 OLED 2016** (product 361, bench 3, a nine-year-old TV) with 125
+  `tested_gated` rows and no warning.
+
+`silo.reviews_in_progress_count` is **9** for TV while only **2** early-access products appear
+in the recent-bench catalog — which matches the 9 orphan ids of §12.2 exactly. Those are very
+likely early-access reviews the catalog omits entirely. **Phase 0 should check whether a
+member's `products_list` returns 127 rather than 118**; if it does, `catalog/` becomes
+tier-dependent and is currently untiered.
+
+### 12.11 `products_list` omits a third of the mattress silo, and those products are UNBLURRED
+
+§12.2 recorded 9 TV orphans, all blurred, and concluded they were structural. The population
+is much larger elsewhere and the rows are real data:
+
+| silo | `products_list` (recent benches) | distinct products in `test_results` | orphans |
+|---|---|---|---|
+| tv | 118 | 127 | 9 (all blurred) |
+| mattress | 69 | 109 | **40 (all `unblurred:true`)** |
+
+The 40 mattress orphans carry genuine anonymous measurements (`25.4 cm`, `19.2 cm`, `29.7 cm`
+on Thickness; 34 `tested`, 6 `untested`) and are absent from the **all-bench** catalog too, so
+this is not a bench-selection artifact. The table-tool JS sends `products_list` with exactly
+`{test_bench_ids, named_version, is_admin}` — there is no filter to relax, so the omission is
+server-side (discontinued products are the likeliest explanation).
+
+**Consequence:** filing them under `_unassigned` and not reporting them makes a third of the
+silo unreachable, and "compare Purple vs Nectar" silently loses one of them — which reads as
+"not tested". They must be surfaced as their own labelled group: real values, and no name,
+brand or bench, because the catalog is where those live.
+
+### 12.12 An unscored test still ships `score: 0.0`
+
+Mattress `Mattress Type` (`has_score: false`) returns `value: "Foam", score: 0.0`. Passing
+the score through reads as "0 out of 10" for something RTINGS never scored. Null the score
+when the definition says `has_score: false`.
+
+### 12.13 The category→group hierarchy is POSITIONAL — the API states none
+
+Every one of TV's 69 `category`/`group` rows carries `parent_original_id: null`. Leaves point
+at their group, but no group points at a category, so the stated hierarchy is one level deep
+and 12 categories look empty. The **list order** carries the missing link:
+
+```
+category  oid=31615  parent=None   Brightness
+group     oid=4      parent=None   HDR Brightness      <- belongs to Brightness
+number    oid=12470  parent=4      Hallway Lights (~1950 cd/m²)
+number    oid=141    parent=4      Peak 2% Window
+...
+```
+
+A `category` row is followed by the groups beneath it, each followed by its own leaves.
+Reading `parent_original_id` alone makes `rt_schema("tv")` a flat scramble of 57 groups plus
+12 categories reporting `leaf_test_count: 0, children: []` — which is what it returned until
+2026-09-04, and it makes the discovery tool nearly useless for finding a test id.
+
+Attaching each top-level group to the most recent preceding `category` reproduces the site's
+own navigation exactly: **12 categories** (Brightness → 3 groups, Black Level → 5, Color → 6,
+Processing → 4, Game Mode Responsiveness → 8, Motion Handling → 8, …), and a leaf's hierarchy
+becomes two levels (`["Brightness", "HDR Brightness"]`). Store it in a **separate derived
+field** — the API's own `parent_original_id` really is null, and overwriting it would hide
+that.
+
+### 12.14 The tested size lives in the catalog, not in a test
+
+Most silos have no "Size" test at all, so "which 65-inch TV is brightest?" looks unanswerable.
+It is not: the catalog row names the SKU RTINGS actually reviewed.
+
+```json
+"reviewed_sku_id": "8752",
+"variant_skus": [
+  {"id": "8751", "name": "XR-55X90L", "variation": "55\""},
+  {"id": "8752", "name": "XR-65X90L", "variation": "65\""},   <- the one tested
+  {"id": "8753", "name": "XR-75X90L", "variation": "75\""}, ...
+]
+```
+
+So the tested variant is `variant_skus[reviewed_sku_id].variation`. Exposing it turns a
+whole class of question from impossible into a filter (90 of the recent-bench TVs are 65-inch),
+and it matters for correctness too: RTINGS' results describe **that** SKU, and other sizes in
+the family often differ.
+
+### 12.15 §10 q3 ANSWERED — the session SLIDES; there is no 30-day re-login
+
+Measured 2026-09-04, anonymously, three ways. **RTINGS re-issues `_rtings_session` on every
+single response** — HTML GET *and* API POST alike — with a new encrypted value and a fresh
+`expires` of exactly 30 days from **that response**:
+
+```
+GET  /tv/tools/table          expires=Sun, 04 Oct 2026 15:22:18 GMT
+GET  /headphones/tools/table  expires=Sun, 04 Oct 2026 15:22:21 GMT   (+3s, the gap)
+POST /api/v2/safe/app/search__search_results   expires=... 15:23:00   value changed
+POST /api/v2/safe/app/search__search_results   expires=... 15:23:02   value changed again
+now 2026-09-04 15:23:39 -> expires 2026-10-04 15:23:39  (29d 23h from THIS response)
+```
+
+So the 30 days is a **sliding idle window**, not a deadline from login: a session lives
+indefinitely while it is used and dies 30 days after it stops. `/login` carries **no
+"remember me"** — it does not need one, and there is no separate durable auth cookie. (The
+CDN sets no cookies at all, confirming the two-session split.)
+
+**This reverses the "never write a rotated cookie back to disk" rule.** That rule was
+defensible while the sliding was unmeasured, but it causes the harm it was meant to prevent:
+freezing the stored blob at the pasted value means it expires 30 days after the paste
+*however much the server is used*, so the user re-pastes monthly because of us, not because
+of RTINGS.
+
+The danger it guarded against is real — an anonymous GET also mints a cookie, and a blind
+write-back would overwrite the credential with an anonymous one. The answer is proof, not
+abstinence: **persist only the jar value that just produced a response with `current_user`
+non-null.** An anonymous session cannot satisfy that. `RTINGS_SESSION_COOKIE` (env) cannot
+be refreshed, so a stored credential (`rtings-mcp auth`) is the durable path and the env var
+is warned about once.
+
+Two consequences worth noting: a cookie value in a fixture or log is stale within one
+request, and **presence checks remain useless** (§5) — the jar always holds *a*
+`_rtings_session`; only comparison against the configured value means anything.
+
+### 12.16 The API surface is larger than §1 records — and `errors[]` does not mean failure
+
+Scanned every JS bundle referenced by the table, graph, compare, review, best-of and silo
+pages (2026-09-04). Beyond the seven queries in §1, three unused ones are real, and one
+correction matters more than any of them.
+
+**`errors[]` beside `data` is a PARTIAL-FIELD notice, not a failure.** RTINGS strips
+admin-only fields and *says so* while returning a complete payload:
+
+```
+POST distribution_tooltip__test  -> {"data": {...full...},
+  "errors": ["The field edit_url on an object of type Comparison was hidden due to
+              permissions", "...methodology_url...", "...review_notes_url..."]}
+```
+
+Treating any `errors[]` as fatal discards that data. And the case `api_error` was originally
+documented for is not an `errors[]` case at all — `column_options` with an unknown silo
+returns `{"data": {"silo": null}}` and **no errors**, which is `payload_missing`. Measured
+blast radius today: **none of the eight queries the server uses returns `errors[]`**, so this
+was latent rather than active — but it would have fired the moment RTINGS permission-stripped
+a field on a query we do use.
+
+**`app/side_by_side__review`** — bare `{product_id}`, no `variables` wrapper. Returns, on a
+**gated** silo, anonymously:
+
+| field | anonymous content |
+|---|---|
+| `product_score_sets` | 11 usage entries: `score: null` (gated) but **`linked_description` prose on all 11** — "The Sony X90L is good for mixed usage. It looks very good in a bright room thanks to its amazing SDR brightness…" |
+| `summaries` | **17 pros/cons blurbs** with the score sets each supports — "Good HDR brightness for impactful highlights." |
+| `score_sets` | the **scoring formula**: each usage's component tests/sub-scores with `weight` (Mixed Usage = 25% + 35% + …) |
+| `test_results` | 402 rows, **all `value: null`** and — importantly — **no `unblurred` key at all** |
+| `user_has_access` | `false` anonymously |
+
+Two things follow. First, this is a **third row shape**: no `unblurred` field, so the
+normalizer cannot use its usual branch and this path must never be joined into the table/review
+paths. Second, **`user_has_access` is an auth marker inside the API**, which qualifies §1's
+"the API carries no auth field" — that remains true of the seven table/review queries, and is
+false here. It is per-review and matches the free-preview grant, so it is a candidate signal
+for the free tier.
+
+**`distribution_tooltip__test` / `__usage`** — bare `{id, product_id, review_version_id,
+use_latest}` where `id` is the test's **internal** id (`38545`), not `original_id`; result at
+`data.target`. The distribution itself is withheld anonymously (`histogram: null`, `items:
+[]`), but the **test documentation comes through even for a gated test**:
+
+```
+help_what: "The TV's maximum luminance, even if only maintained for a short time, of a
+            white square covering 100% of the screen."
+help_when: "In bright rooms or with bright scenes in HDR that are on-screen for a short time."
+help_good: "> 700 cd/m²"
+url:       "/tv/tests/picture-quality/hdr-peak-brightness#test_463"
+```
+
+`help_good` is RTINGS' own threshold for a good result — useful precisely where the value is
+withheld. It costs one request per test and is **not** in `column_options`, so it is
+enrichment, not a bulk source.
+
+Also present and unused: `app/product_vue_page__compared_texts`, `app/side_by_side__sbs_item_by_id`,
+`app/side_by_side__status_discussions`, and the `app/table_tools_page__*` user-preset queries
+(a member feature). Names matching `x__y` in the bundles are often **field** names
+(`score_set__original_id`, `test__original_id`, `product_page__early_access`), not queries —
+do not probe them blindly.

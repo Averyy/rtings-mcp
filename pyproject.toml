@@ -1,0 +1,71 @@
+[project]
+name = "rtings-mcp"
+# One source of truth: src/rtings_mcp/__init__.py. CLAUDE.md requires a bump every
+# release, and three copies is three chances to bump two of them.
+dynamic = ["version"]
+description = "MCP server exposing RTINGS.com test data as structured tools"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Avery Levitt" }]
+keywords = ["mcp", "rtings", "reviews", "test-data", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+    "mcp>=2.1.1",
+    "wafer-py>=0.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "ruff>=0.16",
+]
+
+[project.scripts]
+rtings-mcp = "rtings_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Averyy/rtings-mcp"
+Repository = "https://github.com/Averyy/rtings-mcp"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/rtings_mcp/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtings_mcp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# The default run is offline. Live tests hit RTINGS anonymously and are opt-in:
+#   .venv/bin/pytest -m live          # the anonymous surface, against the real API
+#   .venv/bin/pytest -m "live and slow"   # + the 28-silo enforcement re-scan
+addopts = "-m 'not live'"
+markers = [
+    "live: hits the real RTINGS API, anonymously",
+    "slow: the 28-silo enforcement re-scan (~4 minutes at the default rate)",
+]

@@ -1,0 +1,211 @@
+{
+  "id": "1",
+  "tested_products_count": 3,
+  "test_bench": {
+    "usages": [
+      {
+        "original_id": "1",
+        "name": "Mixed Usage",
+        "order": 10,
+        "published": true,
+        "kind": "usage",
+        "is_unscored": false,
+        "is_sub_usage": false,
+        "parent_usage_name": null
+      },
+      {
+        "original_id": "12",
+        "name": "Home Theater",
+        "order": 20,
+        "published": true,
+        "kind": "usage",
+        "is_unscored": false,
+        "is_sub_usage": false,
+        "parent_usage_name": null
+      }
+    ],
+    "tests": [
+      {
+        "original_id": "31615",
+        "name": "Picture",
+        "kind": "category",
+        "published": true,
+        "has_score": false,
+        "parent_original_id": null,
+        "order": 0,
+        "insider_only": true,
+        "number_display_unit": null,
+        "number_display_precision": 1,
+        "words": []
+      },
+      {
+        "original_id": "900",
+        "name": "Picture Quality",
+        "kind": "group",
+        "published": true,
+        "has_score": false,
+        "parent_original_id": null,
+        "order": 1,
+        "insider_only": true,
+        "number_display_unit": null,
+        "number_display_precision": 1,
+        "words": []
+      },
+      {
+        "original_id": "208",
+        "name": "Resolution",
+        "kind": "word",
+        "published": true,
+        "has_score": true,
+        "parent_original_id": "900",
+        "order": 2,
+        "insider_only": false,
+        "number_display_unit": null,
+        "number_display_precision": 1,
+        "words": [
+          {
+            "value": "1080p"
+          },
+          {
+            "value": "4k"
+          }
+        ]
+      },
+      {
+        "original_id": "11",
+        "name": "Native Contrast",
+        "kind": "number",
+        "published": true,
+        "has_score": true,
+        "parent_original_id": "900",
+        "order": 3,
+        "insider_only": true,
+        "number_display_unit": ": 1",
+        "number_display_precision": 0,
+        "words": []
+      },
+      {
+        "original_id": "12000",
+        "name": "Peak Brightness",
+        "kind": "number",
+        "published": true,
+        "has_score": true,
+        "parent_original_id": "900",
+        "order": 4,
+        "insider_only": true,
+        "number_display_unit": "cd/m\u00b2",
+        "number_display_precision": 0,
+        "words": []
+      },
+      {
+        "original_id": "555",
+        "name": "Firmware",
+        "kind": "word",
+        "published": true,
+        "has_score": false,
+        "parent_original_id": "900",
+        "order": 5,
+        "insider_only": true,
+        "number_display_unit": null,
+        "number_display_precision": 1,
+        "words": []
+      },
+      {
+        "original_id": "13907",
+        "name": "PQ EOTF Graph",
+        "kind": "graph",
+        "published": true,
+        "has_score": false,
+        "parent_original_id": "900",
+        "order": 6,
+        "insider_only": true,
+        "number_display_unit": null,
+        "number_display_precision": 1,
+        "words": []
+      }
+    ]
+  },
+  "legacy_usages": [
+    {
+      "original_id": "77",
+      "name": "Legacy Usage",
+      "order": 10,
+      "published": true,
+      "kind": "usage",
+      "is_unscored": false,
+      "is_sub_usage": false,
+      "parent_usage_name": null
+    }
+  ],
+  "legacy_tests": [
+    {
+      "original_id": "5",
+      "name": "Bright Room",
+      "kind": "number",
+      "published": true,
+      "has_score": true,
+      "parent_original_id": null,
+      "order": 1,
+      "insider_only": true,
+      "number_display_unit": "cd/m\u00b2",
+      "number_display_precision": 0,
+      "words": []
+    }
+  ],
+  "test_benches": [
+    {
+      "id": "227",
+      "display_name": "v2.2",
+      "major": false,
+      "tests": [
+        {
+          "original_id": "31615"
+        },
+        {
+          "original_id": "900"
+        },
+        {
+          "original_id": "208"
+        },
+        {
+          "original_id": "11"
+        },
+        {
+          "original_id": "12000"
+        },
+        {
+          "original_id": "555"
+        },
+        {
+          "original_id": "13907"
+        }
+      ],
+      "usages": [
+        {
+          "original_id": "1"
+        },
+        {
+          "original_id": "12"
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "display_name": "v0.9",
+      "major": false,
+      "tests": [
+        {
+          "original_id": "208"
+        },
+        {
+          "original_id": "5"
+        }
+      ],
+      "usages": [
+        {
+          "original_id": "77"
+        }
+      ]
+    }
+  ]
+}

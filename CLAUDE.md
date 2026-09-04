@@ -2,8 +2,18 @@
 
 MCP server exposing an RTINGS member's own subscription as structured test-data and ratings tools.
 Public, open source. **Python `>=3.12`, developed on 3.14.** Built on the **official `mcp` SDK
-(`mcp>=2.1.1`)** — `from mcp.server.fastmcp import FastMCP` — **not** the standalone `fastmcp` 4.x
-package; they are separate diverged projects.
+(`mcp>=2.1.1`)** — **`from mcp.server.mcpserver import MCPServer`** — **not** the standalone
+`fastmcp` 4.x package; they are separate diverged projects.
+
+**IMPORTANT: the class is `MCPServer`, not `FastMCP`.** `mcp` 2.x renamed it;
+`mcp.server.fastmcp` raises `ModuleNotFoundError` on 2.1.1. Tool schema attributes are
+snake_case (`tool.input_schema` / `tool.output_schema`), and `outputSchema` comes from the
+tool function's **return annotation** — which is why every tool returns a declared Pydantic
+model: that is what carries the seven-state `status` enum into the client's schema.
+
+**Status: the anonymous server is built and working** (2026-09-04). `RECON.md` §12 holds the
+facts the build measured; the rules below marked "(corrected 2026-09-04)" are the ones it
+forced. Member mode is built but gated off behind `RTINGS_MEMBER_MODE`.
 
 - `SPEC.md` — design of record. Read before proposing anything structural.
 - `RECON.md` — measured facts about RTINGS' API, paywall and auth. Cite it; don't re-derive it.
@@ -50,7 +60,14 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `unblurred` per (silo, bench); `insider_only` marks a test gate-*able*, never gated.** A **public**
   test ships its value *and* a real 0–10 `score` anonymously. Never write "anonymous gets no scores":
   100%-gated is true only of *usage* ratings (`table_tool__ratings`), a different surface.
-- **IMPORTANT: `published:false` is a SECOND, orthogonal blur — and no membership lifts it.** An
+- **IMPORTANT: `published:false` is a SECOND, orthogonal blur — it is EARLY ACCESS, and a
+  membership DOES lift it (corrected 2026-09-04, `RECON.md` §12.10).** RTINGS: "the writer
+  publishes it for Early Access so that Insiders who support us can see the data without any
+  text", and those products sit at `/early-access/{silo}/reviews/...`. So **check `unblurred`
+  BEFORE the `published` flag** — branching on the flag first returns `review_unpublished,
+  value:null` for a member's real Early Access values and throws them away. And the silo is
+  the SECOND path segment on those URLs; deriving it from the first sent a lookup into search,
+  which answered with a nine-year-old TV. An
   in-progress review is blurred on every test regardless of silo enforcement (`RECON.md` §11.2:
   camera's one blurred product is blurred on all 50 tests, `published:false`, while 74 others are
   unblurred on all 50). Calling that `tested_gated` tells the user to buy a membership for a review
@@ -117,6 +134,27 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   still Phase 0 capture (i).
 - **`data_tier` and `session` are separate envelope fields; `auth_state` is derived** (ported). A
   cached member row served after the session lapsed is member data *and* a dead session.
+- **IMPORTANT: `auth_state` never claims `preview` (corrected 2026-09-04).** The derivation
+  table used to map `(anonymous|free, unblurred)` to `preview` — "a share or gift link". That
+  assumed every silo gates. It does not: on 16 of 28, unblurred `insider_only` values are
+  what anonymous simply gets. `preview` there invents a grant nobody made, which is the same
+  error as calling a metered preview `member`, pointing the other way. `(anonymous, *)` ⇒
+  `anonymous`; `(free, *)` ⇒ `free`. `stale_member_data` survives — it says something the
+  data alone cannot.
+- **`scores_available` has a fifth value, `unknown` (added 2026-09-04)** — "this response did
+  not query that surface". Reporting `gated` for a surface nobody asked about tells an agent
+  it cannot see values that are, on most silos, served outright, and routes it away from the
+  category that would have answered. Same distinction as `coverage_unknown` vs `not_tested`.
+- **Best-of discovery is `silo_layout.best` in the landing page's `data-props`, not an href
+  scan** — 20 lists on TV vs 5, because most list paths are **two segments**
+  (`by-size/65-inch`). A single-segment slug pattern silently rejects the majority. A slug is
+  validated then **flattened** into one filename component, never used as a path segment.
+- **Review-path prose sits on `group` rows and survives the blur.** All 53 rows carrying a
+  `linked_description` on the X90L are `kind:"group"`, all `unblurred:false`. A normalizer
+  that (correctly) skips structure rows discards *all* of a review's prose unless it collects
+  it separately — as commentary, **never** as a result with a `status`.
+- **`has_insider_access` lives inside an HTML-escaped `data-props` attribute.** A raw-text
+  regex never matches it and silently reports "the page does not carry this signal".
 - **The blur is server-side and per value.** `scores_available` is an **object** of `available |
   gated | absent`, never a boolean, **derived from `insider_only` + observed `unblurred`** (`RECON.md`
   §6), never hardcoded. `insider_only` is a real session-independent schema flag. Derive the boundary
@@ -131,6 +169,14 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   beyond it gets results **nested by bench**. `rank_scope: "within_bench"` always; no cross-bench
   "comparable" mode. This is a conservative default, **not** a measured incomparability
   (`RECON.md` §10 q7).
+- **IMPORTANT: `latest_test_bench_id` is NOT the current bench (corrected 2026-09-04).** On
+  **5 of 28 silos** it names a bench absent from `column_options` *and* absent from the
+  `is_recent` set — air-conditioner 258 (recent: 39), air-fryer 265, laptop 285, router 269,
+  toaster-oven 266 (`RECON.md` §12.4) — apparently benches under development. Reading it as
+  "current" means nothing ever matches it, so every slice on those silos falls to the 30-day
+  legacy TTL instead of the 7-day current-bench one, defeating the *only* mitigation for the
+  open coverage hole. **Derive the current bench as the newest bench the site renders that
+  also has a published schema.** The per-page bench list lives at `GLOBALS.static.silo`.
 - **Derive the recent-bench set from `is_recent`, never hardcode `[197,210,227]`.** That set is
   TV-specific and the size varies per silo — tv 3, headphones 4, mouse 2 (`RECON.md` §8, confirmed).
   The flag lives on the **page-embedded `GLOBALS` bench list**, not in `column_options`; "top 3 in
@@ -151,6 +197,17 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   with an **empty jar** and does not raise — one transient 403 then makes RTINGS return a normal
   anonymous `200` that looks exactly like expiry. A missing credential is `identity_rotated` (a
   transport error, never cached), not an auth state (ported; applies harder — one cookie, no re-mint).
+- **IMPORTANT: the session SLIDES, so ROTATION WRITE-BACK IS REQUIRED (measured
+  2026-09-04, `RECON.md` §12.15).** RTINGS re-issues `_rtings_session` on **every** response,
+  HTML and API alike, with a new value and `expires = now + 30 days`. So the 30 days is a
+  sliding *idle* window: a session lives indefinitely while used and dies 30 days after it
+  stops, and `/login` has no "remember me" because it needs none.
+  **Refusing to persist rotations therefore causes the harm it was meant to prevent** — the
+  stored blob freezes at the pasted value and expires 30 days later however much the server
+  is used, so the user re-pastes monthly because of us. Persist the rotated value, gated on
+  **proof**: only a jar value that just produced a response with `current_user` non-null,
+  which an anonymous session can never satisfy. `RTINGS_SESSION_COOKIE` cannot be refreshed,
+  so the stored credential is the durable path and the env var is warned about once.
 - **IMPORTANT: track credential IDENTITY, not cookie presence — RTINGS re-mints anonymously.** A
   plain anonymous GET *sets* a fresh `_rtings_session` (`RECON.md` §5, confirmed). So "assert the
   cookie is present in the jar" is satisfied by RTINGS' own anonymous cookie, and two bugs follow:
@@ -258,7 +315,41 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 - **`stale` means past-TTL and nothing else** (ported). A scored row retained over a newer unscored
   one is reported by `superseded_at`, per row. Never prune the newest unblurred file for a key, and
   never evict a `reviews/` file bought with a metered preview.
-- **Never return the raw payload.** `column_options` is ~357 KB, a full review ~442 KB, a graph up to
+- **IMPORTANT: a test's 0-10 SCORE is not a stand-in for its value.** A usage rating has
+  only a score; a test has a value *and* a score. Falling back to the score when a test's
+  value is null makes `peak_brightness < 10` match a TV whose value is unknown because its
+  *score* is 8.5 — confidently wrong rows with no signal, which is worse than the empty
+  result the filter guard exists for. One `_comparable(entry, kind)` helper decides what a
+  filter or sort may compare, and every call site goes through it: `value` for a test,
+  `score` for a usage, `None` otherwise (including a `tested_visible` row that is genuinely
+  empty). It also drives the "is this field populated?" census, or a null-valued visible row
+  makes the guard think the field is usable.
+- **Paginate WITHIN a group, never across benches.** A group is one comparable bench
+  population, so a global sort-then-slice can return zero rows from a widened bench that
+  matched — and it ranks across the very boundary `rank_scope: within_bench` exists to keep.
+  `limit`/`offset` apply per group; each group reports its own `matched`.
+- **IMPORTANT: reserve a metered preview BEFORE the awaited fetch, under a process-wide
+  lock.** The per-product file lock cannot bound a per-*process* budget: two calls for two
+  different products take different locks, both read `previews_spent == 0`, and both spend
+  against a limit of 1. Increment first, release on failure. The file lock still does its own
+  job — stopping two processes double-spending the *same* product.
+- **A failed refresh serves the cache, it does not fail the call.** A cached row is served
+  with `error:null` whenever one exists, even past TTL and even when the refetch failed:
+  `stale:true`, the original `fetched_at`, and a `refresh_failed` warning. `error` is
+  non-null only when there is nothing to return. This applies to `schema`, `catalog`,
+  `silos`, `bench`, the `tests`/`ratings` slices and `recs` alike — a transient 503 must not
+  turn a perfectly good 8-day-old slice into a hard failure.
+- **The envelope must report the DATA's age, not the call's.** `fetched_at`/`from_cache`/
+  `stale` come from the cached object actually served. A 29-day-old schema reported as
+  "fetched just now, not from cache, not stale" is the quiet dishonesty the envelope exists
+  to prevent — which means a repository method returning a parsed object must also expose
+  that object's provenance.
+- **Warnings are scoped to ONE call.** The repository is a process-wide singleton, so a
+  plain instance list attaches an early call's warning to every later response and grows
+  without bound. A re-entrant `ContextVar` scope is opened by both the server wrapper (so the
+  error path keeps the warnings that explain the failure) and each service body (so a direct
+  call still collects).
+- **Filtering and sorting must not silently use gated fields** `column_options` is ~357 KB, a full review ~442 KB, a graph up to
   ~94 KB. `rt_schema` bounds by group; `rt_graph` resamples to ~200 points (`full=true` opts in);
   `rt_ratings` defaults `limit=25`. `rt_product` is the per-product drilldown and **is itself
   bounded** — a current-bench review is 402 rows / 437 KB, so default to leaf value kinds
@@ -286,9 +377,36 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   live in `silo.test_bench.tests[]` (current bench) + `silo.legacy_tests[]`. Bench→test *membership*
   comes from `test_benches[]`; *definitions* from the other two. Joining the wrong one yields an
   empty schema **silently** (`RECON.md` §11.5).
+- **IMPORTANT: `table_tool__ratings` rows carry NO `status` field** (measured 2026-09-04):
+  `{original_id, product_id, score, suitable, unblurred, usage}`. "Branch `status` before
+  `unblurred`" has nothing to branch on there, so the usage normalizer is a **separate
+  function**, not a parameterization of the test one. And usage ratings are **not** uniformly
+  gated on the open silos — mattress `Side Sleeping` came back `score: 7.7, unblurred: true`
+  anonymously, falsifying the old "assume gated there" caveat for at least that silo.
+- **IMPORTANT: `test_results` has a WIDER product population than `products_list`.** 9 TV
+  product ids returned rows while appearing in no catalog across all 18 benches, every row
+  blurred (`RECON.md` §12.2). So a row for a product the catalog does not carry is
+  **structural, not evidence the catalog is stale** — do not warn that it is. File those rows
+  under `_unassigned` rather than dropping them (a dropped row becomes a false `not_tested`
+  if the catalog later catches up) and do not report them as results.
 - **Public tests are not all `word`** — `number` publics exist (laptop/monitor `Size`, mouse `Default
   Weight`, vpn `Data Limit`). And the `kind` domain is wider than TV's: also `audio`, `3d_model`,
   `download`.
+- **IMPORTANT: the category→group hierarchy is POSITIONAL — the API states none.** All 69 of
+  TV's `category`/`group` rows carry `parent_original_id: null` (`RECON.md` §12.13); only the
+  **order** of `test_bench.tests[]` links a group to the category above it. Reading the field
+  alone makes `rt_schema` a flat scramble of 57 groups plus 12 categories reporting zero
+  leaves. Attach each top-level group to the most recent preceding `category`, and keep it in
+  a **separate derived field** — the API's own value really is null and overwriting it hides
+  that.
+- **The tested size is in the CATALOG, not in a test.** Most silos have no "Size" test;
+  `variant_skus[reviewed_sku_id].variation` is the SKU RTINGS actually reviewed
+  (`RECON.md` §12.14). Without exposing it, "which 65-inch TV is brightest?" is unanswerable —
+  and it matters for correctness, because the results describe *that* SKU.
+- **Bound the DEFAULT response, not just the maximum.** 25 products x every usage is ~15K
+  tokens of near-identical rows on a gated silo and ~26K on an open one. Default `limit` is
+  10, usages default to the headline set (not sub-usages), and `usages=[]` skips the surface.
+  Per-row honesty is never traded for size — what changes is how many rows are served.
 - **`original_id` is the stable test key; `name` is not** (ported — names repeat across sub-groups).
 - **Join test definitions from `column_options`, NOT the per-row `test:{id}` stub.** The row
   references a test by `original_id`; the schema is the dictionary, keyed by `original_id`. Note
@@ -297,8 +415,34 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   numeric-looking strings; only `number` tests are numbers. Never coerce a `word` value. A value that
   will not coerce keeps `raw_value`, sets `value:null`, and warns.
 - **Never infer a unit** — `number_display_unit` / `number_display_precision` ship in the definition.
+- **`app/side_by_side__review` is RTINGS' WORDS, and they survive the paywall.** Bare
+  `{product_id}`. On a gated silo it returns, anonymously, per-usage verdict prose, pros/cons
+  blurbs (`priority` below 0 is a con) and the score formula — the substantive answer where the
+  numbers are null. **Ignore its `test_results`**: a third row shape with no `unblurred` key,
+  so the normalizer has nothing to branch on. `user_has_access` is this path's only blur
+  signal; it *appears* to track silo enforcement rather than membership (`false` on TV, `true`
+  on mattress, both anonymous) — two data points, so a lead, not a fact.
+  **A missing score under `user_has_access:true` is NOT `not_tested`.** One review-wide
+  boolean cannot support "RTINGS did not measure this", and the row is present with prose and
+  a `suitable` flag — it is `tested_visible` with a null score. Early Access rows are
+  `review_unpublished`, never `tested_gated`.
+  **Give the verdicts their own notice key**: `data.notice` already explains why the
+  measurements are null, and overwriting it with verdicts framing erases the Early Access
+  distinction. Metering is unverified — it is the public compare tool, not the review page —
+  so a spent preview budget degrades to verdicts-only rather than an error.
+- **Do not repeat a response-constant on every row.** `rt_product` carried `product_id` and
+  `as_of` on all 243 rows: identical every time, already in `data.product` and the envelope,
+  and 13 KB of a 69 KB response. They stay per-row in `rt_ratings`, where they genuinely vary.
 - **`rt_recommendations` is the one page-extraction path** (`RECON.md` §7) — isolate it: own parser,
   own `recommendations_missing` drift alarm, never on the table/graph code path.
+- **`RTINGS_MEMBER_MODE` (default `false`) is how Phase 0 is enforced in code.** With it off,
+  `probe_tier()` returns `anonymous` unconditionally, so every tier-keyed write is `anonymous`
+  and no read demands a tier — while the whole mechanism (the filename segment, demand/write
+  rules, write-time demotion, the preview budget) is built, unit-tested and running. Enabling
+  member mode is a flag, never a migration. **Rotation write-back stays unimplemented**: a
+  rotated cookie is adopted in memory when the probe proves the response was logged in, and
+  never written to disk, because RTINGS re-mints `_rtings_session` on any anonymous GET and a
+  mistaken write-back destroys the user's credential.
 - **Phase 0 gates member-tier SELECTION and the member claim — not the cache schema, and not the
   anonymous surface** (`SPEC.md` §10). Do not implement tier-aware row selection, `member`/`free`
   classification, or rotation write-back, and do not claim member support, until a bought membership
@@ -377,6 +521,11 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `{"variables":{…}, share_token, url_path}`; **`app/search__search_results` takes a bare
   `{count, is_admin, query, type}` with NO `variables` wrapper** (`RECON.md` §1, re-confirmed
   2026-09-03). `named_version` is always `"public"`.
+- **IMPORTANT: `errors[]` beside `data` is a PARTIAL-FIELD notice, not a failure.** RTINGS
+  strips admin-only fields (`edit_url`, `methodology_url`, `review_notes_url`) and reports it
+  in `errors[]` while returning a complete payload. Raise `api_error` only when `errors[]`
+  comes back with **no `data`**. A genuinely bad request does not use `errors[]` at all — an
+  unknown silo returns `{"data": {"silo": null}}`, which is `payload_missing`.
 - **Never log or return a response body** — challenge pages carry tokens, member pages carry profile
   data. Status, `reason` and `<title>` only.
 - Cache-first. Hit the network only on a miss or an explicit `refresh`.
@@ -385,11 +534,15 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-.venv/bin/pytest tests/ -x -q          # tests
-.venv/bin/ruff check src/ tests/       # lint (fix with --fix)
+.venv/bin/pytest tests/ -q                 # offline tests (the default; no network)
+.venv/bin/pytest -m live -q                # live, anonymous, against the real API
+.venv/bin/pytest -m "live and slow" -q -s  # + the 28-silo enforcement re-scan (~4 min)
+.venv/bin/ruff check src/ tests/           # lint (fix with --fix)
+.venv/bin/rtings-mcp scan --out docs/enforcement-snapshot.json   # the release gate, by hand
 ```
 
-Run lint and tests before every commit.
+Run lint and the offline tests before every commit; run the live suite and the enforcement
+re-scan before every version bump.
 
 - **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Verified
   current 2026-09-03: `mcp>=2.1.1`, `pytest>=9.1`, `pytest-asyncio>=1.4`, `ruff>=0.16`. Re-check at

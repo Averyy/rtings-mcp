@@ -3,7 +3,7 @@
   "scanned_at": "2026-09-03",
   "method": {
     "source": "table_tool__column_options + table_tool__test_results, anonymous, no cookie",
-    "scope": "current bench per silo (test_benches[0]), first 40 number/word leaf tests",
+    "scope": "current bench per silo (newest rendered bench with a published schema), first 40 number/word leaf tests",
     "rule": "blurred <=> product.published==false OR (test.insider_only AND silo enforces)"
   },
   "totals": {
