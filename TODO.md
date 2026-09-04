@@ -90,6 +90,16 @@ session, so a missed item costs another membership month. Highlights:
 ## Product
 
 - [ ] Flip the repository public.
+- [ ] **Null fields survive the output model, so `_strip_response_constants` saves less than
+      it should.** Observed in live MCP output: the helper pops `product_id`/`as_of` from
+      each `rt_product` row, but `ValueOut` declares them as optional fields, so Pydantic
+      re-emits them as `null` — the keys come back, only the values are gone. The same is
+      true of ~10 other optional fields per row. A selective `exclude_none` would cut this
+      substantially, but **`value` and `gated` must always be present even when null** —
+      that is the safety property — so it cannot be a blanket setting.
+- [ ] **Nest `data.results` by hierarchy** (SPEC §7 says "grouped by hierarchy"; the code
+      returns a flat list repeating `hierarchy` on every row, ~23% of a 56 KB response).
+      Recommended by review, deliberately deferred as its own change.
 - [ ] Confirm `rtings-mcp` is free on PyPI before publishing.
 - [ ] Decide whether `rt_ratings` should default to projecting the category's public tests, so a
       bare `rt_ratings("tv")` returns something numeric rather than catalog-plus-gated-scores.

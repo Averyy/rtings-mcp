@@ -63,7 +63,19 @@ uv venv && uv pip install -e .
 Register it with your MCP client by absolute path, e.g. for Claude Code:
 
 ```bash
-claude mcp add rtings -- uv --directory /absolute/path/to/rtings-mcp run rtings-mcp
+claude mcp add rtings --scope user -- uv --directory /absolute/path/to/rtings-mcp run rtings-mcp
+```
+
+`--scope user` makes it available in every project; drop it to scope the server to the
+current directory only.
+
+**Picking up the new server** — in Claude Code, `/reload-plugins` attaches it to the running
+session; otherwise it appears on the next start. (`/reload-plugins` reports "0 plugin MCP
+servers" either way: that counts servers bundled *inside plugins*, which is a different
+thing from a user- or project-config server like this one.) Verify with:
+
+```bash
+claude mcp get rtings      # expect: Status: ✔ Connected
 ```
 
 No configuration is needed to start: anonymous is the default and never an error.
