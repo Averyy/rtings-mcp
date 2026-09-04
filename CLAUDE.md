@@ -349,12 +349,25 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   without bound. A re-entrant `ContextVar` scope is opened by both the server wrapper (so the
   error path keeps the warnings that explain the failure) and each service body (so a direct
   call still collects).
-- **Filtering and sorting must not silently use gated fields** `column_options` is ~357 KB, a full review ~442 KB, a graph up to
-  ~94 KB. `rt_schema` bounds by group; `rt_graph` resamples to ~200 points (`full=true` opts in);
-  `rt_ratings` defaults `limit=25`. `rt_product` is the per-product drilldown and **is itself
-  bounded** — a current-bench review is 402 rows / 437 KB, so default to leaf value kinds
-  (`number`/`word`) grouped by hierarchy, with prose (`linked_description`) and media opt-in.
-  `group`/`category` rows are **structure, not results** — they never get a `status` or a value.
+- **Filtering and sorting must not silently use gated fields.** Anonymously every gated
+  value is `null`, so a filter on one matches **zero** products — and "0 results" reads as
+  *no product qualifies* rather than *you cannot see it*. Check the **served rows**, never
+  the silo: a field that resolves to `tested_gated` for the population is **not applied**,
+  and the envelope names it. The default sort is a public catalog field, never a gated score.
+- **Never return the raw payload.** `column_options` is ~357 KB, a full review ~442 KB, a
+  graph up to ~94 KB. `rt_schema` bounds by group; `rt_graph` resamples to ~200 points
+  (`full=true` opts in); `rt_ratings` defaults `limit=10` per group. `rt_product` is the
+  per-product drilldown and **is itself bounded** — a current-bench review is 402 rows /
+  437 KB, so default to leaf value kinds (`number`/`word`) grouped by hierarchy, with prose
+  (`linked_description`), media and verdicts opt-in. `group`/`category` rows are **structure,
+  not results** — they never get a `status` or a value.
+- **IMPORTANT: measure the payload ON THE WIRE, not the dict you built.** The services return
+  lean dicts, but the output model re-adds every declared field as `null` when it serializes —
+  one `rt_product` response was 55,857 bytes of content and **113,406** delivered, and a
+  single gated row 424 bytes of which 256 were nulls. Row models drop their null optionals;
+  **`value`, `gated` and `status` are exempt** because "a gated value is null, never absent"
+  is the whole promise, and envelope models are exempt entirely so `out["error"] is None`
+  cannot become a `KeyError`.
 - **Resample by SELECTING shipped points, never by interpolating.** Decimation or LTTB over the
   `(x,y)` pairs as shipped; never average, smooth, or synthesize a point. An interpolated value is a
   number RTINGS did not measure, which is the derivation prohibition by another name. For the same
