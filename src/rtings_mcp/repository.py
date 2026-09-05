@@ -18,11 +18,13 @@ import asyncio
 import contextlib
 import contextvars
 import hashlib
+import json
 import logging
 import re
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from html import unescape
 from typing import Any
 
 from . import api, errors
@@ -58,8 +60,10 @@ from .htmlprobe import (
     extract_data_props,
     extract_globals,
     extract_silos,
+    page_title,
 )
 from .http import SingleFlight, Transport
+from .normalize import strip_html
 from .schema import SiloSchema, parse_column_options, schema_from_cacheable, schema_to_cacheable
 
 log = logging.getLogger(__name__)
@@ -811,8 +815,9 @@ class Repository:
                 product_id = str(row.get("product_id") or "")
                 bench_id = product_bench.get(product_id)
                 if bench_id is None:
-                    # Evidence the catalog is behind. Never silently dropped — a dropped
-                    # row becomes a false `not_tested` later.
+                    # Structural, not evidence the catalog is behind (`RECON.md` §12.2 —
+                    # see the warning below). Never silently dropped: a dropped row
+                    # becomes a false `not_tested` later.
                     unassigned.setdefault(original_id, []).append(row)
                     continue
                 buckets.setdefault((bench_id, original_id), []).append(row)
@@ -829,8 +834,9 @@ class Repository:
                 }
                 self.warn(
                     f"{len(orphans)} product(s) returned {directory} rows but appear in no "
-                    f"{silo} catalog generation for the requested benches; their rows are "
-                    "retained under _unassigned and are not reported as results"
+                    f"{silo} catalog generation for the requested benches; their values are "
+                    "real and ARE returned, in a separate `coverage: uncatalogued` group "
+                    "without a name, brand or bench"
                 )
                 for original_id, rows_for_id in unassigned.items():
                     envelope = Envelope(
@@ -1507,11 +1513,16 @@ class Repository:
                 if again is not None and not refresh and not again.is_stale(TTL_RECS):
                     return again
                 result = await self.transport.api_get_html(f"/{key}/reviews/best/{slug}")
+                # Two templates are legitimate (see `_extract_recommendation_static`), so
+                # the alarm fires only when NEITHER matches — that, not "the props are
+                # missing", is the drift signal now.
                 payload = _extract_recommendation(result.text)
+                if payload is None:
+                    payload = _extract_recommendation_static(result.text)
                 if payload is None:
                     raise RtingsError(
                         errors.RECOMMENDATIONS_MISSING,
-                        f"no recommendation props on /{key}/reviews/best/{slug}",
+                        f"neither best-of template matched /{key}/reviews/best/{slug}",
                     )
                 envelope = Envelope(
                     fetched_at=time.time(),
@@ -1596,6 +1607,239 @@ def _extract_recommendation(html: str) -> dict[str, Any] | None:
             "recommendation_mentions": recommendation.get("recommendation_mentions") or [],
         }
     return None
+
+
+# ---------------------------------------------------------------------------------
+# The second best-of template (server-rendered)
+# ---------------------------------------------------------------------------------
+#
+# RTINGS is migrating best-of pages off the monolithic `RecommendationVuePage` (one big
+# `data-props` blob) onto a server-rendered template whose only Vue parts are small islands
+# — `RecommendationPagePrices`, `BookmarkControls`, `DistributionTooltip`. Measured
+# 2026-09-05: mattress and running-shoes have moved, the other 12 silos sampled have not,
+# and it does not track silo age (refrigerator is the newest silo and still on the old one).
+# So this is a rollout in progress and BOTH shapes are legitimate; `recommendations_missing`
+# now means neither matched, which is the real drift signal.
+#
+# The page's own bundle is `recommendation-page-static-*.js`, 3 KB with no `/api/v2/safe/`
+# reference at all, so there is no API behind this template — extraction is the only route.
+
+#: The pick container. Matched by class TOKEN with attributes allowed either side, so an
+#: added class or attribute does not silently drop every pick on the page.
+_PICK_RE = re.compile(
+    r'<li[^>]*\sclass="[^"]*(?<![\w-])recommendation_vue_page-pr(?![\w-])[^"]*"[^>]*>'
+)
+
+
+def _tag_inner(text: str, start: int, tag: str) -> str:
+    """Inner HTML of the ``<tag>`` whose ``<`` sits at ``start``, counting nested ``tag``s.
+
+    A non-greedy regex stops at the first ``</div>``, which on these blocks is the end of a
+    nested tooltip rather than the end of the section — it truncated every description at
+    the first inline element.
+    """
+    open_end = text.find(">", start)
+    if open_end == -1:
+        return ""
+    opener, closer = f"<{tag}", f"</{tag}>"
+    depth = 1
+    cursor = open_end + 1
+    while depth:
+        nxt_open = text.find(opener, cursor)
+        nxt_close = text.find(closer, cursor)
+        if nxt_close == -1:
+            return text[open_end + 1 :]
+        if nxt_open != -1 and nxt_open < nxt_close:
+            depth += 1
+            cursor = nxt_open + len(opener)
+            continue
+        depth -= 1
+        if depth == 0:
+            return text[open_end + 1 : nxt_close]
+        cursor = nxt_close + len(closer)
+    return ""
+
+
+def _block(text: str, cls: str) -> str | None:
+    """The element carrying ``cls`` as one of its classes, by class TOKEN not exact match.
+
+    RTINGS compounds these — the page intro is ``class="recommendation_vue_page-intro
+    e-rich_content"`` and the update stamp is a ``<span>``, not a ``<div>`` — so an exact
+    ``class="X"`` div-only match silently found neither.
+    """
+    match = re.search(
+        r'<(div|span)[^>]*\sclass="[^"]*(?<![\w-])' + re.escape(cls) + r'(?![\w-])[^"]*"',
+        text,
+    )
+    return _tag_inner(text, match.start(), match.group(1)) if match else None
+
+
+def _prop_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _text(value: str | None) -> str | None:
+    cleaned = strip_html(value)
+    return cleaned or None
+
+
+def _props_in(text: str, component: str) -> dict[str, Any] | None:
+    # Attributes may sit between the two; requiring them adjacent made this depend on
+    # RTINGS' attribute ORDER, which nothing guarantees.
+    for match in re.finditer(
+        r'data-vue="' + re.escape(component) + r'"[^>]*?\sdata-props="([^"]*)"', text
+    ):
+        try:
+            parsed = json.loads(unescape(match.group(1)))
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _static_featured(block: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The featured strip beside a pick, split into test rows and usage ratings.
+
+    The tooltip beside each item carries ``target_label`` and ``target_type``, which is how
+    a usage is told from a test. Its ``target_id`` is deliberately NOT used as an
+    ``original_id``: measured 2026-09-05, "Side Sleeping" is ``38309`` here and ``36553`` in
+    the schema, so emitting it would be a confidently wrong join key. A null id and a real
+    name is the honest pair.
+    """
+    tests: list[dict[str, Any]] = []
+    ratings: list[dict[str, Any]] = []
+    for match in re.finditer(r'<div class="recommendation_featured_list-item"[ >]', block):
+        item = _tag_inner(block, match.start(), "div")
+        # The rendered label carries its own punctuation ("Bed-In-A-Box:&nbsp;"); the
+        # tooltip's `target_label` and the props template both give the bare name, so trim
+        # it rather than ship one field in two shapes.
+        name = _text(_block(item, "recommendation_featured_list-item-name"))
+        if name:
+            name = name.rstrip(":").strip() or None
+        display = _text(_block(item, "recommendation_featured_list-item-value"))
+        score_match = re.search(r'class="score_box-value">([^<]*)<', item)
+        score = None
+        if score_match:
+            try:
+                score = float(score_match.group(1).strip())
+            except ValueError:
+                score = None
+        tooltip = _props_in(item, "DistributionTooltip") or {}
+        label = _prop_str(tooltip.get("target_label")) or name
+        if not label:
+            continue
+        # Nothing rendered at all: say so rather than inventing a paywall. `_featured_results`
+        # maps an unrecognised status to `unknown_row_status`, which is exactly right here.
+        seen = score is not None or display is not None
+        if _prop_str(tooltip.get("target_type")) == "usage":
+            ratings.append(
+                {
+                    "usage": {"original_id": None, "name": label},
+                    "unblurred": seen,
+                    "score": score,
+                }
+            )
+            continue
+        tests.append(
+            {
+                "test": {"name": label, "kind": None, "insider_only": False},
+                "status": "tested" if seen else "unknown",
+                "unblurred": seen,
+                "rendered_value": display,
+                "score": score,
+            }
+        )
+    return tests, ratings
+
+
+def _extract_recommendation_static(html: str) -> dict[str, Any] | None:
+    """Parse the server-rendered best-of template into the props template's shape.
+
+    Emitting the same payload keeps every consumer — the pick mapper, the featured-row tier
+    derivation, the cached envelope — unchanged, so the two templates differ only here.
+    """
+    starts = [m.end() for m in _PICK_RE.finditer(html)]
+    if not starts:
+        return None
+
+    picks: list[dict[str, Any]] = []
+    # The picks sit in one <ol>, so the last one ends there rather than at end-of-document.
+    # Unbounded, it would absorb any later section that reuses these classes — a "Notable
+    # Mentions" block or a comparison table would silently become the last pick's featured
+    # strip. (Verified 2026-09-05 that nothing does so today; <li> is frequently unclosed on
+    # these pages, 69 opens to 26 closes, so counting </li> is not an option.)
+    closing = html.find("</ol>", starts[-1])
+    bounds = [*starts[1:], closing if closing != -1 else len(html)]
+    for index, start in enumerate(starts):
+        block = html[start : bounds[index]]
+        prices = _props_in(block, "RecommendationPagePrices") or {}
+        bookmark = _props_in(block, "BookmarkControls") or {}
+        product_id = _prop_str(prices.get("product_id")) or _prop_str(bookmark.get("product_id"))
+        # Class TOKEN with attributes in any order: the name and review URL are the two
+        # fields a caller reads first, and pinning them to `class="… t-h3" href=…` in that
+        # exact order would blank both the moment RTINGS reorders an attribute.
+        link = re.search(
+            r'<a([^>]*\sclass="[^"]*(?<![\w-])recommendation_vue_page-pr-name(?![\w-])'
+            r'[^"]*"[^>]*)>(.*?)</a>',
+            block,
+            re.S,
+        )
+        href = re.search(r'\shref="([^"]+)"', link.group(1)) if link else None
+        heading = re.search(
+            r'<h2[^>]*class="[^"]*e-page_section_title"[^>]*>(.*?)</h2>', block, re.S
+        )
+        description = _block(block, "recommendation_vue_page-pr-description")
+        # The props template's `description` is bare prose; this one wraps it in a
+        # rich-content div. Unwrap so a caller sees one shape, not two.
+        inner = _block(description or "", "e-rich_content")
+        if inner is not None:
+            description = inner
+        tests, ratings = _static_featured(block)
+        if product_id is None and link is None:
+            continue
+        picks.append(
+            {
+                "title": _text(heading.group(1)) if heading else None,
+                "subtitle": None,
+                "description": description.strip() if description else None,
+                "product_id": product_id,
+                "product": {
+                    "id": product_id,
+                    "fullname": _text(link.group(2)) if link else None,
+                    "page": {"url": href.group(1) if href else None},
+                },
+                "featured_test_results": tests,
+                "ratings": ratings,
+            }
+        )
+
+    if not picks:
+        return None
+
+    heading = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
+    canonical = re.search(r'<link rel="canonical" href="https://www\.rtings\.com([^"]+)"', html)
+    # The stamp renders as "Updated Aug 26, 2026 at 12:45 pm"; the props template supplies a
+    # bare timestamp, so drop the label rather than ship two shapes for one field.
+    updated = _text(_block(html, "recommendation_vue_page-hero-update"))
+    if updated:
+        updated = re.sub(r"^updated\s*", "", updated, flags=re.I).strip() or None
+    intro_html = _block(html[: starts[0]], "recommendation_vue_page-intro")
+    intro = (intro_html or "").strip() or None
+
+    return {
+        "title": _text(heading.group(1)) if heading else page_title(html),
+        "url": canonical.group(1) if canonical else None,
+        "published_at": None,
+        "updated_at": updated,
+        "introduction": intro,
+        "conclusion": None,
+        "product_recommendations": picks,
+        "recommendation_mentions": [],
+    }
 
 
 def _product_bench(product: dict[str, Any]) -> str | None:

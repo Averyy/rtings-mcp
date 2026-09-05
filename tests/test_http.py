@@ -231,3 +231,21 @@ async def test_telemetry_never_records_a_body_or_a_cookie(transport, tmp_path):
         assert "SECRETVALUE123" not in written
         assert "MEMBER-PROFILE-DATA" not in written
         assert "set-cookie" not in written.lower()
+
+
+async def test_the_cdn_cap_clears_the_largest_curve_rtings_actually_publishes():
+    """256 KB was sized from TV, whose largest curve is ~74 KB — and it silently turned real
+    published curves into `fetch_failed: response exceeded the size cap`. Measured live
+    2026-09-05: speaker "Raw Frequency Response Graph" 361 KB, soundbar "H Frequency
+    Response" 335 KB, headphones "Harmonics Levels" 190 KB.
+
+    This asserts headroom over the measured worst case so the constant cannot be tuned back
+    down without the number that justifies it. The reply is resampled to ~200 points
+    regardless, so a bigger cap bounds the fetch, not what the caller receives.
+    """
+    from rtings_mcp.http import CDN_MAX_RESPONSE_BYTES
+
+    largest_observed = 361 * 1024
+    assert largest_observed < CDN_MAX_RESPONSE_BYTES, (
+        "a curve RTINGS publishes must not be unfetchable; re-measure before lowering this"
+    )

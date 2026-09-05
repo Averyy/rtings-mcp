@@ -88,7 +88,13 @@ def _count_request() -> None:
 #: bounds the response side. ``ResponseTooLarge`` is an exception, not a status — it maps
 #: to ``fetch_failed`` and the caller shrinks the request.
 API_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-CDN_MAX_RESPONSE_BYTES = 256 * 1024
+#: 256 KB was derived from TV, whose largest curve is ~74 KB. Audio curves are far wider —
+#: measured 2026-09-05: speaker "Raw Frequency Response Graph" 361 KB, soundbar
+#: "H Frequency Response" 335 KB, headphones "Harmonics Levels" 190 KB — so the cap turned a
+#: perfectly good published curve into `fetch_failed: response exceeded the size cap`.
+#: 1 MB keeps a real bound with ~3x headroom over the largest observed; the served response
+#: is resampled to ~200 points regardless, so this bounds the fetch, not the reply.
+CDN_MAX_RESPONSE_BYTES = 1024 * 1024
 
 API_TOTAL_TIMEOUT_S = 45.0
 API_ATTEMPT_TIMEOUT_S = 20.0

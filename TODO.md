@@ -152,6 +152,9 @@ session, so a missed item costs another membership month. Highlights:
 ## Resolved before the build (in `RECON.md` §11)
 
 - [x] **q10 — there is NO recommendations API.** Page extraction is the only path. (§11.7)
+      Re-confirmed 2026-09-05 on RTINGS' *new* server-rendered best-of template: its entire
+      bundle is 3,103 bytes with zero `/api/v2/safe/` references, so the picks are not fetched
+      client-side there either. Two templates now, still no API. (§12.17)
 - [x] **`status` has a third value, `untested`** (154 rows). (§11.3)
 - [x] **`status:"na"` IS frequently `unblurred:true`** — 1,025 of 2,186 (47%). (§11.4)
 - [x] **`last_updated_at` is a bulk-job field, NOT a retest signal.** (§11.6)

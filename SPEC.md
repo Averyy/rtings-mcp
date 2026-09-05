@@ -714,11 +714,25 @@ formula composing each usage score. On the 12 gated silos this is the substantiv
 
 ### `rt_recommendations` — the isolated second envelope
 
-Sourced from `RecommendationVuePage` page props, **not** an API query (`RECON.md` §7) — the one
-page-extraction path, isolated exactly as CR isolated `cr_reliability`: its own parser, its own drift
-alarm (`recommendations_missing`, distinct from the API `payload_missing`), and it never touches the
+Page-extracted, **not** an API query (`RECON.md` §7) — the one page-extraction path, isolated
+exactly as CR isolated `cr_reliability`: its own parser, its own drift alarm
+(`recommendations_missing`, distinct from the API `payload_missing`), and it never touches the
 table/graph code path. If an API query is later found (`RECON.md` §10 q10), it moves onto it with no
 contract change.
+
+**There are TWO page templates and both are legitimate** (measured 2026-09-05, `RECON.md` §12.17).
+RTINGS is migrating best-of pages off the monolithic `RecommendationVuePage` — one `data-props` blob
+holding `page_data.page.recommendation.product_recommendations[]` — onto a **server-rendered**
+template whose only Vue parts are small islands. mattress and running-shoes have moved; the other 12
+silos sampled have not, and it does not track silo age, so more will migrate silently. Supporting
+only the props shape made every one of mattress's 20 lists fail: the tool advertised lists it could
+not fetch.
+
+So the parser tries props, then static, and both emit the **same payload shape**, which is what keeps
+the pick mapper, the featured-row tier derivation and the cached envelope identical across templates.
+`recommendations_missing` now means **neither** matched — that, not "the props are missing", is the
+drift signal. The static template carries no API either (its whole bundle is ~3 KB with zero
+`/api/v2/safe/` references), so extraction remains the only route on both.
 
 **A silo has many best-of lists, and the URL slug is not derivable.** `/tv/reviews/best/tvs` does not
 follow from `url_part: "tv"`, and a silo carries dozens of lists (best gaming TVs, best 65-inch, …).
@@ -765,7 +779,7 @@ must distinguish "RTINGS has no data" from "the fetch failed". `error` is null o
 | `unknown_test` / `invalid_bench` | `original_id` / bench id not in the silo schema | No |
 | `payload_missing` | HTTP 200 but the expected `data.<key>` is absent/unparseable | No — schema drift |
 | `api_error` | the response carries `errors[]` **and no `data`** | No — schema drift |
-| `recommendations_missing` | `RecommendationVuePage` props absent/unparseable | No — schema drift (isolated, §above) |
+| `recommendations_missing` | **neither** best-of template parsed (props *and* server-rendered) | No — schema drift (isolated, §above) |
 | `no_graph` | test has no curve (`kind != "graph"`) | No — structural, not an error state |
 | `graph_not_available` | `kind == "graph"` but this product has no `graph_data_url` (§above) | No — structural |
 | `unknown_row_status` | a row `status` outside `{tested, na}` (§5) | No — surfaced as a warning, never coerced |
@@ -859,8 +873,11 @@ wider one — and the catalog is the join key that assigns `test_results` rows (
 id) to a bench. A multi-bench response is partitioned against the catalog generation
 it was fetched with. A row whose `product_id` is in **no** generation has no bench to file under, so
 it goes to `tests/_unassigned/{original_id}.json` (bench-less by construction) with a warning, and is
-**never silently dropped** — a dropped row becomes a false `not_tested` later. An unassigned row *is*
-evidence the catalog is behind, so it marks that silo's catalog stale; likewise a `coverage_stale`
+**never silently dropped** — a dropped row becomes a false `not_tested` later. **An unassigned row is
+a structural property of the API, NOT evidence the catalog is behind** (corrected 2026-09-03,
+`RECON.md` §12.2: 9 TV product ids returned rows while appearing in no catalog across all 18 benches,
+every row blurred), so it must not mark that silo's catalog stale. The rows are served in their own
+`coverage: uncatalogued` group, carrying real values but no name, brand or bench. A `coverage_stale`
 miss refreshes the **catalog first**, or the refetched slice is filed against the same stale
 generation and the miss repeats forever.
 
@@ -1128,7 +1145,8 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   consumed previews**, the exact harm the rule exists to prevent. The control has to be a session
   property.
 - **Two sessions, and the API session sets `max_retries=0`.** `www.rtings.com` carries the credential;
-  `i.rtings.com` is an uncredentialed static-asset CDN (2–94 KB curve JSON, `RECON.md` §4). One
+  `i.rtings.com` is an uncredentialed static-asset CDN (2–361 KB curve JSON — TV's ~74 KB is the
+  small end, speaker's "Raw Frequency Response Graph" the large, `RECON.md` §4). One
   session would force a floor meant for the origin onto static files **and** offer `_rtings_session`
   (`Domain=.rtings.com`) to the CDN for nothing (confirmed: `add_cookie` with an explicit `Domain`
   records `host_only=False`, `wafer/_base.py:2542`).
@@ -1144,7 +1162,8 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
     this session. `rate_limit=0.0`, own bucket (burst 10, 0.25 s), **`max_retries=0`** — `1` would
     reintroduce what the API session sets `0` to avoid (wafer retrying a 5xx inside one of our tokens
     without consulting `Retry-After`); curves are idempotent, so a retry is ours to make with a fresh
-    token, `max_response_size ≈ 256 KB`.
+    token, `max_response_size ≈ 1 MB` (**not 256 KB**: that was sized from TV's ~74 KB curves,
+    and speaker's 361 KB "Raw Frequency Response Graph" then came back `fetch_failed`).
   - **`max_response_size` on the API session is a real number, not "set it".** `test_results` "scales
     with rows" (`RECON.md` §1), so cap `original_ids[]` per request and set the ceiling to ~8 MB.
     `ResponseTooLarge` is an exception, not a status — map it to `fetch_failed` and shrink the

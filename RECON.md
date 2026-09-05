@@ -302,7 +302,9 @@ entry is keyed by `(product_id, test_original_id)`; a non-`graph` test has no gr
 
 **Curves are public; whether they differ for members is unmeasured** (no reason they would — they
 carry no `unblurred` flag — but it is not confirmed, §10). Output is large (79 KB ≈ 25k tokens; FR
-94 KB), so `rt_graph` resamples (`SPEC.md` §7). This is the seam AutoEq and others have used for
+94 KB on TV — but **361 KB on speaker and 335 KB on soundbar**, measured 2026-09-05; audio
+curves are the large end and the CDN response cap must clear them), so `rt_graph` resamples
+(`SPEC.md` §7). This is the seam AutoEq and others have used for
 years (§9).
 
 **Re-confirmed 2026-09-03, and the asymmetry is explicit in one payload.** The review body carries
@@ -724,6 +726,11 @@ RTINGS analogue to CR's "anonymous is a real tier" — but not the numbers.
 in the §1 catalog. No recommendations API query was observed. So `rt_recommendations` is a
 **page-extraction** path — the one exception to "API, not pages" — and `SPEC.md` isolates it with its
 own parser and drift alarm. Whether an API query exists is unknown (§10 q10).
+
+**IMPORTANT: there are now TWO best-of templates (measured 2026-09-05, §12.17).** The above
+describes the `RecommendationVuePage` one. mattress and running-shoes have moved to a
+**server-rendered** template with no `page_data` anywhere on the page, and the old parser
+returned `recommendations_missing` for every one of their lists.
 
 ---
 
@@ -1420,3 +1427,61 @@ Also present and unused: `app/product_vue_page__compared_texts`, `app/side_by_si
 (a member feature). Names matching `x__y` in the bundles are often **field** names
 (`score_set__original_id`, `test__original_id`, `product_page__early_access`), not queries —
 do not probe them blindly.
+
+---
+
+### 12.17 There are TWO best-of templates, and the migration is in progress
+
+Measured 2026-09-05, anonymously.
+
+`rt_recommendations` failed on **every** mattress list — 20 lists discovered, all raising
+`recommendations_missing`. The page was fine: HTTP 200, 307 KB, titled "The 5 Best California King
+Mattresses of 2026", picks and prose all present.
+
+**Cause: RTINGS is migrating best-of pages onto a second template.**
+
+| | old | new |
+| --- | --- | --- |
+| marker | `data-vue="RecommendationVuePage"` | no `RecommendationVuePage` |
+| picks | `data-props` → `page_data.page.recommendation.product_recommendations[]` | server-rendered HTML |
+| Vue parts | one monolithic component | islands: `RecommendationPagePrices`, `BookmarkControls`, `DistributionTooltip` |
+| bundle | `recommendation-page-*.js` | `recommendation-page-**static**-*.js` |
+
+**Scope (14 silos sampled, one best-of list each):** only **mattress** and **running-shoes** are on
+the new template. tv, headphones, monitor, soundbar, camera, laptop, blender, refrigerator,
+air-conditioner, vpn, air-purifier and toaster-oven are still on the old one. All four mattress
+lists checked (`mattress`, `king`, `queen`, `california-king`) are migrated, so it is per-silo, not
+per-list.
+
+**It does NOT track silo age** — refrigerator is the newest silo in the catalog (first published
+2025-10) and still renders the old template, while mattress (2025-07) has moved. So this is a
+rollout, and **more silos will migrate silently**. Same shape as the paywall map: nothing announces
+it, and the only signal is the served page changing.
+
+**Still no API (re-confirms §11.7).** The new page's only bundle is
+`recommendation-page-static-DNkErhA8.js`, **3,103 bytes, with zero `/api/v2/safe/` references**. The
+picks are not fetched client-side. Page extraction remains the only route.
+
+**The new template's anchors** (5 of each for 5 picks, verified on both migrated silos):
+
+- pick container `<li class="recommendation_vue_page-pr">`; title in `<h2 class="… e-page_section_title">`
+- product name + review URL in `<a class="recommendation_vue_page-pr-name t-h3" href=…>`
+- **ranked `product_id` from the island props**: `RecommendationPagePrices` carries
+  `{"product_id": "105249", "sku_ids": [...], "index": 0}` — `index` is the rank
+- reasoning in `recommendation_vue_page-pr-description` (wrapped in an `e-rich_content` div, which
+  the old template's `description` is not — unwrap it or the two shapes differ)
+- page intro in `recommendation_vue_page-intro e-rich_content`; update stamp in a
+  **`<span>`** `recommendation_vue_page-hero-update`, rendered as "Updated Aug 26, 2026 at 12:45 pm"
+- featured strip: `recommendation_featured_list-item`, with `-item-name`, then EITHER a
+  `score_box-value` (a 0–10 score) OR an `-item-value` (a display string)
+
+**IMPORTANT: the featured tooltip's `target_id` is NOT the schema `original_id`.** Its
+`DistributionTooltip` props give `target_label` and `target_type` (`usage` vs `test`, the only way to
+tell them apart here), but for "Side Sleeping" `target_id` is **38309** while the schema's usage id is
+**36553**. Emitting it as an `original_id` would be a confidently wrong join key; a null id with a
+real name is the honest pair.
+
+Both migrated silos are **open** silos, so no blurred sample of this template was observed and its
+blur marker (if any) is unknown. A featured item that renders neither a score nor a value is
+therefore `unknown_row_status`, never `tested_gated` — claiming a paywall nobody measured is the
+project's core failure mode.

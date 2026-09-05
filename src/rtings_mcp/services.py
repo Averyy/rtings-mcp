@@ -227,7 +227,7 @@ async def rt_schema(
             ),
         }
     else:
-        group_id = validate_id(group, what="group original_id")
+        group_id = _group_name_or_id(schema, group)
         definition = schema.test(group_id)
         if definition is None:
             raise RtingsError(errors.UNKNOWN_TEST, f"no test/group with original_id {group_id}")
@@ -527,7 +527,9 @@ async def rt_ratings(
             for generation in generations.values()
             for product_id in generation.product_ids
         }
-        orphan_group = _uncatalogued_group(repo, schema, test_ids, catalogued, limit)
+        orphan_group = _uncatalogued_group(
+            repo, schema, test_ids, catalogued, limit, offset
+        )
         if orphan_group is not None:
             groups.append(orphan_group)
     window = [row for group in groups for row in group["products"]]
@@ -620,6 +622,27 @@ def _name_or_id(schema: SiloSchema, raw: Any, *, kind: str) -> str:
     if resolved is None or resolved[0] != kind:
         raise RtingsError(errors.UNKNOWN_TEST, f"no {kind} named {text!r}")
     return resolved[1]
+
+
+def _group_name_or_id(schema: SiloSchema, raw: Any) -> str:
+    """Accept a group's name wherever its ``original_id`` is accepted.
+
+    ``rt_schema`` prints each group's ``name`` beside its ``original_id``, so the natural
+    next call passes the name straight back — and ``group=`` rejected it, which made the
+    tool's own output unusable as its own input. That is the gap ``_name_or_id`` closed for
+    ``tests=``, in the one place a caller is most likely to hit it. A structure row wins a
+    name tie: ``group`` addresses a section, so a leaf test sharing the name is never what
+    was meant.
+    """
+    text = str(raw).strip()
+    if text.isdigit():
+        return validate_id(text, what="group original_id")
+    lowered = text.lower()
+    for want_structure in (True, False):
+        for test in schema.tests.values():
+            if test.name.lower() == lowered and test.is_structure is want_structure:
+                return test.original_id
+    raise RtingsError(errors.UNKNOWN_TEST, f"no group named {text!r}")
 
 
 def _fields_to_fetch(
@@ -831,12 +854,18 @@ def _uncatalogued_group(
     test_ids: list[str],
     catalogued: set[str],
     limit: int,
+    offset: int,
 ) -> dict[str, Any] | None:
     """Products with results but no catalog row, reported rather than dropped.
 
     They carry no name, brand, release date or bench — the catalog is where those live — so
     they are a separate group that says so, not silently mixed in with products that have
     them. Without this a third of the mattress silo is unreachable and reads as untested.
+
+    It takes ``offset`` for the same reason it takes ``limit``: the window is per group, and
+    a group that honours ``limit`` but ignores ``offset`` re-serves its first page forever
+    while ``matched`` advertises the rest. That reinstates the unreachability this group
+    exists to fix — 41 of mattress's products, silently — so paging is not optional here.
     """
     rows = repo.uncatalogued_rows("tests", test_ids)
     products = []
@@ -869,7 +898,7 @@ def _uncatalogued_group(
         "is_recent_set": False,
         "coverage": "uncatalogued",
         "matched": len(products),
-        "products": products[:limit],
+        "products": products[offset : offset + limit],
         "notice": (
             f"{len(products)} product(s) returned measurements but appear in no RTINGS "
             "catalog listing, so their name, brand and bench are unknown here. Their values "
@@ -952,9 +981,16 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
             return "usage", text
         return None
     lowered = text.lower()
-    for test in schema.tests.values():
-        if test.name.lower() == lowered:
-            return "test", test.original_id
+    # A LEAF wins a name tie with a section. headphones publishes both a `Sound Profile`
+    # group and a `Sound Profile` graph test, and plain dict order decided which one a
+    # caller got — so `rt_graph(test="Sound Profile")` failed with "kind='group'; only
+    # kind=graph tests have a curve" on a name the schema publishes for a real curve.
+    # `filters` and `sort` hit the same tie. (`_group_name_or_id` prefers the other way
+    # round, deliberately: `group=` addresses a section.)
+    for want_structure in (False, True):
+        for test in schema.tests.values():
+            if test.name.lower() == lowered and test.is_structure is want_structure:
+                return "test", test.original_id
     for usage in schema.usages.values():
         if usage.name.lower() == lowered:
             return "usage", usage.original_id
@@ -1016,11 +1052,40 @@ def _apply_filters(
             continue
         if lowered in {"variant", "size", "tested_variant"}:
             wanted_variant = _normalize_variant(expression)
-            out = [
+            kept = [
                 r
                 for r in out
                 if _normalize_variant(r.get("tested_variant")) == wanted_variant
             ]
+            # RTINGS reviews ONE sku per product, so `tested_variant` is a single size —
+            # on mattresses almost always the Queen. `{"variant": "California King"}` then
+            # matched nothing while most rows are *sold* in that size, and a bare 0 reads
+            # as "RTINGS has tested no California King mattress". That is the same failure
+            # as an unapplied gated filter: the count is honest, the silence is not.
+            if not kept and out:
+                offered = [
+                    r
+                    for r in out
+                    if any(
+                        _normalize_variant(v) == wanted_variant
+                        for v in (r.get("variants") or [])
+                    )
+                ]
+                if offered:
+                    tested = sorted(
+                        {
+                            str(r.get("tested_variant"))
+                            for r in offered
+                            if r.get("tested_variant")
+                        }
+                    )
+                    warnings.append(
+                        f"filter_unavailable: no product was TESTED in {expression!r}, but "
+                        f"{len(offered)} product(s) are sold in it. RTINGS reviews one size "
+                        f"per product and tested {', '.join(tested[:4])} here, so filter on "
+                        "the tested size and read `variants` for what each is sold in."
+                    )
+            out = kept
             continue
 
         resolved = _field_lookup(schema, key)
@@ -1305,7 +1370,7 @@ async def rt_product(
     values: list[dict[str, Any]] = []
     commentary: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    group_filter = validate_id(group, what="group original_id") if group else None
+    group_filter = _group_name_or_id(schema, group) if group else None
 
     for row in rows:
         stub = row.get("test") if isinstance(row.get("test"), dict) else {}
@@ -1349,7 +1414,16 @@ async def rt_product(
         # so with include_prose it is collected separately rather than discarded — as
         # commentary, never as a result with a status.
         if definition.is_structure:
-            if include_prose and row.get("linked_description"):
+            # `group` bounds the response, and prose is the biggest thing in it. The scope
+            # test sat below this branch, so a bounded request still returned every group's
+            # commentary — on a TV, 53 blocks for a caller who asked for one group.
+            # A structure row is in scope when it *is* the requested group, or sits under it.
+            in_scope = (
+                group_filter is None
+                or group_filter == original_id
+                or group_filter in _ancestor_ids(schema, definition)
+            )
+            if include_prose and in_scope and row.get("linked_description"):
                 commentary.append(
                     {
                         "original_id": original_id,
@@ -1592,6 +1666,17 @@ def _verdicts_from(
         for t in ((review.get("test_bench") or {}).get("tests") or [])
         if isinstance(t, dict)
     }
+    # A component's `score_set_id` is an internal id, and a SUB-usage's score set is not in
+    # `score_sets` at all — measured on mattress, where Side Sleeping's three components
+    # (Light/Average/Heavy Weight) each referenced an absent set and came back as a bare
+    # `weight_pct` with `component: null`, i.e. "33.4% of something we won't name".
+    # `product_score_sets` carries the id -> original_id mapping and the schema carries the
+    # name, which is exactly how the verdict loop below already resolves them.
+    usage_original_ids = {
+        str(entry.get("score_set_id")): _str_or_none(entry.get("score_set__original_id"))
+        for entry in review.get("product_score_sets") or []
+        if isinstance(entry, dict)
+    }
 
     verdicts: list[dict[str, Any]] = []
     for entry in review.get("product_score_sets") or []:
@@ -1653,21 +1738,28 @@ def _verdicts_from(
                 continue
             referenced = definitions.get(str(item.get("score_set_id")))
             test = bench_tests.get(str(item.get("test_id")))
+            sub_id = usage_original_ids.get(str(item.get("score_set_id")))
+            sub_usage = schema.usage(sub_id) if sub_id else None
+            if referenced:
+                name = referenced.get("name")
+                component_id = _str_or_none(referenced.get("original_id"))
+                kind = "usage"
+            elif sub_usage:
+                name, component_id, kind = sub_usage.name, sub_id, "usage"
+            elif test:
+                name = test.get("name")
+                component_id = _str_or_none(test.get("original_id"))
+                kind = "test"
+            else:
+                name, component_id, kind = None, None, None
             components.append(
                 {
                     "weight_pct": item.get("weight"),
-                    # A component is either a sub-score or a raw test; both resolve to a
-                    # name, and the test's `original_id` is what joins to rt_schema.
-                    "component": (
-                        referenced.get("name")
-                        if referenced
-                        else (test.get("name") if test else None)
-                    ),
-                    "original_id": _str_or_none(
-                        referenced.get("original_id") if referenced else
-                        (test.get("original_id") if test else None)
-                    ),
-                    "component_kind": "usage" if referenced else ("test" if test else None),
+                    # A component is a sub-score, a sub-usage or a raw test; all three
+                    # resolve to a name, and the `original_id` is what joins to rt_schema.
+                    "component": name,
+                    "original_id": component_id,
+                    "component_kind": kind,
                 }
             )
         scoring.append(
@@ -1804,7 +1896,10 @@ async def rt_graph(
     ref = await repo.resolve_product(product, silo)
     await repo.resolve_silo(ref.silo)
     schema = await repo.schema(ref.silo)
-    test_id = validate_id(test, what="test original_id")
+    # A name works wherever an original_id does. `rt_schema` is how a caller discovers a
+    # graph test, and it prints the name beside the id, so rejecting the name here failed on
+    # the exact string the discovery step just handed over.
+    test_id = _name_or_id(schema, test, kind="test")
     definition = schema.test(test_id)
 
     if definition is None:

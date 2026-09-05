@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from rtings_mcp import services
+from rtings_mcp import models, services
 from rtings_mcp.auth import AuthManager
 from rtings_mcp.cache import Cache
 from rtings_mcp.config import load_config
@@ -49,6 +49,11 @@ SILO_LAYOUT_PROPS = _props(
                     "title": "Best 65-Inch",
                     "url": "/tv/reviews/best/by-size/65-inch",
                     "short": "65-Inch",
+                },
+                {
+                    "title": "Best Static TVs",
+                    "url": "/tv/reviews/best/static-template",
+                    "short": "Static",
                 },
             ]
         },
@@ -146,6 +151,14 @@ MEMBER_HTML = (
     )
 )
 
+#: The server-rendered best-of template (mattress, running-shoes as of 2026-09-05).
+#: Structure copied from the live page: class names, nested tooltip divs and the
+#: `RecommendationPagePrices` island that carries the ranked product_id.
+REC_STATIC_HTML = (FIXTURES / "recommendation_static_min.html").read_text(
+    encoding="utf-8"
+)
+
+
 REC_HTML = f"""
 <html><head><title>The 7 Best TVs - RTINGS.com</title></head><body>
 {REC_PROPS}
@@ -233,8 +246,10 @@ class StubTransport(Transport):
     async def api_get_html(self, path):
         self.calls.append(f"GET {path}")
         _count_request()
-        if "/reviews/best/" in path:
-            html = REC_HTML
+        if "/reviews/best/static-template" in path:
+            html = REC_STATIC_HTML
+        elif "/reviews/best/" in path:
+            html = getattr(self, "rec_html", None) or REC_HTML
         elif self.session_page == "member":
             html = MEMBER_HTML
         elif self.session_page == "anonymous":
@@ -696,6 +711,36 @@ async def test_rt_graph_refuses_a_non_graph_test_structurally(ctx):
     assert excinfo.value.code == "no_graph"
 
 
+async def test_rt_graph_accepts_a_test_name_like_every_other_entry_point(ctx):
+    """`rt_schema` prints a graph test's name beside its id, so the discovery step hands the
+    caller the exact string `rt_graph` then rejected — the gap `_name_or_id` closed for
+    `tests=`, left open on the one tool whose input always comes from `rt_schema`.
+
+    The fixture's graph test shares its group's name on purpose: headphones, vacuum and
+    toaster-oven all publish a group and a leaf under the same name, and resolving by dict
+    order handed back the group — `rt_graph` then refused with "kind='group'; only kind=graph
+    tests have a curve" on a name the schema publishes for a real curve. A LEAF wins the tie.
+    """
+    by_name = await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "Picture Quality")
+    by_id = await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "13907")
+    assert by_name["data"]["test"]["original_id"] == "13907"
+    assert by_name["data"]["points"] == by_id["data"]["points"]
+
+
+async def test_a_group_and_a_leaf_sharing_a_name_each_resolve_to_the_right_one(ctx):
+    """The two lookups lean opposite ways on purpose: `group=` addresses a section, while
+    `tests=`/`filters`/`sort`/`rt_graph` address a measurement."""
+    detail = await services.rt_schema(ctx, "tv", group="Picture Quality")
+    assert detail["data"]["group"]["original_id"] == "900"
+    assert detail["data"]["group"]["kind"] == "group"
+
+    out = await services.rt_ratings(ctx, "tv", tests=["Picture Quality"], limit=1)
+    assert out["error"] is None
+    projected = {v["original_id"] for g in out["data"]["groups"]
+                 for p in g["products"] for v in p["tests"]}
+    assert projected == {"13907"}, "a leaf, not the group above it"
+
+
 async def test_rt_graph_reports_a_product_with_no_curve_separately(ctx):
     ctx.transport.payloads["graph_tool__product_graph_data_url"] = {
         "data": {"product": {"review": {"test_results": []}}}
@@ -962,6 +1007,95 @@ async def test_early_access_rows_that_come_through_are_kept(ctx):
     assert row["tests"][0]["value"] == "4k"
 
 
+# -- the second best-of template (server-rendered) ----------------------------------
+
+
+async def test_the_server_rendered_best_of_template_is_parsed(ctx):
+    """RTINGS is migrating best-of pages off the monolithic `RecommendationVuePage` onto a
+    server-rendered template with small Vue islands. Measured 2026-09-05: mattress and
+    running-shoes had moved and every one of their 20 lists returned
+    `recommendations_missing` — the tool advertised lists it could not fetch."""
+    out = await services.rt_recommendations(ctx, "tv", list="static-template")
+    assert out["error"] is None
+    # The declared output model is what carries this shape to the client, so the second
+    # template has to satisfy it too — not just the dict the service builds.
+    models.RecommendationsEnvelope.model_validate(out)
+    data = out["data"]
+    assert data["title"] == "The 2 Best Static TVs of 2026"
+    assert data["updated_at"] == "Aug 26, 2026 at 12:45 pm", "the 'Updated' label is dropped"
+    assert data["introduction"] == "<p>static intro prose</p>"
+
+    assert [p["rank"] for p in data["picks"]] == [1, 2]
+    first = data["picks"][0]
+    assert first["title"] == "Best Static TV"
+    assert first["name"] == "Alpha One"
+    assert first["product_id"] == "1"
+    assert first["url"] == "/tv/reviews/alpha/alpha-one"
+    # The wrapping rich-content div is unwrapped so both templates emit one shape.
+    assert first["reasoning"] == "<p>why alpha one</p>"
+
+
+async def test_the_static_template_separates_usages_from_tests(ctx):
+    """The tooltip beside each featured item carries `target_type`, which is the only thing
+    distinguishing a usage score from a test value on this template."""
+    out = await services.rt_recommendations(ctx, "tv", list="static-template")
+    first = out["data"]["picks"][0]
+
+    ratings = {r["name"]: r for r in first["usage_scores"]}
+    assert ratings["Mixed Usage"]["score"] == 8.8
+    assert ratings["Mixed Usage"]["status"] == "tested_visible"
+    # `target_id` is NOT the schema's original_id (live: Side Sleeping is 38309 here and
+    # 36553 in the schema), so a null id with a real name is the honest pair.
+    assert ratings["Mixed Usage"]["original_id"] is None
+
+    tests = {t["name"]: t for t in first["featured_results"]}
+    assert tests["Resolution"]["display"] == "4k"
+    assert tests["Resolution"]["status"] == "tested_visible"
+
+
+async def test_a_static_featured_item_without_a_tooltip_still_resolves(ctx):
+    """Not every item carries a `DistributionTooltip`, and the rendered label brings its own
+    punctuation ("Bed-In-A-Box:&nbsp;"). The tooltip label and the props template both give
+    the bare name, so the DOM fallback is trimmed to match rather than ship two shapes.
+    With no tooltip there is no `target_type` either, so it is a test, not a usage."""
+    out = await services.rt_recommendations(ctx, "tv", list="static-template")
+    first = out["data"]["picks"][0]
+    tests = {t["name"]: t for t in first["featured_results"]}
+    assert "Bed-In-A-Box" in tests, sorted(tests)
+    assert tests["Bed-In-A-Box"]["display"] == "Yes"
+    assert tests["Bed-In-A-Box"]["status"] == "tested_visible"
+    assert "Bed-In-A-Box" not in {r["name"] for r in first["usage_scores"]}
+
+
+async def test_a_static_featured_item_that_rendered_nothing_is_not_called_gated(ctx):
+    """Neither a score nor a value came back. That is 'I cannot classify this row', not
+    'buy a membership' — inventing a paywall is the project's core failure mode."""
+    out = await services.rt_recommendations(ctx, "tv", list="static-template")
+    tests = {t["name"]: t for t in out["data"]["picks"][0]["featured_results"]}
+    assert tests["Withheld Test"]["status"] == "unknown_row_status"
+    assert tests["Withheld Test"]["gated"] is None
+
+
+async def test_each_best_of_parser_declines_the_other_template(ctx):
+    """Both shapes are legitimate now, so the fallback must not double-match: a parser that
+    accepted the wrong page would emit a plausible half-empty ranking."""
+    from rtings_mcp.repository import _extract_recommendation, _extract_recommendation_static
+
+    assert _extract_recommendation(REC_STATIC_HTML) is None
+    assert _extract_recommendation_static(REC_STATIC_HTML) is not None
+    assert _extract_recommendation(REC_HTML) is not None
+    assert _extract_recommendation_static(REC_HTML) is None
+
+
+async def test_recommendations_missing_fires_only_when_neither_template_matches(ctx):
+    """The drift alarm still has to work — it is the whole reason this path is isolated."""
+    ctx.transport.rec_html = "<html><body><p>nothing like either template</p></body></html>"
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert excinfo.value.code == "recommendations_missing"
+    assert "neither best-of template" in excinfo.value.message
+
+
 # -- uncatalogued products ----------------------------------------------------------
 
 
@@ -977,6 +1111,108 @@ async def test_products_with_results_but_no_catalog_row_are_surfaced(ctx):
     assert row["name"] is None  # the catalog is where names live
     assert row["tests"][0]["value"] == "8k"
     assert "no RTINGS catalog listing" in orphan[0]["notice"]
+
+
+async def test_the_uncatalogued_group_pages_like_every_other_group(ctx):
+    """It honoured `limit` but not `offset`, so it re-served its first page forever while
+    `matched` advertised the rest — reinstating, for 41 of mattress's 110 products, exactly
+    the unreachability this group exists to fix."""
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row(pid, "208", unblurred=True, value="8k", score=10.0)
+                for pid in ("97", "98", "99")
+            ]
+        }
+    }
+
+    def orphan(out):
+        group = next(
+            g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"
+        )
+        assert group["matched"] == 3, "the count must keep describing the whole population"
+        return [p["product_id"] for p in group["products"]]
+
+    first = await services.rt_ratings(ctx, "tv", tests=["208"], limit=1, offset=0)
+    second = await services.rt_ratings(ctx, "tv", tests=["208"], limit=1, offset=1)
+    assert orphan(first) == ["97"]
+    assert orphan(second) == ["98"], "offset must advance this group's window too"
+
+
+async def test_a_variant_nobody_was_tested_in_explains_itself(ctx):
+    """RTINGS reviews ONE size per product, so filtering on a size it sells but did not test
+    matches nothing. Live, `{"variant": "California King"}` on mattress returned 0 rows and
+    an empty `warnings` — which reads as "RTINGS has tested no California King mattress"
+    when in truth it tested the Queen of 60-odd mattresses that ship in Cal King."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"variant": "75"})
+    assert out["error"] is None
+    assert out["data"]["total_matched"] == 0
+    assert any(
+        "no product was TESTED in" in w and "sold in it" in w for w in out["warnings"]
+    ), out["warnings"]
+
+    # A size nobody even sells stays a plain empty result — there is nothing to explain.
+    quiet = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"variant": "12"})
+    assert quiet["data"]["total_matched"] == 0
+    assert not any("sold in it" in w for w in quiet["warnings"])
+
+
+# -- a name works wherever an original_id works -------------------------------------
+
+
+async def test_a_group_name_works_wherever_its_id_does(ctx):
+    """`rt_schema`'s tree prints `name` beside `original_id`, and the natural next call
+    passes the name straight back — which failed, making the tool's own output unusable as
+    its own input."""
+    by_name = await services.rt_schema(ctx, "tv", group="Picture Quality")
+    by_id = await services.rt_schema(ctx, "tv", group="900")
+    assert by_name["data"]["group"] == by_id["data"]["group"]
+    assert by_name["data"]["tests"] == by_id["data"]["tests"]
+
+    by_name = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", group="Picture Quality"
+    )
+    by_id = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", group="900")
+    assert by_name["data"]["results"] == by_id["data"]["results"]
+
+
+async def test_an_unknown_group_name_says_so_rather_than_pretending_it_is_an_id(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_schema(ctx, "tv", group="No Such Section")
+    assert excinfo.value.code == "unknown_test"
+    assert "No Such Section" in excinfo.value.message
+
+
+async def test_group_bounds_the_prose_it_returns(ctx):
+    """`group` bounds the response and prose is the biggest thing in it, but the scope test
+    sat *below* the structure-row branch — so a bounded request still carried every group's
+    commentary, which on a real TV is 53 blocks for a caller who asked for one group."""
+    review = ctx.transport.payloads["app/product_vue_page__page_body"]
+    review["data"]["page"]["product"]["review"]["test_results"].append(
+        {
+            "status": "tested",
+            "unblurred": False,
+            "rendered_value": None,
+            "linked_description": "<p>prose about the whole category</p>",
+            "test": {"original_id": "31615"},
+        }
+    )
+
+    scoped = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", group="900", include_prose=True
+    )
+    assert [c["original_id"] for c in scoped["data"]["commentary"]] == ["900"]
+
+    # The requested group's own prose counts, and so does a group beneath it.
+    category = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", group="31615", include_prose=True
+    )
+    assert {c["original_id"] for c in category["data"]["commentary"]} == {"900", "31615"}
+
+    unbounded = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", include_prose=True
+    )
+    assert {c["original_id"] for c in unbounded["data"]["commentary"]} == {"900", "31615"}
 
 
 # -- a cached review is never thrown away for budget reasons ------------------------
@@ -1342,6 +1578,20 @@ SBS_PAYLOAD = {
                     "score_set__original_id": "12",
                     "linked_description": "<p>Not ideal for home theater.</p>",
                 },
+                # A SUB-usage: it has a `product_score_sets` row (so its original_id is
+                # discoverable) but NO entry in `score_sets` below — the shape that made
+                # every mattress sleeping-position component report `component: null`.
+                {
+                    "id": "c",
+                    # Null like its siblings: `user_has_access` is False on this fixture, so
+                    # a score here would make the review partially visible and change what
+                    # the gating tests are asserting about.
+                    "score": None,
+                    "suitable": True,
+                    "score_set_id": "ss-sub",
+                    "score_set__original_id": "77",
+                    "linked_description": None,
+                },
             ],
             "score_sets": [
                 {
@@ -1349,7 +1599,10 @@ SBS_PAYLOAD = {
                     "original_id": "1",
                     "name": "Mixed Usage",
                     "kind": "usage",
-                    "items": [{"score_set_id": "ss2", "test_id": None, "weight": 40.0}],
+                    "items": [
+                        {"score_set_id": "ss2", "test_id": None, "weight": 40.0},
+                        {"score_set_id": "ss-sub", "test_id": None, "weight": 60.0},
+                    ],
                 },
                 {
                     "id": "ss2",
@@ -1420,6 +1673,23 @@ async def test_the_scoring_recipe_is_reported(ctx):
     mixed = next(s for s in out["data"]["scoring"] if s["name"] == "Mixed Usage")
     assert mixed["components"][0]["weight_pct"] == 40.0
     assert mixed["components"][0]["component"] == "Home Theater"
+
+
+async def test_a_sub_usage_scoring_component_resolves_to_a_name(ctx):
+    """A sub-usage's score set is absent from `score_sets`, so the component resolved to
+    nothing and the recipe read "33.4% of something we won't name". Live on mattress, all
+    three sleeping positions were composed entirely of such components. The id -> original_id
+    mapping is in `product_score_sets` and the name is in the schema."""
+    ctx.transport.payloads["app/side_by_side__review"] = SBS_PAYLOAD
+    out = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+    )
+    mixed = next(s for s in out["data"]["scoring"] if s["name"] == "Mixed Usage")
+    sub = mixed["components"][1]
+    assert sub["weight_pct"] == 60.0
+    assert sub["component"] == "Legacy Usage"
+    assert sub["original_id"] == "77", "the id must join back to rt_schema"
+    assert sub["component_kind"] == "usage"
 
 
 async def test_verdict_scores_inform_scores_available(ctx):

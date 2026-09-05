@@ -415,7 +415,10 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   the silo: a field that resolves to `tested_gated` for the population is **not applied**,
   and the envelope names it. The default sort is a public catalog field, never a gated score.
 - **Never return the raw payload.** `column_options` is ~357 KB, a full review ~442 KB, a
-  graph up to ~94 KB. `rt_schema` bounds by group; `rt_graph` resamples to ~200 points
+  graph up to ~361 KB (measured 2026-09-05 across silos: speaker "Raw Frequency Response
+  Graph" 361 KB, soundbar 335 KB, headphones 190 KB — TV's ~74 KB is the SMALL end, and a
+  256 KB CDN cap sized from it turned real published curves into `fetch_failed`).
+  `rt_schema` bounds by group; `rt_graph` resamples to ~200 points
   (`full=true` opts in); `rt_ratings` defaults `limit=10` per group. `rt_product` is the
   per-product drilldown and **is itself bounded** — a current-bench review is 402 rows /
   437 KB, so default to leaf value kinds (`number`/`word`), each row carrying a `hierarchy`
@@ -512,6 +515,21 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   and 13 KB of a 69 KB response. They stay per-row in `rt_ratings`, where they genuinely vary.
 - **`rt_recommendations` is the one page-extraction path** (`RECON.md` §7) — isolate it: own parser,
   own `recommendations_missing` drift alarm, never on the table/graph code path.
+- **IMPORTANT: there are TWO best-of templates and BOTH are legitimate (added 2026-09-05,
+  `RECON.md` §12.17).** RTINGS is migrating best-of pages off the monolithic
+  `RecommendationVuePage` (one `data-props` blob) onto a **server-rendered** template whose only
+  Vue parts are islands. **mattress and running-shoes have moved; the other 12 silos sampled have
+  not**, and it does *not* track silo age — refrigerator is the newest silo and still on the old
+  one, so more will migrate silently. Supporting only the props shape made `rt_recommendations`
+  fail on **all 20** mattress lists — the tool advertised lists it could not fetch. So try props,
+  then static, and fire `recommendations_missing` only when **neither** matches; that, not "the
+  props are missing", is the drift signal. There is still **no API** (the new page's whole bundle
+  is 3 KB with zero `/api/v2/safe/` references), so extraction remains the only route.
+  The static template's `DistributionTooltip` gives `target_label`/`target_type` but its
+  **`target_id` is NOT the schema `original_id`** (Side Sleeping: 38309 vs 36553) — emit a null id
+  with a real name, never the wrong join key. Both migrated silos are open, so no blurred sample
+  exists: a featured item rendering neither score nor value is `unknown_row_status`, never
+  `tested_gated`.
 - **`RTINGS_MEMBER_MODE` (default `false`) is how Phase 0 is enforced in code.** With it off,
   `probe_tier()` returns `anonymous` unconditionally, so every tier-keyed write is `anonymous`
   and no read demands a tier — while the whole mechanism (the filename segment, demand/write
@@ -557,7 +575,7 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   records *after* the response and holds no lock, so two concurrent calls both fire at t=0.
   Single-flight dedupes only identical keys.
 - **TWO sessions: `www.rtings.com` (credentialed) and `i.rtings.com` (never).** One session forces the
-  origin's floor onto 2–94 KB static files and offers `_rtings_session` to the CDN for nothing
+  origin's floor onto 2–361 KB static files and offers `_rtings_session` to the CDN for nothing
   (confirmed: `add_cookie` with an explicit `Domain` sets `host_only=False`, `wafer/_base.py:2542`).
   API session: `max_retries=0, max_rotations=0, max_failures=None` — `max_retries=0` also stops wafer
   retrying a 5xx or empty 200 **three times inside one of our bucket tokens** while never consulting
@@ -565,7 +583,8 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   403/challenge *raises* instead of returning and the "classify from the response" rule breaks on that
   session), own bucket (burst 10, 0.25 s), **`max_retries=0`** (not `1` — that reintroduces exactly
   what `max_retries=0` exists to prevent: wafer retrying a 5xx inside one of our tokens without
-  consulting `Retry-After`), `max_response_size ≈ 256 KB`.
+  consulting `Retry-After`), `max_response_size ≈ 1 MB` (**not 256 KB** — that was sized from
+  TV's ~74 KB curves and made speaker's 361 KB one unfetchable; see the payload rule above).
 - **Never pass wafer's `cache_dir=`** — it persists solver cookies to disk, a credential-shaped
   artifact this project writes nowhere.
 - **Status precedence, first match wins:** `challenged` (any `resp.challenge_type`) → `rate_limited`
@@ -683,6 +702,11 @@ So, as a release gate, before every version bump:
    - gating within a silo is still **per-product, never per-test**;
    - `status` domain is still `{tested, na, untested}`;
    - usage definitions still carry no `insider_only`.
+   - **which best-of template each silo serves** (`RECON.md` §12.17) — mattress and
+     running-shoes are server-rendered, the rest are `RecommendationVuePage`, and RTINGS is
+     migrating. This drifts silently exactly like the paywall map: the symptom is
+     `recommendations_missing`, and the fix is a parser, never a "that silo has no lists".
+     One `rt_recommendations(silo, list=<first>)` per silo is the check.
 6. **Never let the runtime read the snapshot.** It is a release-time diff baseline and documentation
    only. The server derives the boundary from observed `unblurred` per (silo, bench) on every fetch
    (`SPEC.md` §5) — a hardcoded map is exactly the bug this rule exists to catch.
