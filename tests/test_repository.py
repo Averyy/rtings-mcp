@@ -220,3 +220,10 @@ async def test_concurrent_calls_do_not_see_each_others_warnings(repo):
     a, b = await asyncio.gather(call("a"), call("b"))
     assert a == ["a"]
     assert b == ["b"]
+
+
+def test_the_release_hint_has_no_duplicates_and_is_lowercase():
+    from rtings_mcp.config import KNOWN_SILOS, SILO_HINT_SET
+
+    assert len(KNOWN_SILOS) == len(SILO_HINT_SET), "duplicate silo in the hint"
+    assert all(s == s.lower().strip() for s in KNOWN_SILOS)

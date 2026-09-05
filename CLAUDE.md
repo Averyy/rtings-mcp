@@ -11,9 +11,11 @@ snake_case (`tool.input_schema` / `tool.output_schema`), and `outputSchema` come
 tool function's **return annotation** — which is why every tool returns a declared Pydantic
 model: that is what carries the seven-state `status` enum into the client's schema.
 
-**Status: the anonymous server is built and working** (2026-09-04). `RECON.md` §12 holds the
+**Status: the anonymous server is built and working** (2026-09-05). `RECON.md` §12 holds the
 facts the build measured; the rules below marked "(corrected 2026-09-04)" are the ones it
-forced. Member mode is built but gated off behind `RTINGS_MEMBER_MODE`.
+forced, and those marked **2026-09-05** come from a seven-lens review round that found 15
+defects — several of them reachable anonymously, on silos where nothing is gated. Member mode
+is built but gated off behind `RTINGS_MEMBER_MODE`.
 
 - `SPEC.md` — design of record. Read before proposing anything structural.
 - `RECON.md` — measured facts about RTINGS' API, paywall and auth. Cite it; don't re-derive it.
@@ -40,7 +42,9 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   (`RECON.md` §8).
 - **The API is parameterized.** Request exactly the tests/usages/products you want; there is no
   forced category dump. `column_options` (the schema) is the one fixed ~357 KB payload, once per silo.
-- **The API response carries no auth field** (`RECON.md` §1, confirmed). Auth lives only in the HTML
+- **The API response carries no auth field** (`RECON.md` §1, confirmed) — true of the seven
+  table/review queries, and **the one exception is `app/side_by_side__review`, which carries
+  `user_has_access`** (`RECON.md` §12.16). Auth otherwise lives only in the HTML
   `GLOBALS.session`. See the auth-seam rule below.
 
 ## Critical rules
@@ -78,9 +82,13 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   covered yields **`coverage_unknown`** — an honest "I don't know", distinct from both `not_tested`
   and `tested_gated`, and it belongs in the `outputSchema` `status` enum.
 - **IMPORTANT: an agent must never read "no member session" as "RTINGS did not test this."** The
-  normalizer emits **four** states — `tested_visible` / `tested_gated` / `not_applicable` /
-  `not_tested` — and never collapses two into one null. Most dangerous failure mode in the project
-  (ported, and it covers far more of the data here). The four (`RECON.md` §6, confirmed):
+  normalizer emits **seven** states — `tested_visible` / `tested_gated` / `not_applicable` /
+  `not_tested` / `review_unpublished` / `coverage_unknown` / `unknown_row_status` — and never
+  collapses two into one null. Most dangerous failure mode in the project (ported, and it covers
+  far more of the data here). **It was four when first ported**; `review_unpublished` (Early
+  Access), `coverage_unknown` (the Step-0 check) and `unknown_row_status` (the drift alarm) were
+  each forced by a measurement, and each is documented in its own rule above. The core four
+  (`RECON.md` §6, confirmed):
   - `status:"na"` ⇒ **`not_applicable`**. **Branch on `status` BEFORE `unblurred`** — proven
     necessary in BOTH directions (`RECON.md` §11.4): an `na` row with `unblurred:false` is identical
     to a gated row (⇒ false "buy a membership"), **and 1,025 of 2,186 `na` rows are `unblurred:true`**
@@ -263,6 +271,22 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   field (§11.6), not a retest marker. So: stamp every `not_tested` with `as_of:<slice fetched_at>`,
   and give **current**-bench `tests/`/`ratings/` a 7-day TTL vs 30 for legacy. The hole stays open and
   labelled.
+- **IMPORTANT: write-time demotion is PER SURFACE, because the row shapes differ (added 2026-09-05).**
+  The test-path predicate needs `status:"tested"` and an `insider_only` id. **A `ratings/` row has
+  NEITHER** — no `status` at all, and its `original_id` is a *usage* id while `insider_ids` holds
+  *test* ids, so the loop skipped every row and demotion was structurally **dead** on the surface
+  `rt_ratings` uses by default. `envelope_notes_for` had the same cross-namespace bug, which made the
+  "keep the newest file holding unblurred data" pruning exemption unable to fire there — a later
+  blurred refetch could delete a member's only copy of real scores. Ratings key on `unblurred` alone
+  (every usage row is gate-relevant); `surface` is a REQUIRED argument to `envelope_notes_for`, not a
+  defaulted one, because getting it wrong is silent.
+- **IMPORTANT: `verdicts/` demotion keys on the usage SCORES, never on `user_has_access`.** That flag
+  is the payload's own blur signal, but it *appears* to track silo enforcement rather than membership
+  (`false` on TV, `true` on mattress, both anonymous — two data points, a lead not a fact). If it
+  never flips for a member on a gated silo, demoting on it would demote every member write there,
+  miss every read and refetch forever — the deadlock the `cache_tier`/`data_tier` rule exists to
+  prevent. All-null scores where the tier predicts otherwise is the same evidence, without depending
+  on what the flag means. `SPEC.md` §10 capture (p) settles it.
 - **IMPORTANT: DEMOTE `cache_tier` at write time when the response contradicts the probe.** The probe
   and the fetch race, so labelling a file with the last probe writes `member` over a response that
   came back fully blurred after the session lapsed — and the hit rule then serves those nulls to a
@@ -303,6 +327,11 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `{outcome:"graph_not_available"}` every `rt_graph` on those costs a POST forever. A legitimately
   empty slice is a written file with an empty payload — a reader must never read empty as a miss.
   **Never** cache `fetch_failed`/`challenged`/`rate_limited`/`identity_rotated`/`unknown_product`.
+- **The size limit must be CALLED, not merely implemented.** `enforce_size_limit` (with both its
+  exemptions) existed, was unit-tested, and was invoked from nowhere in the serving path — so
+  `RTINGS_CACHE_MAX_MB` had no effect and `reviews/` grew unbounded (442 KB x 548 TVs is 242 MB for
+  one silo). `prune_variants` bounds variants per key, never total size. It now runs from
+  `flush_lru`, throttled by `SIZE_CHECK_INTERVAL_S`.
 - **TTL is per surface.** Silos/bench 1 day, catalog 3, schema 30, results 30, graphs 180. A uniform
   30 days means a new bench goes unnoticed for a month while ranking on a stale `is_recent` set.
 - **Write temp-in-target-dir + `fsync` + `os.replace`** (never `/tmp` — cross-filesystem replace is a
@@ -349,6 +378,37 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   without bound. A re-entrant `ContextVar` scope is opened by both the server wrapper (so the
   error path keeps the warnings that explain the failure) and each service body (so a direct
   call still collects).
+- **IMPORTANT: a field a filter or sort NAMES must be FETCHED (added 2026-09-05).** Predicates run
+  over the rows actually served, so a field nobody projected is absent from every row and the
+  filter quietly does nothing. Measured live on **mattress — an OPEN silo, nothing gated**:
+  `filters={"Thickness": ">1"}` returned all 69 products with "no value is populated", when the
+  truth was that the test had never been requested. That is the project's core failure mode wearing
+  a different hat, reachable where the paywall is not involved at all. `_fields_to_fetch` unions
+  filter/sort fields into the projection (strip the `+`/`-` sort prefix first). And **a name works
+  wherever an `original_id` works** — `filters`/`sort` always took either, so `tests=` rejecting a
+  name made the documented remedy fail with `unknown_test` on the string the filter had just
+  accepted.
+- **"Not applied" has THREE reasons and they must not be collapsed:** *gated* (buy a membership),
+  *absent from the bench* (call `rt_schema`), *genuinely empty* (RTINGS published nothing). Reporting
+  the middle one as "no value is populated" sends the caller to buy a membership they do not need.
+- **IMPORTANT: a row the server cannot compare sorts LAST in both directions.** `reverse=True` flips
+  the whole sort key, so a fixed "missing" rank put gated and untested rows at the TOP of every
+  descending sort — "the brightest TVs" led by TVs whose brightness is unknown. Pre-flip the presence
+  flag; do not rely on the tuple ordering alone.
+- **IMPORTANT: Early-Access status comes from the ROW's own slice envelope, never today's catalog.**
+  The catalog refreshes on its own 3-day clock, so a review published on day 4 makes a day-1 blurred
+  slice read as `tested_gated` — "buy a membership" for a review RTINGS had not finished. `rt_product`
+  always did this; `rt_ratings` did not until 2026-09-05. Same rule for `_verdicts_only`, which
+  defaulted `unpublished=False` and so reported an Early-Access verdict as paywalled.
+- **A `kind:"graph"` test has no scalar on EITHER path.** The review path said so; the table path did
+  not, so a curve test requested through `rt_ratings` came back `tested_visible, value:null` —
+  "measured, and the answer is nothing", when the answer is a curve. `rt_schema` lists graph tests
+  beside real ones, so this needs no unusual input to reach.
+- **IMPORTANT: a negative is a well-formed EMPTY payload; an unrecognised shape is DRIFT.** Measured
+  2026-09-04: a genuine "no curve" is `{"data":{"product":{"review":{"test_results":[]}}}}`. A blanket
+  `except RtingsError: return None` around `_dig` therefore turned any transient shape change into a
+  written `graph_not_available` file — a confident structural claim, cached three days, from a
+  transport blip. Negatives get cached, so only an explicit empty may produce one.
 - **Filtering and sorting must not silently use gated fields.** Anonymously every gated
   value is `null`, so a filter on one matches **zero** products — and "0 results" reads as
   *no product qualifies* rather than *you cannot see it*. Check the **served rows**, never
@@ -358,7 +418,8 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   graph up to ~94 KB. `rt_schema` bounds by group; `rt_graph` resamples to ~200 points
   (`full=true` opts in); `rt_ratings` defaults `limit=10` per group. `rt_product` is the
   per-product drilldown and **is itself bounded** — a current-bench review is 402 rows /
-  437 KB, so default to leaf value kinds (`number`/`word`) grouped by hierarchy, with prose
+  437 KB, so default to leaf value kinds (`number`/`word`), each row carrying a `hierarchy`
+  breadcrumb (a flat list, NOT nested — see `TODO.md`), with prose
   (`linked_description`), media and verdicts opt-in. `group`/`category` rows are **structure,
   not results** — they never get a `status` or a value.
 - **IMPORTANT: measure the payload ON THE WIRE, not the dict you built.** The services return
@@ -366,6 +427,9 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   one `rt_product` response was 55,857 bytes of content and **113,406** delivered, and a
   single gated row 424 bytes of which 256 were nulls. Row models drop their null optionals;
   **`value`, `gated` and `status` are exempt** because "a gated value is null, never absent"
+  — and **`score` is exempt on `RatingOut`/`VerdictOut` only**, where a usage rating has *only*
+  a score so it plays `value`'s role; it stays droppable on `ValueOut`, where it is secondary
+  and null on most rows. The exemption is a per-model `ALWAYS_PRESENT`, not one global set,
   is the whole promise, and envelope models are exempt entirely so `out["error"] is None`
   cannot become a `KeyError`.
 - **Resample by SELECTING shipped points, never by interpolating.** Decimation or LTTB over the
@@ -452,13 +516,14 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `probe_tier()` returns `anonymous` unconditionally, so every tier-keyed write is `anonymous`
   and no read demands a tier — while the whole mechanism (the filename segment, demand/write
   rules, write-time demotion, the preview budget) is built, unit-tested and running. Enabling
-  member mode is a flag, never a migration. **Rotation write-back stays unimplemented**: a
-  rotated cookie is adopted in memory when the probe proves the response was logged in, and
-  never written to disk, because RTINGS re-mints `_rtings_session` on any anonymous GET and a
-  mistaken write-back destroys the user's credential.
+  member mode is a flag, never a migration. **Rotation write-back IS implemented** (superseding
+  an earlier "stays unimplemented" note here, which predated the sliding-session measurement in
+  `RECON.md` §12.15): the rotated cookie is written to disk, but **only** from a response the
+  HTML probe proved logged-in (`current_user` non-null) and only for a file-sourced credential.
+  Refusing to persist was what caused the monthly re-paste it was meant to prevent.
 - **Phase 0 gates member-tier SELECTION and the member claim — not the cache schema, and not the
-  anonymous surface** (`SPEC.md` §10). Do not implement tier-aware row selection, `member`/`free`
-  classification, or rotation write-back, and do not claim member support, until a bought membership
+  anonymous surface** (`SPEC.md` §10). Do not implement tier-aware row selection or
+  `member`/`free` classification, and do not claim member support, until a bought membership
   confirms a cookie flips `unblurred` on the API. **Do** build everything else now: the `cache_tier`
   filename segment ships from day one carrying `anonymous`, so enabling member mode is never a
   migration. The entire
@@ -509,6 +574,12 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 - **Never hold two locks.** `cooldown_until` is cross-process like the key locks; read/write it
   lock-free via atomic replace and release anything it takes before acquiring a key lock, or two
   processes deadlock. `fcntl.flock` blocks the event loop — run it in `asyncio.to_thread`.
+  **Qualified 2026-09-05:** the surface key locks (`tests`/`ratings`/`review`/`verdicts`) DO nest —
+  they hold their lock across `catalog()`, `schema()` and `session_probe()`, each of which takes its
+  own. That is deadlock-free only because those three are always **leaves** (they take no further
+  cross-process lock) and always the **inner** lock. Nothing enforces that ordering and no test
+  covers it, so adding a lock to any of those three, or acquiring `catalog`-before-`tests` anywhere,
+  introduces a real cross-process deadlock.
 - **The floor is politeness to origin, NOT camouflage.** `robots.txt` has no `Crawl-delay` and
   disallows only `/user_reviews/` and `/admin/`; no `X-RateLimit-*`/`Retry-After` observed. Rate
   rules count requests per window, not cadence — a metronomic interval is the *most* machine-like
@@ -565,6 +636,16 @@ re-scan before every version bump.
   are captured from a real logged-in session, so `current_user` carries the user's own name, email
   and subscription details. Keep the **shape** (which fields are present, and `current_user`
   non-null), replace every value with a placeholder, and never commit the cookie.
+- **IMPORTANT: `StubTransport` overrides `api_post`/`api_get_html`/`cdn_get_json` WITHOUT calling
+  `super()`, so the real `Transport._perform`/`_classify` and the `errors[]` rule are dead code under
+  the offline suite.** Mutation-tested 2026-09-04: deleting the challenge-precedence branch, and
+  making any `errors[]` fatal, each left the whole suite green. **`tests/test_http.py` is where the
+  shipped transport is actually exercised** — it injects a fake wafer session at `_api_session` so
+  `_perform`, the cooldown and the JSON handling all run. A contract the stub *mirrors* is not a
+  contract the suite *tests*; if you change transport behaviour, the test belongs there.
+- **Mutation-test the safety-critical branches rather than trusting the count.** The three gaps found
+  this way (status precedence, `errors[]`, `should_demote`'s free/reviews branch) were all invisible
+  to line coverage — the lines ran, nothing asserted on them.
 - **MCP tools in Claude Code connect to the installed server, not your working tree.** Edits need an
   MCP restart; test inline with `.venv/bin/python -c "..."` first.
 
@@ -588,6 +669,12 @@ So, as a release gate, before every version bump:
 3. **A diff is a SPEC CHANGE, not a test failure.** Do not "fix" the test to match. Update the
    snapshot, `RECON.md` §11.1, and the framing in `SPEC.md` §5 / this file's preamble, and say so in
    the release notes — the honest description of what anonymous gets is the product's main claim.
+   **Also update the gated-category list inside `mcp.instructions` in `server.py`** — it is prose
+   read by the calling LLM as the authoritative routing signal, it has no runtime fallback, and it
+   was missing from this checklist. `test_the_instructions_gated_list_matches_the_enforcement_snapshot`
+   fails if you forget. Same for the category tables in `README.md`.
+   **Do not change `config.KNOWN_SILOS` for this** — that hint is about which silos *exist*, not
+   which gate, and a silo outside it already warns `silo_hint_drift` rather than failing.
 4. **Re-check dependency currency** — `mcp`, `wafer-py`, `ruff`, `pytest`, `pytest-asyncio`, and the
    Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
    drifted two majors is a bug waiting to surface.

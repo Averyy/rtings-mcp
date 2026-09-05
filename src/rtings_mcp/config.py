@@ -196,3 +196,21 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         telemetry=_env_bool(src, "RTINGS_TELEMETRY", True),
         warnings=warnings,
     )
+
+
+#: The silos known when this release shipped. Ships as a ``description``/``examples`` HINT on
+#: the ``silo`` parameter, **never** a JSON-Schema ``enum``: an enum is enforced client-side,
+#: so a silo RTINGS adds mid-release would be unreachable until a new release ships, and it
+#: would create a second allowlist that can disagree with live ``static.silos``. Validation is
+#: server-side against the live list only; a silo outside this set is fetched normally with a
+#: ``silo_hint_drift`` warning. Lives here rather than in ``server.py`` so the repository can
+#: raise that warning without importing the server (a cycle).
+KNOWN_SILOS: tuple[str, ...] = (
+    "tv", "headphones", "monitor", "soundbar", "mouse", "keyboard", "printer",
+    "robot-vacuum", "vacuum", "dehumidifier", "projector", "toaster-oven",
+    "keyboard-switch", "air-purifier", "running-shoes", "humidifier", "refrigerator",
+    "mattress", "air-conditioner", "microwave", "blender", "air-fryer", "toaster", "vpn",
+    "router", "speaker", "camera", "laptop",
+)
+SILO_HINT_SET = frozenset(KNOWN_SILOS)
+SILO_HINT = ", ".join(KNOWN_SILOS)

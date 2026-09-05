@@ -19,6 +19,7 @@ Three fields, three different questions:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -113,6 +114,65 @@ def derive_data_tier(rows: list[dict[str, Any]], insider_ids: set[str]) -> str:
     return DATA_TIER_UNPROVEN
 
 
+#: `table_tool__ratings` rows are `{original_id, product_id, score, suitable, unblurred,
+#: usage}` — no `status`, and usage definitions carry no `insider_only`. Every rule keyed on
+#: either of those is a no-op here, so the surface needs naming, not parameterising.
+RATINGS_SURFACE = "ratings"
+
+
+def _all_ratings_blurred(
+    rows: list[dict[str, Any]], unpublished_product_ids: set[str]
+) -> bool:
+    """Did a whole ratings response come back withheld?
+
+    The test-path predicate looks for `insider_only` rows with `status:"tested"`. A ratings
+    row has neither field, so that loop skipped every row, `saw_insider_tested` never became
+    true, and **write-time demotion was structurally dead on this surface** — a member's
+    fully-blurred response after a lapsed session was still stamped `member` and served for
+    the whole TTL, because a cache hit never re-probes.
+
+    Usage ratings gate wholesale rather than per-flag, so every row is gate-relevant and
+    `unblurred` alone decides. An all-Early-Access response stays vacuous, as on every other
+    surface: an in-progress review is blurred for everyone and must not drive demotion.
+    """
+    saw_gateable = False
+    for row in rows:
+        product = row.get("product_id")
+        if product is not None and str(product) in unpublished_product_ids:
+            continue
+        saw_gateable = True
+        if row.get("unblurred"):
+            return False
+    return saw_gateable
+
+
+def verdicts_contradict_tier(review: dict[str, Any], tier: str) -> bool:
+    """Should a ``verdicts/`` write be demoted to ``anonymous``?
+
+    This surface had **no** write-time demotion at all, so a member-tier write whose payload
+    came back withheld was stamped ``member`` and served for the full 30-day reviews TTL —
+    a cache hit never re-probes.
+
+    **Deliberately NOT keyed on ``user_has_access``.** That is the payload's own blur flag,
+    but it *appears* to track silo enforcement rather than membership (`false` on TV, `true`
+    on mattress, both anonymous — `RECON.md` §12.16). Two data points is a lead, not a fact,
+    and if it never flips for a member on a gated silo then demoting on it would demote every
+    member write there, miss every read, and refetch forever — the exact deadlock the
+    ``cache_tier``/``data_tier`` rule exists to prevent.
+
+    Keyed instead on what the tier actually predicts: a member should see **usage scores**.
+    All-null scores where the tier predicts otherwise is the same evidence an all-blurred
+    slice is on the table path, and it does not depend on what ``user_has_access`` means. An
+    empty score set stays vacuous, as everywhere else.
+    """
+    if tier == ANONYMOUS:
+        return False
+    entries = [e for e in (review.get("product_score_sets") or []) if isinstance(e, dict)]
+    if not entries:
+        return False
+    return all(entry.get("score") is None for entry in entries)
+
+
 def parse_curl_cookie(text: str) -> str | None:
     """Pull ``_rtings_session`` out of a pasted "Copy as cURL".
 
@@ -135,12 +195,32 @@ def load_credential(config: Config) -> CredentialState:
     value = raw.get(SESSION_COOKIE_NAME) if isinstance(raw, dict) else None
     if not value:
         return CredentialState()
-    return CredentialState(configured=str(value), source="file")
+    stored_at = 0.0
+    with contextlib.suppress(TypeError, ValueError):
+        stored_at = float(raw.get("stored_at") or 0.0)
+    return CredentialState(configured=str(value), source="file", stored_at=stored_at)
 
 
-def store_credential(config: Config, cookie_value: str) -> Path:
-    """Persist the cookie ``0600`` in the config dir. Never the cache, never a log."""
+def store_credential(
+    config: Config, cookie_value: str, *, not_newer_than: float | None = None
+) -> Path | None:
+    """Persist the cookie ``0600`` in the config dir. Never the cache, never a log.
+
+    ``not_newer_than`` makes the write a compare-and-swap for the **rotation** path: two
+    processes sharing a config dir each load the credential once at startup, so without it
+    a process holding a stale baseline can overwrite a rotation another process wrote
+    seconds ago. Returns ``None`` when the write was skipped for that reason. A user-driven
+    paste passes nothing and always wins — it is the newest fact by definition.
+    """
     ensure_dir(config.config_dir)
+    if not_newer_than is not None:
+        try:
+            existing = json.loads(config.session_file.read_text(encoding="utf-8"))
+            stored_at = float(existing.get("stored_at") or 0.0)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            stored_at = 0.0
+        if stored_at > not_newer_than:
+            return None
     payload = json.dumps(
         {SESSION_COOKIE_NAME: cookie_value, "stored_at": time.time()}, separators=(",", ":")
     ).encode("utf-8")
@@ -360,7 +440,21 @@ class AuthManager:
                     self.transport.adopt_rotated_cookie(jar_value)
                     if self.transport.credential.source == "file":
                         try:
-                            store_credential(self.config, jar_value)
+                            written = store_credential(
+                                self.config,
+                                jar_value,
+                                not_newer_than=self.transport.credential.stored_at,
+                            )
+                            if written is not None:
+                                # Advance the baseline, or our own next rotation compares
+                                # against the pre-write stamp, sees the file as "newer",
+                                # and skips every subsequent write-back.
+                                self.transport.credential.stored_at = time.time()
+                            else:
+                                log.debug(
+                                    "another process stored a newer session cookie; "
+                                    "keeping ours in memory and not overwriting theirs"
+                                )
                         except OSError:
                             log.warning(
                                 "could not persist the re-issued session cookie; it stays "
@@ -472,6 +566,9 @@ class AuthManager:
         if not predicts_unblurred:
             return False
 
+        if surface == RATINGS_SURFACE:
+            return _all_ratings_blurred(rows, unpublished_product_ids)
+
         saw_insider_tested = False
         for row in rows:
             if row.get("status") != "tested":
@@ -509,8 +606,21 @@ class AuthManager:
         return str(product_id) not in set(probe.previewed_products)
 
 
-def envelope_notes_for(rows: list[dict[str, Any]], insider_ids: set[str]) -> dict[str, Any]:
-    """The per-file bit that never-downgrade and pruning key on."""
-    return {
-        "has_unblurred_insider": derive_data_tier(rows, insider_ids) == DATA_TIER_UNBLURRED,
-    }
+def envelope_notes_for(
+    rows: list[dict[str, Any]], insider_ids: set[str], *, surface: str
+) -> dict[str, Any]:
+    """The per-file bit that never-downgrade and pruning key on.
+
+    ``surface`` is required rather than defaulted: getting it wrong is silent, and it was
+    wrong for ``ratings/`` — see :func:`_all_ratings_blurred`.
+    """
+    if surface == RATINGS_SURFACE:
+        # `derive_data_tier` requires the row's `original_id` to be in `insider_ids`, but a
+        # ratings row's id is a USAGE id and `insider_ids` holds TEST ids — a cross-namespace
+        # lookup that is meaningless in both directions (and a numeric collision would make
+        # it wrong rather than merely useless). A usage row's own `unblurred` bit is the
+        # whole signal.
+        has_unblurred = any(row.get("unblurred") for row in rows)
+    else:
+        has_unblurred = derive_data_tier(rows, insider_ids) == DATA_TIER_UNBLURRED
+    return {"has_unblurred_insider": has_unblurred}

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import api, errors
-from .auth import AuthManager, envelope_notes_for
+from .auth import AuthManager, envelope_notes_for, verdicts_contradict_tier
 from .cache import (
     ANONYMOUS,
     OUTCOME_GRAPH_NOT_AVAILABLE,
@@ -41,6 +41,7 @@ from .cache import (
 )
 from .config import (
     BASE_URL,
+    SILO_HINT_SET,
     TTL_BENCH,
     TTL_CATALOG,
     TTL_GRAPH_NEGATIVE,
@@ -308,6 +309,15 @@ class Repository:
                 errors.UNKNOWN_SILO,
                 f"{silo!r} is not one of RTINGS' silos",
                 details={"known": sorted(index)},
+            )
+        if key not in SILO_HINT_SET:
+            # Promised by SPEC §7 and CLAUDE.md and previously never emitted. The silo is
+            # real — it is in the live list — so this is not an error; it says the tool
+            # description shipped in this release is out of date, which is the signal that
+            # RTINGS added a category.
+            self.warn(
+                f"silo_hint_drift: {key!r} is served by RTINGS but is not in this release's "
+                "silo hint; the tool description is stale, the data is fine"
             )
         return found
 
@@ -875,7 +885,7 @@ class Repository:
                     unpublished_product_ids=generation.unpublished_ids,
                     bench_id=bench_id,
                     silo=silo,
-                    notes=envelope_notes_for(bucket, insider_ids),
+                    notes=envelope_notes_for(bucket, insider_ids, surface=surface),
                 )
                 self.cache.put_variant(envelope, directory, bench_id, key=original_id)
                 self.cache.prune_variants(directory, bench_id, key=original_id)
@@ -1177,7 +1187,7 @@ class Repository:
                 bench_id=bench_id,
                 silo=key,
                 unpublished_product_ids=sorted(unpublished & {product}),
-                notes=envelope_notes_for(row_ids, insider_ids),
+                notes=envelope_notes_for(row_ids, insider_ids, surface="reviews"),
             )
             self.cache.put_variant(envelope, "reviews", key=product, compress=True)
             self.cache.prune_variants("reviews", key=product)
@@ -1224,6 +1234,12 @@ class Repository:
                 if tier != ANONYMOUS:
                     probe = await self.auth.session_probe(force=True)
                     tier = self.auth.write_tier("reviews", probe)
+                    # This surface had no demotion at all, so a withheld payload written
+                    # under a member probe was served as member data for the full 30-day
+                    # TTL. See `verdicts_contradict_tier` for why the predicate is the
+                    # usage scores and NOT `user_has_access`.
+                    if verdicts_contradict_tier(review, tier):
+                        tier = ANONYMOUS
                 envelope = Envelope(
                     fetched_at=time.time(),
                     source_url=f"{BASE_URL}/{key}/tools/compare",

@@ -281,6 +281,16 @@ def normalize_table_row(
     # Step 4c — visible. The value may legitimately be null (2 measured rows), and when it
     # is, `gated` must be null rather than false.
     row.status = TESTED_VISIBLE
+    if definition.has_graph:
+        # Same reasoning as the review path: a `graph` test never has a scalar, so a null
+        # value here is not "measured, and the answer is nothing" — the answer is a curve.
+        # `rt_ratings` accepts any leaf id as a projection and `rt_schema` lists graph tests
+        # beside real ones, so this is reachable without the caller doing anything odd.
+        row.value_kind = "curve"
+        row.warning = "this test is a measurement curve — fetch it with rt_graph"
+        row.display = strip_html(raw.get("rendered_value"))
+        row.gated = None
+        return row
     raw_value = raw.get("value")
     row.raw_value = raw_value
     value, warning = coerce_value(definition, raw_value)

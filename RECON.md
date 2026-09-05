@@ -380,7 +380,7 @@ O = GLOBALS.session.access_state.access_level >= GLOBALS.session.access_state.pr
 
 | Tier | `current_user` | Hypothesised access |
 |---|---|---|
-| Anonymous | `null` | catalog, schema, search, prose, rankings, **all curves**, and the public (`insider_only:false`) tests **with their scores**; no `insider_only` value or score, no usage ratings (§2 — **measured**). **Zero free previews — see below** |
+| Anonymous | `null` | catalog, schema, search, prose, rankings, **all curves**, and the public (`insider_only:false`) tests **with their scores**; no `insider_only` value or score, no usage ratings (§2 — **measured on TV only**; SUPERSEDED IN PART by §12.3, which measured mattress `Side Sleeping` at `score: 7.7, unblurred: true` anonymously). **Zero free previews — see below** |
 | Free account | object | above + N metered full-review unlocks in `access_state.previewed_products`, capped at `access_limit` (**inferred from the bundle**) |
 | Member (insider) | object, `has_insider_access` | everything `unblurred` (**unverified — §10 q1**) |
 
@@ -668,8 +668,11 @@ that does not apply. That is the project's stated worst failure mode, reached by
 than the one §6 anticipated.
 
 **Rule:** branch on `status` **before** `unblurred`. `status:"na"` ⇒ `not_applicable`. The
-normalizer emits **four** states (`SPEC.md` §5/§7): `tested_visible` / `tested_gated` /
-`not_applicable` / `not_tested`. The observed `status` domain is `{"tested","na"}`; treat it as
+normalizer emits **seven** states (`SPEC.md` §5/§7): `tested_visible` / `tested_gated` /
+`not_applicable` / `not_tested` / `review_unpublished` / `coverage_unknown` /
+`unknown_row_status`. It was **four** when this section was written (2026-09-03); the other
+three were each forced by a later measurement — see §12.10 (Early Access), §8 (coverage).
+ The observed `status` domain is `{"tested","na"}`; treat it as
 open — an unrecognised value maps to `unknown_row_status` with a warning, never to `tested_visible`.
 
 ### The review path returns one row per test in the product's **own** bench (confirmed 2026-09-03)
@@ -825,9 +828,12 @@ Ordered by how much they gate. A membership will be bought to answer q1–q4.
    call, and the `table_tool__*` endpoints carry no `url_path`. So a free preview most likely unblurs
    a specific product's *review* (the `rt_product` path), not the bulk table. Confirm with the
    account which endpoints a metered unlock actually touches.
-3. **Session lifetime / rotation.** `_rtings_session` is 30-day; whether it slides on use, whether a
-   pasted value survives a server-side re-issue (a Rails session may re-mint on state change),
-   answerable only over elapsed time. Gates the read-only env-var path (`SPEC.md` §6).
+3. ~~**Session lifetime / rotation.**~~ **RESOLVED anonymously (§12.15, 2026-09-04).** RTINGS
+   re-issues `_rtings_session` on **every** response with `expires = now + 30 days`, so the window
+   is a sliding *idle* one: the session lives indefinitely while used and dies 30 days after it
+   stops. Rotation write-back is therefore required, gated on a logged-in probe. Still to confirm
+   once logged in: that the same holds for a member value, and that the browser stays signed in
+   while the server uses the same blob.
 4. ~~`share_token` — the member gift link.~~ **RESOLVED (§5, 2026-09-03).** URL format is a plain
    review URL + `?share_token=<TOKEN>`; token is a **32-char base64url ~192-bit secret** (not
    guessable); server resolves it and sets access props server-side; ~2-day expiry, member-minted,
@@ -846,7 +852,8 @@ Ordered by how much they gate. A membership will be bought to answer q1–q4.
 9. ~~The "not tested" row shape.~~ **RESOLVED (§6)** — a not-tested pair is an **absent row**.
     **Amended 2026-09-03:** "every present row is `status:"tested"`" holds only for
     `table_tool__test_results`. The review body also emits `status:"na"` (not applicable), which is
-    indistinguishable from gated on `unblurred` alone → the normalizer emits **four** states.
+    indistinguishable from gated on `unblurred` alone → the normalizer emits four states. **Now
+    seven** — see §6 and §12.10.
 15. **What decides whether a silo enforces the paywall?** Measured: 12 of 28 enforce, 16 do not
     (§11.1). The aggregate correlates with size and age, but robot-vacuum/vacuum (same first-published
     date, same bench count, and the **open** one has more reviews), keyboard-switch/router and
@@ -856,7 +863,8 @@ Ordered by how much they gate. A membership will be bought to answer q1–q4.
 16. **Does enforcement hold on LEGACY benches, the review path, and non-leaf kinds?** Both sweeps
     covered only each silo's **current** bench and its first 40–50 `number`/`word` leaf tests (§11).
     `page_body`, `picture`/`video`/`audio`/`graph` kinds and older benches are unmeasured.
-10. **Does a recommendations API query exist**, or is page extraction (§7) the only path? A static
+10. ~~**Does a recommendations API query exist**~~ **— ANSWERED: no (§11.7).** Page extraction is
+    the only path. Original note follows. A static
     grep of the minified bundles was inconclusive (URLs are built dynamically); needs a browser
     network capture of a `/reviews/best/` page. Non-blocking — the page-extraction path works. **List
     discovery IS resolved (2026-09-03):** the silo landing page `/{silo}` enumerates its best-of

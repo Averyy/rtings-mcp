@@ -3,8 +3,9 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-04: the anonymous server is built and working.** All seven tools run against the
-live API, 206 offline + 9 live tests pass, and the release-gate re-scan reproduces the 12-enforcing /
+**Status 2026-09-05: the anonymous server is built and working, and has been through a
+seven-lens review round (15 defects found and fixed — see Built, below).** All seven tools run against the
+live API, 297 offline + 9 live tests pass, and the release-gate re-scan reproduces the 12-enforcing /
 16-open map with zero drift. What the build measured is in `RECON.md` §12. Everything still open is
 below.
 
@@ -39,15 +40,16 @@ session, so a missed item costs another membership month. Highlights:
       currently calls a logged-in session `member` only on positive evidence
       (`has_insider_access`, or `access_level > preview_level`) and `free` otherwise, and says in
       the envelope's `note` that the boundary is provisional. Redact before committing as a fixture.
-- [ ] **capture f — is the HTML probe served from CloudFront's anonymous cache to a member cookie?**
-      Check `X-Cache`/`Vary`. The code already records the probe's `X-Cache` and refuses to demote
-      on a cache hit; this measurement is what tells us whether that guard ever fires.
+- [ ] **capture f — CONFIRM ONLY.** Already answered anonymously (`SPEC.md` §10): `/tv/tools/table`
+      returns `Cache-Control: ... private`, which CloudFront does not cache, so the demotion guard
+      should never fire. One check with the cookie that `X-Cache` still says `Miss`; do not design
+      around it.
 - [ ] **capture c — the exact `test_results` body a logged-in front end sends.**
-- [ ] **NEW — is `app/side_by_side__review` metered?** It is the public compare tool rather
+- [ ] **capture o (Stage 1) — is `app/side_by_side__review` metered?** It is the public compare tool rather
       than the review page, and a tool that spent a preview per comparison would be unusable
       — but that is reasoning, not measurement. Check `previewed_products` before and after
       an `include_verdicts` call on the free account. Cheap, and it is in Stage 1.
-- [ ] **NEW — does `user_has_access` flip for a member on a gated silo?** It is `false` on TV
+- [ ] **capture p (Stage 2) — does `user_has_access` flip for a member on a gated silo?** It is `false` on TV
       and `true` on mattress anonymously, so it tracks silo enforcement. If a membership
       flips it on TV, it is a second, independent confirmation of q1 — and it is an auth
       marker *inside* the API, which §1 says does not exist.
@@ -97,9 +99,28 @@ session, so a missed item costs another membership month. Highlights:
       (`rt_product` −51%, ~36% across the six most common responses). `value`, `gated` and
       `status` are exempt, and envelopes are untouched, so `out["error"] is None` still
       works — with four tests pinning exactly that.
-- [ ] **Nest `data.results` by hierarchy** (SPEC §7 says "grouped by hierarchy"; the code
-      returns a flat list repeating `hierarchy` on every row, ~23% of a 56 KB response).
-      Recommended by review, deliberately deferred as its own change.
+- [ ] **Nest `data.results` by hierarchy** — the code returns a flat list repeating
+      `hierarchy` on every row (~23% of a 56 KB response). Recommended by review, deliberately
+      deferred as its own change. **The docs no longer claim otherwise** (2026-09-04): SPEC §7,
+      CLAUDE.md and the `rt_product` docstring said "grouped by hierarchy", which the response
+      shape did not support; they now describe the breadcrumb the rows actually carry.
+- [x] **Seven-agent review round (2026-09-04) — all findings fixed.** In brief: `filters`/`sort`
+      silently no-opped unless the field was also in `tests=` (live-confirmed on mattress, an OPEN
+      silo — nothing was gated, the test had simply never been fetched); descending sorts put rows
+      with no comparable value FIRST; `rt_ratings` read Early-Access status from the freshly
+      refetched catalog instead of the row's own slice envelope, so a stale slice reported
+      `tested_gated` for an unpublished review; `graph_data_url` mapped ANY `payload_missing` to
+      "no curve" and cached that for 3 days (the real negative is a well-formed `test_results: []`,
+      measured); `rt_product`'s Early-Access notice asserted "a membership does not lift it", the
+      exact claim §12.10 reversed; write-time demotion was structurally dead on `ratings/` (the
+      predicate needs `status` and an `insider_only` id, and a ratings row has neither), which also
+      made the pruning exemption never fire there; `verdicts/` had no demotion at all; a graph-kind
+      test on the table path collapsed to "measured, and the answer is nothing"; `RTINGS_CACHE_MAX_MB`
+      was documented as the growth bound but `enforce_size_limit` was called from nowhere;
+      `silo_hint_drift` was promised in three docs and emitted nowhere. Plus a `test_http.py` for the
+      real transport — `StubTransport` overrides every method without `super()`, so status precedence
+      and the `errors[]` rule were dead code under the suite and both survived mutation.
+
 - [ ] Confirm `rtings-mcp` is free on PyPI before publishing.
 - [ ] Decide whether `rt_ratings` should default to projecting the category's public tests, so a
       bare `rt_ratings("tv")` returns something numeric rather than catalog-plus-gated-scores.

@@ -157,10 +157,13 @@ async def graph_data_url(
         },
         referer=f"{BASE_URL}/{silo}/graph",
     )
-    try:
-        results = _dig(payload, "product", "review", "test_results", query=Q_GRAPH_URL)
-    except RtingsError:
-        return None
+    # A genuine "no curve" is a well-formed, explicitly EMPTY list — measured 2026-09-04 on
+    # X90L test 11: `{"data":{"product":{"review":{"test_results":[]}}}}`. So `_dig` raising
+    # here means the SHAPE changed, not that the product has no curve, and the two must not
+    # be collapsed: `repository.graph` writes a `graph_not_available` file for the negative,
+    # so swallowing drift cached "RTINGS publishes no curve for this test" for three days
+    # off a transient blip. Let the drift alarm through — it is never cached.
+    results = _dig(payload, "product", "review", "test_results", query=Q_GRAPH_URL)
     if not isinstance(results, list) or not results:
         return None
     url = results[0].get("graph_data_url") if isinstance(results[0], dict) else None

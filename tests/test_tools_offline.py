@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html as html_module
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -525,6 +526,88 @@ async def test_a_score_is_never_substituted_for_a_missing_value(ctx):
         row["product_id"] for group in out["data"]["groups"] for row in group["products"]
     ]
     assert matched == ["2"]
+
+
+async def test_a_filter_field_is_fetched_even_when_it_was_not_projected(ctx):
+    """Measured live on mattress, an OPEN silo: `filters={"Thickness": ">1"}` returned all
+    69 products with a warning saying no value was populated — because the test had never
+    been fetched, not because RTINGS withheld it. "0 applied" reading as "no data exists"
+    is the project's core failure mode wearing a different hat, and here nothing was gated
+    at all."""
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="500"),
+                make_test_row("2", "11", unblurred=True, value="5000"),
+            ]
+        }
+    }
+    # No `tests=` at all: the filter alone must pull test 11 in.
+    out = await services.rt_ratings(ctx, "tv", filters={"11": ">1000"})
+    matched = [
+        row["product_id"] for group in out["data"]["groups"] for row in group["products"]
+    ]
+    assert matched == ["2"], "the filter must apply without being projected explicitly"
+    assert not [w for w in out["warnings"] if "filter_unavailable" in w]
+
+
+async def test_a_sort_field_is_fetched_even_when_it_was_not_projected(ctx):
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="500"),
+                make_test_row("2", "11", unblurred=True, value="5000"),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", sort="11")
+    assert out["sorted_by"]["field"] == "11", "must not fall back to released_at"
+    ordered = [
+        row["product_id"] for group in out["data"]["groups"] for row in group["products"]
+    ]
+    assert ordered[:2] == ["2", "1"], "descending by the requested test"
+
+
+async def test_rows_with_no_comparable_value_sort_last_in_both_directions(ctx):
+    """`reverse` flips the whole sort key, so a fixed "missing" rank put unmeasurable rows
+    at the TOP of every descending sort — "the brightest TVs" led by TVs whose brightness
+    is gated or untested."""
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="500"),
+                make_test_row("2", "11", unblurred=True, value="5000"),
+                make_test_row("3", "11", unblurred=False),  # gated: no comparable value
+            ]
+        }
+    }
+    for spec, expected_head in (("-11", "2"), ("+11", "1")):
+        out = await services.rt_ratings(ctx, "tv", sort=spec)
+        ordered = [
+            row["product_id"]
+            for group in out["data"]["groups"]
+            for row in group["products"]
+        ]
+        assert ordered[0] == expected_head, (spec, ordered)
+        assert ordered[-1] == "3", f"the unmeasurable row must sort last ({spec})"
+
+
+async def test_a_test_may_be_named_wherever_an_id_is_accepted(ctx):
+    """`filters` and `sort` have always taken a name, so `tests=` rejecting one made the
+    documented remedy for an unapplied filter fail on the very string the filter took."""
+    by_id = await services.rt_ratings(ctx, "tv", tests=["11"])
+    definition = (await ctx.repo.schema("tv")).test("11")
+    by_name = await services.rt_ratings(ctx, "tv", tests=[definition.name])
+    assert by_name["data"]["groups"] == by_id["data"]["groups"]
+
+
+async def test_an_absent_filter_field_is_not_reported_as_gated(ctx):
+    """Three reasons a filter cannot apply — gated, absent, genuinely empty — and telling
+    the caller the wrong one sends them to buy a membership they do not need."""
+    out = await services.rt_ratings(ctx, "tv", bench=["2"], filters={"208": ">1"})
+    unavailable = [w for w in out["warnings"] if "filter_unavailable" in w]
+    if unavailable:
+        assert not any("gated for this session" in w for w in unavailable), unavailable
 
 
 # -- rt_schema ----------------------------------------------------------------------
@@ -1124,8 +1207,12 @@ async def test_a_rotated_cookie_is_persisted_when_the_probe_proves_login(member_
     from rtings_mcp.auth import load_credential, store_credential
 
     store_credential(member_ctx.config, "PASTED")
-    member_ctx.transport.credential.configured = "PASTED"
-    member_ctx.transport.credential.source = "file"
+    # Load it the way the server does (`Context.build`), rather than assigning the fields by
+    # hand: the loader is what records `stored_at`, and the rotation write-back is a
+    # compare-and-swap against it. Hand-building the state skipped that and made this test
+    # pass against a credential shape the process never actually holds.
+    member_ctx.transport.credential = load_credential(member_ctx.config)
+    assert member_ctx.transport.credential.stored_at > 0
     member_ctx.transport.session_page = "member"
     member_ctx.transport.jar_cookie = "REISSUED-BY-RTINGS"
 
@@ -1133,6 +1220,34 @@ async def test_a_rotated_cookie_is_persisted_when_the_probe_proves_login(member_
     assert probe.logged_in
     assert member_ctx.transport.credential.configured == "REISSUED-BY-RTINGS"
     assert load_credential(member_ctx.config).configured == "REISSUED-BY-RTINGS"
+
+
+async def test_a_rotation_does_not_clobber_a_newer_cookie_from_another_process(member_ctx):
+    """Two processes sharing a config dir each load the credential once, at startup. Without
+    a compare-and-swap the one holding the stale baseline overwrites a rotation the other
+    wrote seconds ago, and that process is left holding a value the server may have already
+    replaced."""
+    import time as _time
+
+    from rtings_mcp.auth import load_credential, store_credential
+
+    store_credential(member_ctx.config, "PASTED")
+    member_ctx.transport.credential = load_credential(member_ctx.config)
+    member_ctx.transport.credential.source = "file"
+
+    # Another process rotates and stores a newer value.
+    _time.sleep(0.01)
+    store_credential(member_ctx.config, "STORED-BY-THE-OTHER-PROCESS")
+
+    member_ctx.transport.session_page = "member"
+    member_ctx.transport.jar_cookie = "OUR-OWN-REISSUE"
+    probe = await member_ctx.auth.session_probe(force=True)
+
+    assert probe.logged_in
+    # Ours is adopted in memory — it is a real, proven-logged-in credential.
+    assert member_ctx.transport.credential.configured == "OUR-OWN-REISSUE"
+    # But the newer stored value is left alone.
+    assert load_credential(member_ctx.config).configured == "STORED-BY-THE-OTHER-PROCESS"
 
 
 async def test_a_rotated_cookie_is_NOT_persisted_when_the_response_is_logged_out(ctx):
@@ -1362,8 +1477,12 @@ async def test_the_verdicts_notice_never_overwrites_the_measurement_notice(ctx):
     out = await services.rt_product(
         ctx, "/early-access/tv/reviews/alpha/alpha-draft", include_verdicts=True
     )
-    assert "still in progress" in out["data"]["notice"]
-    assert "Early Access" in out["data"]["notice"] or "progress" in out["data"]["notice"]
+    assert "Early Access" in out["data"]["notice"]
+    # `published:false` is Early Access and a membership DOES lift it. The notice used to
+    # assert the opposite — "blurred for everyone, a membership does not lift it" — which is
+    # the pre-correction reading, told to the user as fact.
+    assert "does not lift" not in out["data"]["notice"]
+    assert "for everyone" not in out["data"]["notice"]
     # The verdicts get their own key rather than stealing that one.
     assert out["data"]["verdicts_notice"]
     assert out["data"]["verdicts_notice"] != out["data"]["notice"]
@@ -1475,3 +1594,56 @@ async def test_a_numeric_id_miss_names_the_silo_that_was_searched(ctx):
         await ctx.repo.resolve_product("99999", "tv")
     assert "not in the tv catalog" in excinfo.value.message
     assert "pass silo=" not in excinfo.value.message  # a silo WAS passed
+
+
+async def test_a_silo_outside_the_release_hint_still_works_and_warns(ctx):
+    """SPEC §7 and CLAUDE.md both promise `silo_hint_drift`, and it was never emitted:
+    `grep silo_hint_drift src/` found only a comment. Validation is against RTINGS' LIVE
+    list, so a category added mid-release must work — the warning says the shipped tool
+    description is stale, not that the data is wrong."""
+    from rtings_mcp import repository as repo_module
+
+    original = repo_module.SILO_HINT_SET
+    repo_module.SILO_HINT_SET = frozenset(original - {"tv"})
+    try:
+        out = await services.rt_silos(ctx)
+        assert not [w for w in out["warnings"] if "silo_hint_drift" in w], (
+            "listing silos must not warn; the hint is about a REQUESTED silo"
+        )
+        out = await services.rt_schema(ctx, "tv")
+    finally:
+        repo_module.SILO_HINT_SET = original
+
+    assert out["data"], "a silo outside the hint must still be served"
+    assert any("silo_hint_drift" in w for w in out["warnings"]), out["warnings"]
+
+    out = await services.rt_schema(ctx, "tv")
+    assert not [w for w in out["warnings"] if "silo_hint_drift" in w]
+
+
+async def test_a_stale_review_against_a_newer_schema_is_not_a_false_not_tested(ctx, monkeypatch):
+    """A review body normally carries every test on its own bench, so `missing` is empty. It
+    stops being empty exactly when a newer schema lists a test the cached review predates —
+    and calling that `not_tested` asserts "RTINGS did not measure this" by comparing two
+    documents of different ages. SPEC §8 promised a `bench_mismatch` guard; this is it."""
+
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    by_name = {v["name"]: v for v in out["data"]["results"]}
+    assert by_name["Peak Brightness"]["status"] == "not_tested", "fresh: a real answer"
+
+    # Now make the cached review past-TTL, with a schema fetched after it.
+    real_review = ctx.repo.review
+
+    async def stale_review(*args, **kwargs):
+        envelope, _ = await real_review(*args, **kwargs)
+        return envelope, True
+
+    monkeypatch.setattr(ctx.repo, "review", stale_review)
+    monkeypatch.setattr(
+        ctx.repo, "schema_meta", lambda silo: (time.time() + 3600, False)
+    )
+
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    by_name = {v["name"]: v for v in out["data"]["results"]}
+    assert by_name["Peak Brightness"]["status"] == "coverage_unknown"
+    assert any("bench_mismatch" in w for w in out["warnings"]), out["warnings"]

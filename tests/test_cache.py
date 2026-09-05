@@ -158,9 +158,14 @@ def test_newest_unblurred_is_exempt_from_eviction_at_ANY_tier(tmp_path):
         cache.put_variant(
             env(ANONYMOUS, 200.0 + i, rows=big), "tests", "999", key=str(1000 + i)
         )
+    # `flush_lru` now enforces the size limit itself — it is the hook every write batch
+    # ends with, and `enforce_size_limit` was previously called from nowhere in the serving
+    # path, so `RTINGS_CACHE_MAX_MB` had no effect at all.
+    written = len(list((cache.root / "tests" / "999").glob("*.json")))
     cache.flush_lru()
-    freed = cache.enforce_size_limit()
-    assert freed > 0
+    remaining = len(list((cache.root / "tests" / "999").glob("*.json")))
+    assert remaining < written, "the size limit must actually evict"
+    assert cache.enforce_size_limit() == 0, "a second pass has nothing left to free"
     assert keep.exists(), "the only unblurred copy of a scored row was evicted"
 
 

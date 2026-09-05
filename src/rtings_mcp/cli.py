@@ -20,6 +20,12 @@ from .errors import RtingsError
 from .server import configure_logging
 from .server import main as serve_main
 
+#: Insider tests sampled per silo by the release-gate scan. The committed snapshot in
+#: `docs/enforcement-snapshot.json` was produced with this value and records it in
+#: `method.scope`; a different default here makes the documented command produce a
+#: spurious diff, which the release rules would then read as a SPEC CHANGE.
+SCAN_SAMPLE_TESTS = 40
+
 
 def _print(*parts: object) -> None:
     print(*parts, file=sys.stdout)
@@ -245,7 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan = sub.add_parser("scan", help="release gate: re-derive the per-silo enforcement map")
     scan.add_argument("--silo", help="scan one silo instead of all 28")
-    scan.add_argument("--tests", type=int, default=20, help="insider tests to sample per silo")
+    scan.add_argument(
+        "--tests",
+        type=int,
+        default=SCAN_SAMPLE_TESTS,
+        help="insider tests to sample per silo (default matches the committed snapshot)",
+    )
     scan.add_argument("--out", help="write the result as JSON to this path")
     scan.add_argument("--refresh", action="store_true", help="ignore cached slices")
     return parser

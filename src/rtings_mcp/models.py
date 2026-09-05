@@ -52,6 +52,12 @@ class LeanRow(Permissive):
     ``row["value"]`` and get ``None`` rather than a KeyError, and see ``gated: true`` next to
     it. ``status`` stays for the same reason — it is the field that says *why*.
 
+    Subclasses extend the set when a different field carries that role: a usage rating has
+    **only** a score, so on :class:`RatingOut` and :class:`VerdictOut` ``score`` is what
+    ``value`` is here, and dropping it left an agent testing ``"score" in row`` with an
+    answer that depended on whether the row happened to be gated. It stays droppable on
+    :class:`ValueOut`, where a score is secondary to the value and null on most rows.
+
     Envelope models deliberately do NOT inherit this: `error: null` means "no error" and
     `scores_available: null` means "not applicable here", and a caller checking those with
     `out["error"] is None` must not get a KeyError instead.
@@ -161,6 +167,10 @@ class ValueOut(LeanRow):
 
 
 class RatingOut(LeanRow):
+    # A usage rating has only a score, so `score` here is what `value` is on `ValueOut`:
+    # "a gated score is null, never absent".
+    ALWAYS_PRESENT: ClassVar[frozenset[str]] = LeanRow.ALWAYS_PRESENT | {"score"}
+
     original_id: str
     name: str
     product_id: str | None = None
@@ -306,6 +316,9 @@ class RatingsEnvelope(BaseEnvelopeOut):
 
 class VerdictOut(LeanRow):
     """RTINGS' written judgement for one usage, with its score when that is served."""
+
+    #: Same reasoning as :class:`RatingOut` — a verdict's score is its measurement.
+    ALWAYS_PRESENT: ClassVar[frozenset[str]] = LeanRow.ALWAYS_PRESENT | {"score"}
 
     original_id: str | None = None
     name: str | None = None

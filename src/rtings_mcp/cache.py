@@ -61,6 +61,10 @@ _VERSIONED_RE = re.compile(
 )
 _GENERATION_RE = re.compile(r"^(?P<key>.+)\.(?P<stamp>\d+)\.json$")
 
+#: How often `flush_lru` may run the size-limit pass. The first pass is stat-only but
+#: still walks the tree, and a cold multi-silo run writes hundreds of files.
+SIZE_CHECK_INTERVAL_S = 300.0
+
 OUTCOME_OK = "ok"
 OUTCOME_GRAPH_NOT_AVAILABLE = "graph_not_available"
 OUTCOME_EMPTY = "empty"
@@ -210,6 +214,9 @@ class Cache:
         self._lru_path = self.root / "_lru.json"
         self._lru: dict[str, float] = self._load_lru()
         self._lru_dirty = False
+        #: Wall-clock of the last size-limit pass; see `_maybe_enforce_size_limit`.
+        #: Zero so an already-oversized cache is trimmed on the first write, not 5 min in.
+        self._last_size_check = 0.0
 
     # -- paths ----------------------------------------------------------------------
 
@@ -342,6 +349,31 @@ class Cache:
             self._lru_dirty = False
         except OSError:
             log.debug("could not persist the LRU index", exc_info=True)
+        self._maybe_enforce_size_limit()
+
+    def _maybe_enforce_size_limit(self) -> None:
+        """Bound the cache from the one hook every write batch already ends with.
+
+        ``enforce_size_limit`` was fully implemented, documented as THE growth bound in
+        SPEC §8, unit-tested — and called from nowhere in the serving path, so
+        ``RTINGS_CACHE_MAX_MB`` had no effect and ``reviews/`` grew without limit (442 KB x
+        548 TVs is 242 MB for one silo). ``prune_variants`` bounds variants per key, never
+        total size.
+
+        Throttled rather than run per write: the first pass is ``stat``-only but still walks
+        the tree, and a cold multi-silo run writes hundreds of files.
+        """
+        checked_at = time.time()
+        if checked_at - self._last_size_check < SIZE_CHECK_INTERVAL_S:
+            return
+        self._last_size_check = checked_at
+        try:
+            freed = self.enforce_size_limit()
+        except OSError:
+            log.debug("could not enforce the cache size limit", exc_info=True)
+            return
+        if freed:
+            log.debug("evicted %d bytes to stay under RTINGS_CACHE_MAX_MB", freed)
 
     # -- untiered surfaces ----------------------------------------------------------
 

@@ -140,6 +140,10 @@ class CredentialState:
     #: probe, never an immediate error — RTINGS may legitimately re-mint a *logged-in*
     #: session, and classifying that from the value alone throws away a good credential.
     jar_mismatch: bool = False
+    #: When the stored file was last written, as this process last saw it. The rotation
+    #: write-back compares against it so a process holding a stale baseline cannot clobber
+    #: a rotation another process wrote in the meantime (both load once, at startup).
+    stored_at: float = 0.0
 
     @property
     def present(self) -> bool:

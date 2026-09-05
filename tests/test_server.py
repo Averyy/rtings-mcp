@@ -149,3 +149,40 @@ def test_envelope_fields_are_never_dropped():
     ).model_dump(mode="json")
     for key in ("error", "data", "scores_available", "sorted_by", "previews_remaining"):
         assert key in dumped, f"{key} must stay on the envelope even when null"
+
+
+def test_the_instructions_gated_list_matches_the_enforcement_snapshot():
+    """The "READ THIS FIRST" block names the 12 gated categories as static prose, and the
+    calling LLM treats it as the authoritative routing signal. Unlike `SILO_HINT` it has no
+    runtime fallback, and the release checklist never mentioned it — so a paywall shift
+    would leave it confidently wrong with nothing to catch it.
+
+    This is a DOC-vs-DOC guard, not a runtime read: `server.py` must never consult the
+    snapshot (SPEC §10), and it does not — the server derives the split live via rt_silos.
+    """
+    import json
+    from pathlib import Path
+
+    snapshot = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs" / "enforcement-snapshot.json").read_text()
+    )
+    enforcing = {
+        silo for silo, row in snapshot["silos"].items() if row["enforces_paywall"]
+    }
+    instructions = server.mcp.instructions
+    # Parse the parenthesised list rather than substring-matching: `vacuum` is a substring
+    # of `robot-vacuum`, so a naive `in` check reports the open silo as gated.
+    listed_text = instructions.split("the flagship ones (")[1].split(")")[0]
+    listed = {token.strip() for token in listed_text.split(",") if token.strip()}
+
+    open_silos = {
+        silo for silo, row in snapshot["silos"].items() if not row["enforces_paywall"]
+    }
+    assert listed - enforcing == set(), (
+        f"listed as gated but open in the snapshot: {sorted(listed - enforcing)}"
+    )
+    assert enforcing - listed == set(), (
+        f"gate but are not listed: {sorted(enforcing - listed)}. "
+        "Re-run `rtings-mcp scan` and update the instructions with the snapshot."
+    )
+    assert not (listed & open_silos)

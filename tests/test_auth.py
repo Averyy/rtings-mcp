@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from rtings_mcp import auth as auth_module
 from rtings_mcp.auth import (
     DATA_TIER_UNBLURRED,
     DATA_TIER_UNPROVEN,
@@ -276,6 +277,88 @@ def test_free_on_the_table_path_is_vacuous(member_auth):
     assert demote(member_auth, tier="free") is False
 
 
+def test_free_on_a_review_it_already_previewed_predicts_unblurred(member_auth):
+    """A metered preview is believed to unblur that specific review, so a blurred response
+    for a product already in `previewed_products` contradicts the probe the same way a
+    member's does. Inverting this check left the whole suite green — it had no test."""
+    previewed = probe("free", previewed_products=["7"])
+    assert (
+        demote(
+            member_auth,
+            tier="free",
+            surface="reviews",
+            product_id="7",
+            probe=previewed,
+        )
+        is True
+    )
+
+
+def test_free_on_a_review_it_has_not_previewed_is_vacuous(member_auth):
+    """Nothing predicted it would be unblurred, so a blurred response proves nothing."""
+    assert (
+        demote(
+            member_auth,
+            tier="free",
+            surface="reviews",
+            product_id="7",
+            probe=probe("free", previewed_products=[]),
+        )
+        is False
+    )
+
+
+# -- write-time demotion on `ratings/`, which has neither field the test path branches on --
+
+#: A ratings row: no `status`, and its `original_id` is a USAGE id, not a test id.
+RATING_ROWS = [
+    {"original_id": "1", "product_id": "1", "score": None, "unblurred": False},
+    {"original_id": "2", "product_id": "2", "score": None, "unblurred": False},
+]
+
+
+def test_a_fully_blurred_ratings_response_demotes(member_auth):
+    """The test-path predicate needs `status:"tested"` and an `insider_only` id. A ratings
+    row has neither, so that loop skipped every row and demotion was structurally DEAD on
+    this surface — a member's blurred response was stamped `member` and served for the whole
+    TTL, because a cache hit never re-probes."""
+    assert demote(member_auth, surface="ratings", rows=RATING_ROWS) is True
+
+
+def test_a_ratings_response_with_any_unblurred_score_does_not_demote(member_auth):
+    rows = [dict(RATING_ROWS[0]), {**RATING_ROWS[1], "unblurred": True, "score": 7.7}]
+    assert demote(member_auth, surface="ratings", rows=rows) is False
+
+
+def test_an_all_early_access_ratings_response_is_vacuous(member_auth):
+    """Blurred for everyone, so it cannot be evidence the session lapsed."""
+    assert (
+        demote(
+            member_auth,
+            surface="ratings",
+            rows=RATING_ROWS,
+            unpublished_product_ids={"1", "2"},
+        )
+        is False
+    )
+
+
+def test_an_empty_ratings_response_is_vacuous(member_auth):
+    assert demote(member_auth, surface="ratings", rows=[]) is False
+
+
+def test_a_ratings_file_records_its_unblurred_rows_for_pruning(member_auth):
+    """`has_unblurred_insider` is the key pruning and never-downgrade read. Deriving it via
+    test-scoped `insider_ids` made it always False for ratings, so the "keep the newest file
+    holding unblurred data" exemption could never fire — a later blurred refetch would prune
+    away the one file holding a member's real scores."""
+    unblurred = [{**RATING_ROWS[0], "unblurred": True, "score": 7.7}]
+    notes = auth_module.envelope_notes_for(unblurred, INSIDER, surface="ratings")
+    assert notes["has_unblurred_insider"] is True
+    blurred = auth_module.envelope_notes_for(RATING_ROWS, INSIDER, surface="ratings")
+    assert blurred["has_unblurred_insider"] is False
+
+
 # -- preview budget ---------------------------------------------------------------
 
 
@@ -290,3 +373,39 @@ def test_free_account_spends_only_on_a_product_not_already_previewed(auth):
     assert auth.preview_would_spend("1") is False
     assert auth.preview_would_spend("39008") is True
     assert auth.previews_remaining() == 1
+
+
+# -- write-time demotion on `verdicts/`, which has a THIRD row shape ----------------
+
+
+def test_a_verdicts_payload_with_no_scores_demotes(member_auth):
+    """This surface had no demotion at all, so a withheld payload written under a member
+    probe was served as member data for the full 30-day reviews TTL."""
+    review = {"product_score_sets": [{"score": None}, {"score": None}]}
+    assert auth_module.verdicts_contradict_tier(review, MEMBER) is True
+
+
+def test_a_verdicts_payload_with_any_score_does_not_demote(member_auth):
+    review = {"product_score_sets": [{"score": None}, {"score": 7.7}]}
+    assert auth_module.verdicts_contradict_tier(review, MEMBER) is False
+
+
+def test_an_empty_verdicts_payload_is_vacuous(member_auth):
+    assert auth_module.verdicts_contradict_tier({}, MEMBER) is False
+    assert auth_module.verdicts_contradict_tier({"product_score_sets": []}, MEMBER) is False
+
+
+def test_verdicts_demotion_ignores_user_has_access(member_auth):
+    """`user_has_access` appears to track SILO ENFORCEMENT, not membership (`false` on TV,
+    `true` on mattress, both anonymous). If it never flips for a member on a gated silo,
+    demoting on it would demote every member write there and miss every read — forever."""
+    scored_but_flagged = {
+        "user_has_access": False,
+        "product_score_sets": [{"score": 8.1}],
+    }
+    assert auth_module.verdicts_contradict_tier(scored_but_flagged, MEMBER) is False
+
+
+def test_anonymous_verdicts_never_demote(member_auth):
+    review = {"product_score_sets": [{"score": None}]}
+    assert auth_module.verdicts_contradict_tier(review, ANONYMOUS) is False

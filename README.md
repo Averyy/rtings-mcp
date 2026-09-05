@@ -94,11 +94,15 @@ No configuration is needed to start: anonymous is the default and never an error
 
 Results are compared within a **test bench** — RTINGS versions its methodology, so cross-bench
 results are nested rather than flattened into one ranking, and `limit` applies within each.
-`filters` accepts a test's id or name plus `brand`, `name_contains`, `published` and
-`variant` — the size RTINGS tested, which is how you ask for 65-inch TVs (most categories
-have no "Size" test). A filter or sort on a field that is gated
-for the rows in hand is **not applied**, and the response says so: an empty result there would read
-as "no product qualifies" when the truth is "you cannot see it".
+`filters` and `sort` accept a test's id **or its name** — the same strings `tests=` and
+`usages=` take — plus `brand`, `name_contains`, `published` and `variant`, the size RTINGS
+tested, which is how you ask for 65-inch TVs (most categories have no "Size" test). A field
+you filter or sort on is fetched automatically; you do not have to list it in `tests=` as
+well. When a field genuinely cannot be compared the predicate is **not applied** and the
+response says which of the three reasons applies — gated for this session, absent from the
+bench queried, or measured-but-empty — because an empty result would otherwise read as "no
+product qualifies" when the truth is "you cannot see it". Rows with no comparable value sort
+last in both directions, so a ranking never opens with the products it knows least about.
 
 **On a gated category, ask for the verdicts.** `rt_product(url, include_verdicts=true)`
 returns RTINGS' per-usage judgement in their own words — *"The Sony X90L is decent for gaming.
@@ -119,6 +123,7 @@ each new review spends one of your limited previews. It refuses by default and r
 | `RTINGS_CACHE_MAX_MB` | `1024` | cache ceiling, LRU-evicted |
 | `RTINGS_ENABLE_GRAPH` | `true` | set `false` to disable `rt_graph` entirely |
 | `RTINGS_RATE_INTERVAL_S` | `2.0` | seconds per request to rtings.com (a refill rate, not a floor) |
+| `RTINGS_MIN_REQUEST_INTERVAL_S` | — | **deprecated**; pins `RTINGS_RATE_INTERVAL_S` and forces burst 1, i.e. the old flat interval. Warns when set |
 | `RTINGS_RATE_BURST` | `5` | requests available immediately after an idle period |
 | `RTINGS_MAX_PREVIEW_SPEND` | `1` | metered previews `rt_product` may spend per run; `0` forbids it |
 | `RTINGS_CONFIG_DIR` | `~/.config/rtings-mcp` | where the credential is stored |

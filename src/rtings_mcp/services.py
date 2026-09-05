@@ -68,6 +68,21 @@ DEFAULT_RATINGS_LIMIT = 10
 MAX_RATINGS_LIMIT = 200
 MAX_PROJECTION_TESTS = 40
 
+#: Filter keys answered from the catalog row itself, so they need no test or usage fetched.
+#: Kept beside :func:`_apply_filters`, which must recognise exactly this set.
+_CATALOG_FILTER_KEYS = frozenset(
+    {
+        "brand",
+        "brand_name",
+        "name",
+        "name_contains",
+        "published",
+        "size",
+        "tested_variant",
+        "variant",
+    }
+)
+
 _COMPARATOR_RE = re.compile(r"^\s*(>=|<=|!=|>|<|=)?\s*(.+?)\s*$")
 
 
@@ -351,6 +366,26 @@ async def rt_ratings(
     usage_ids = _resolve_usages(schema, benches, usages)
     test_ids = _resolve_tests(schema, benches, tests)
 
+    # A filter or sort is applied to the rows actually served, so a field nobody projected
+    # is absent from every row and the predicate quietly does nothing. Fetch what was
+    # referenced (see :func:`_fields_to_fetch`) — bounded by the same projection cap, and
+    # only for fields that are really on these benches.
+    want_tests, want_usages = _fields_to_fetch(schema, filters, sort)
+    bench_tests: set[str] = set()
+    bench_usages: set[str] = set()
+    for bench_id in benches:
+        bench_tests.update(t.original_id for t in schema.tests_for_bench(bench_id))
+        bench_usages.update(u.original_id for u in schema.usages_for_bench(bench_id))
+    for extra in sorted(want_tests & bench_tests):
+        definition = schema.test(extra)
+        if definition is not None and definition.is_structure:
+            continue
+        if extra not in test_ids and len(test_ids) < MAX_PROJECTION_TESTS:
+            test_ids.append(extra)
+    for extra in sorted(want_usages & bench_usages):
+        if extra not in usage_ids:
+            usage_ids.append(extra)
+
     generations = await repo.catalog(silo, benches, refresh=refresh)
     if usage_ids:
         await repo.ensure_rating_slices(silo, benches, usage_ids, refresh=refresh)
@@ -560,7 +595,7 @@ def _resolve_usages(
         return top_level or available
     out = []
     for raw in requested:
-        usage_id = validate_id(raw, what="usage original_id")
+        usage_id = _name_or_id(schema, raw, kind="usage")
         if usage_id not in seen:
             raise RtingsError(
                 errors.UNKNOWN_TEST,
@@ -569,6 +604,52 @@ def _resolve_usages(
             )
         out.append(usage_id)
     return out
+
+
+def _name_or_id(schema: SiloSchema, raw: Any, *, kind: str) -> str:
+    """Accept a name wherever an ``original_id`` is accepted.
+
+    ``filters`` and ``sort`` have always taken either, so rejecting a name in ``tests=``
+    made the documented remedy for an unapplied filter — "request it too" — fail with
+    ``unknown_test`` on the very string the filter had just accepted.
+    """
+    text = str(raw).strip()
+    if text.isdigit():
+        return validate_id(text, what=f"{kind} original_id")
+    resolved = _field_lookup(schema, text)
+    if resolved is None or resolved[0] != kind:
+        raise RtingsError(errors.UNKNOWN_TEST, f"no {kind} named {text!r}")
+    return resolved[1]
+
+
+def _fields_to_fetch(
+    schema: SiloSchema, filters: dict[str, Any] | None, sort: str | None
+) -> tuple[set[str], set[str]]:
+    """The tests and usages that ``filters``/``sort`` reference, as ``(tests, usages)``.
+
+    A filter is applied against the rows actually served, so a field nobody *projected* was
+    absent from every row and the filter quietly did nothing — on **mattress**, an open silo,
+    ``filters={"Thickness": ">1"}`` returned all 69 products with a warning saying no value
+    was populated, when the truth was that the test had never been fetched. That is the
+    project's core failure mode wearing a different hat: "0 applied" reading as "no data
+    exists" when the data was one request away. So a referenced field is fetched, not
+    excused.
+    """
+    tests: set[str] = set()
+    usages: set[str] = set()
+    keys = [*(filters or {})]
+    if sort:
+        # `sort` carries its direction as a leading +/-; the field lookup must not see it.
+        keys.append(str(sort).strip().lstrip("+-"))
+    for key in keys:
+        if str(key).lower() in _CATALOG_FILTER_KEYS:
+            continue
+        resolved = _field_lookup(schema, key)
+        if resolved is None:
+            continue
+        kind, field_id = resolved
+        (tests if kind == "test" else usages).add(field_id)
+    return tests, usages
 
 
 def _resolve_tests(
@@ -581,7 +662,7 @@ def _resolve_tests(
         membership.update(t.original_id for t in schema.tests_for_bench(bench_id))
     out: list[str] = []
     for raw in requested:
-        test_id = validate_id(raw, what="test original_id")
+        test_id = _name_or_id(schema, raw, kind="test")
         definition = schema.test(test_id)
         if definition is None:
             raise RtingsError(errors.UNKNOWN_TEST, f"no test with original_id {test_id}")
@@ -691,9 +772,19 @@ def _usage_json(
         entry.row,
         name=name,
         is_unscored=bool(definition and definition.is_unscored),
-        unpublished_product_ids=unpublished,
+        # The ROW's own fetch-time snapshot, never the freshly-refetched catalog: the
+        # catalog runs on a 3-day clock of its own, so a review published on day 4 would
+        # make a day-1 blurred row read as `tested_gated` — "buy a membership" for a review
+        # RTINGS had simply not finished (SPEC §7 4a). `rt_product` already does this.
+        unpublished_product_ids=_row_unpublished(entry, unpublished),
         as_of=entry.envelope.fetched_at,
     ).to_json()
+
+
+def _row_unpublished(entry: Any, fallback: set[str]) -> set[str]:
+    """Early-Access ids as of the slice that produced this row."""
+    ids = getattr(entry.envelope, "unpublished_product_ids", None)
+    return set(ids) if ids is not None else fallback
 
 
 def _test_value_json(
@@ -723,7 +814,8 @@ def _test_value_json(
     normalized = normalize_table_row(
         entry.row,
         definition,
-        unpublished_product_ids=unpublished,
+        # As above: the row's own fetch-time Early-Access snapshot, not today's catalog.
+        unpublished_product_ids=_row_unpublished(entry, unpublished),
         schema=schema,
         as_of=entry.envelope.fetched_at,
     )
@@ -938,20 +1030,30 @@ def _apply_filters(
         kind, field_id = resolved
         populated = 0
         gated = 0
+        present = 0
         for row in out:
             entry = _values_for(row, kind, field_id)
             if entry is None:
                 continue
+            present += 1
             if entry.get("status") == TESTED_GATED:
                 gated += 1
             elif _comparable(entry, kind) is not None:
                 populated += 1
         if populated == 0:
-            reason = (
-                "every value is gated for this session"
-                if gated
-                else "no value is populated for these rows"
-            )
+            # Three different reasons, and they must not be collapsed: "gated" means buy a
+            # membership, "absent" means the field is not on this bench, and "empty" means
+            # RTINGS measured nothing. Reporting the middle one as "no value is populated"
+            # was the bug that made an unfetched field look like missing data.
+            if gated:
+                reason = "every value is gated for this session"
+            elif present == 0:
+                reason = (
+                    "it is not on the bench(es) queried, so no row carries it — "
+                    "call rt_schema for a field these benches define"
+                )
+            else:
+                reason = "RTINGS published no value for it on these rows"
             warnings.append(
                 f"filter_unavailable: {key!r} was NOT applied because {reason}. "
                 "An empty result here would mean 'you cannot see it', not 'no product "
@@ -1053,9 +1155,18 @@ def _apply_sort(
     kind, field_id = resolved
     populated = [r for r in rows if _comparable(_values_for(r, kind, field_id), kind) is not None]
     if not populated:
+        # Same three-way split as the filter path: a field absent from every row is a
+        # different problem from one that is gated, and telling the caller the wrong one
+        # sends them to buy a membership they do not need.
+        absent = all(_values_for(r, kind, field_id) is None for r in rows)
+        why = (
+            "is not on the bench(es) queried, so no row carries it"
+            if absent
+            else "is gated or unpopulated for these rows"
+        )
         warnings.append(
-            f"filter_unavailable: {field_name!r} is gated or unpopulated for these rows, so "
-            "the ordering would have been arbitrary; sorted by released_at instead"
+            f"filter_unavailable: {field_name!r} {why}, so the ordering would have been "
+            "arbitrary; sorted by released_at instead"
         )
         ordered = sorted(rows, key=lambda r: str(r.get("released_at") or ""), reverse=True)
         # `gated` describes the field actually USED. Reporting
@@ -1068,19 +1179,30 @@ def _apply_sort(
                 "gated": False,
                 "direction": "desc",
                 "requested": field_name,
-                "fallback_reason": "the requested field is gated or unpopulated for these rows",
+                "fallback_reason": (
+                    "the requested field is not on the bench(es) queried"
+                    if absent
+                    else "the requested field is gated or unpopulated for these rows"
+                ),
             },
             warnings,
         )
 
     def key(row: dict[str, Any]) -> tuple[int, float]:
         candidate = _comparable(_values_for(row, kind, field_id), kind)
-        if candidate is None:
-            return (1, 0.0)
-        try:
-            return (0, float(candidate))
-        except (TypeError, ValueError):
-            return (1, 0.0)
+        number = 0.0
+        present = candidate is not None
+        if present:
+            try:
+                number = float(candidate)
+            except (TypeError, ValueError):
+                present = False
+        # `reverse` flips the WHOLE tuple, so a fixed "missing = 1" put rows with no value
+        # at the TOP of every descending sort — "the brightest TVs" led by TVs whose
+        # brightness is gated or untested. Pre-flip the presence flag so a row the server
+        # cannot compare sorts last in both directions.
+        rank = (1 if present else 0) if direction == "desc" else (0 if present else 1)
+        return (rank, number)
 
     ordered = sorted(rows, key=key, reverse=direction == "desc")
     definition = schema.test(field_id) if kind == "test" else schema.usage(field_id)
@@ -1275,6 +1397,20 @@ async def rt_product(
 
     missing = []
     if bench_id and schema.bench(bench_id) is not None:
+        # A review body normally carries EVERY test on the product's own bench (54/54 and
+        # 402/402 measured), so this list is empty in practice. It stops being empty exactly
+        # when the schema and the cached review disagree — and the schema is fetched on its
+        # own clock, so a schema newer than the review may list a test the review predates.
+        # Calling that `not_tested` asserts "RTINGS did not measure this" from two documents
+        # of different ages, which is the false-absence the safety property forbids. SPEC §8
+        # promised a `bench_mismatch` guard here; this is it.
+        # Gated on the review being STALE, not merely older: on a cold call the schema is
+        # legitimately fetched moments after the review, and that is not drift. Only a
+        # past-TTL review read against a newer schema is genuinely unable to answer.
+        schema_fetched_at, _ = repo.schema_meta(ref.silo)
+        covered = not (
+            stale and schema_fetched_at is not None and schema_fetched_at > envelope.fetched_at
+        )
         for definition in schema.leaf_tests_for_bench(bench_id):
             if definition.original_id in seen_ids:
                 continue
@@ -1287,8 +1423,16 @@ async def rt_product(
                         product_id=ref.product_id,
                         as_of=envelope.fetched_at,
                         schema=schema,
+                        covered=covered,
                     ).to_json()
                 )
+            )
+        if missing and not covered:
+            repo.warn(
+                f"bench_mismatch: {len(missing)} test(s) on bench {bench_id} are in the "
+                "schema but absent from this cached review, and the schema is the newer of "
+                "the two — reported as coverage_unknown rather than not_tested. "
+                "refresh=true resolves it"
             )
     values.extend(missing)
 
@@ -1320,9 +1464,23 @@ async def rt_product(
     if notice:
         data["notice"] = notice
     if is_unpublished:
+        # `published:false` is EARLY ACCESS, and a membership is exactly what lifts it —
+        # RTINGS: "the writer publishes it for Early Access so that Insiders who support us
+        # can see the data without any text." The old wording here ("blurred for everyone —
+        # a membership does not lift it") was the pre-correction reading, and it contradicted
+        # this response's own rows: a member's Early Access values arrive `tested_visible`,
+        # so the notice claimed everything was hidden while the data sat beside it.
+        visible = sum(1 for v in values if v.get("status") == TESTED_VISIBLE)
         data["notice"] = (
-            "This review is still in progress (published:false). Every value is blurred "
-            "for everyone — a membership does not lift it."
+            "This review is Early Access (published:false): RTINGS has not finished the "
+            "written review, and publishes the data to Insiders in the meantime. Withheld "
+            "values here are `review_unpublished`, NOT `tested_gated` — the distinction "
+            "matters because an Insider membership does lift this."
+            + (
+                f" {visible} value(s) came through visible on this session."
+                if visible
+                else ""
+            )
         )
 
     if include_verdicts:
@@ -1566,7 +1724,16 @@ async def _verdicts_only(
             "are served regardless and are not affected."
         ),
     }
-    data.update(_verdicts_from(verdict_env.payload or {}, schema))
+    # `ref.published` is False for an Early Access product. Omitting it defaulted to
+    # `unpublished=False`, so a withheld verdict score on an enforcing silo came back
+    # `tested_gated` — "buy a membership" — for a review RTINGS had not finished. It is
+    # `None` only when the product was resolved by search, where the flag is genuinely
+    # unknown; treating that as "published" is the existing behaviour everywhere else.
+    data.update(
+        _verdicts_from(
+            verdict_env.payload or {}, schema, unpublished=ref.published is False
+        )
+    )
     repo.warn(f"measurements unavailable ({cause.code}); serving verdicts only")
     return Envelope(
         data=data,

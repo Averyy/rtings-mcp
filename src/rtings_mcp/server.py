@@ -19,6 +19,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from . import __version__, services
+from .config import SILO_HINT
 from .context import Context, get_context
 from .envelope import error_envelope
 from .errors import RtingsError
@@ -34,17 +35,8 @@ from .models import (
 
 log = logging.getLogger("rtings_mcp")
 
-#: A **hint**, never a JSON-Schema ``enum``. An ``enum`` is enforced client-side, so a silo
-#: RTINGS adds mid-release would be unreachable until a new release ships, and it would
-#: create a second allowlist that can disagree with the live ``static.silos``. Validation
-#: happens server-side against the live list only; a value outside this hint is fetched
-#: normally with a ``silo_hint_drift`` warning.
-SILO_HINT = (
-    "tv, headphones, monitor, soundbar, mouse, keyboard, printer, robot-vacuum, vacuum, "
-    "dehumidifier, projector, toaster-oven, keyboard-switch, air-purifier, running-shoes, "
-    "humidifier, refrigerator, mattress, air-conditioner, microwave, blender, air-fryer, "
-    "toaster, vpn, router, speaker, camera, laptop"
-)
+# The hint text itself lives in `config.KNOWN_SILOS` so `repository.resolve_silo` can raise
+# `silo_hint_drift` against it without importing the server (a cycle).
 
 SiloParam = Annotated[
     str,
@@ -207,9 +199,17 @@ async def rt_ratings(
     `name_contains`, `published`, and `variant` — the size RTINGS tested, e.g.
     `{"variant": "65"}` for 65-inch TVs. Most categories have no "Size" test, so `variant`
     is the only way to ask that. `sort` takes a test/usage id or name (prefix `-` for
-    descending, `+` for ascending); it defaults to release date. A filter or sort on a field
-    that is gated for these rows is **not applied**, and the envelope says so — otherwise
-    "0 results" would read as "no product qualifies" when the truth is "you cannot see it".
+    descending, `+` for ascending); it defaults to release date.
+
+    **A field you filter or sort on is fetched for you** — you do not also have to list it in
+    `tests=`. Names and ids are interchangeable everywhere: `tests=["Thickness"]` and
+    `tests=["26891"]` are the same request.
+
+    When a field genuinely cannot be compared the predicate is **not applied** and the
+    envelope names which of three things happened: it is gated for this session, it is not on
+    the bench(es) queried (call rt_schema for one that is), or RTINGS published no value for
+    it. Otherwise "0 results" would read as "no product qualifies" when the truth is "you
+    cannot see it". Products with no comparable value sort last in both directions.
     """
     return await _run(
         RatingsEnvelope,
@@ -239,7 +239,7 @@ async def rt_product(
     consume_preview: bool = False,
     refresh: bool = False,
 ) -> ProductEnvelope:
-    """Every test result for one product, grouped by RTINGS' own hierarchy.
+    """Every test result for one product, each row carrying its place in RTINGS' hierarchy.
 
     `product` takes a review URL, a numeric RTINGS product id, or a model name to search
     for. Pass `group` (a group `original_id`) to bound the response; `include_prose` adds
