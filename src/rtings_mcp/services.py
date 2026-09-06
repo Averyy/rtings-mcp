@@ -294,21 +294,55 @@ async def rt_schema(
         # Word-wise over the FULL path (category/group/name), ranked by how many words hit:
         # "print speed" must find the "Printing Speed" group's tests, which are named
         # "Black Only Text Document", and "cost per page" must land on "Cost-Per-Print".
-        words = _find_words(find)
+        # Several terms at once ("face, weight, battery"): one round trip instead of four.
+        terms = [t.strip() for t in re.split(r"[,|;]", str(find)) if t.strip()] or [str(find)]
+        queries = [(_find_words(t), t.strip().lower()) for t in terms]
         ranked: list[tuple[int, int, dict[str, Any]]] = []
         for index, test in enumerate(tests):
             if not (test.is_leaf_value or test.has_graph):
                 continue
             path = " ".join([*schema.ancestry(test.original_id), test.name]).lower()
-            score = sum(1 for w in words if w in path)
+            hits_by_term = {
+                term: _find_score(words, phrase, path)
+                for term, (words, phrase) in zip(terms, queries, strict=True)
+            }
+            # A word test's VALUES are searchable too: "countertop" is a value of the
+            # microwave "Installation" test, "open-back" of headphones' "Enclosure". One
+            # agent spent three schema calls locating the first.
+            vocab = " | ".join(test.words).lower() if test.words else ""
+            value_hits = (
+                {
+                    term: _find_score(words, phrase, vocab)
+                    for term, (words, phrase) in zip(terms, queries, strict=True)
+                }
+                if vocab
+                else {}
+            )
+            score = sum(hits_by_term.values()) + sum(value_hits.values())
             if score:
-                ranked.append((-score, index, _test_json(schema, test)))
+                entry = _test_json(schema, test)
+                if len(terms) > 1:
+                    entry["matched_terms"] = [
+                        t for t in terms if hits_by_term.get(t) or value_hits.get(t)
+                    ]
+                matched_values = [
+                    w
+                    for w in test.words
+                    if any(
+                        _find_score(words, phrase, w.lower())
+                        for words, phrase in queries
+                    )
+                ]
+                if matched_values and not any(hits_by_term.values()):
+                    entry["matched_values"] = matched_values[:10]
+                    entry["match"] = "value"
+                ranked.append((-score, index, entry))
         ranked.sort(key=lambda item: item[:2])
         hits = [entry for _, _, entry in ranked]
         usage_ranked: list[tuple[int, int, dict[str, Any]]] = []
         for index, u in enumerate(usages):
             path = " ".join(filter(None, [u.parent_usage_name, u.name])).lower()
-            score = sum(1 for w in words if w in path)
+            score = sum(_find_score(words, phrase, path) for words, phrase in queries)
             if score:
                 usage_ranked.append(
                     (
@@ -334,14 +368,27 @@ async def rt_schema(
             "test_matches": len(hits),
             "usage_matches": len(usage_hits),
             "notice": (
-                "Word match over each test's full path (category/group/name) and each "
-                "usage's name, best matches first. `hierarchy` tells same-named tests "
-                "apart; address one by original_id or as 'Group/Name'."
+                "Word match over each test's full path (category/group/name), a word "
+                "test's values (match: 'value') and each usage's name, best matches first. "
+                "`hierarchy` tells same-named tests apart; address one by original_id or "
+                "as 'Group/Name'."
                 if hits or usage_hits
-                else f"no test or usage on this bench has the words of {find!r} in its "
-                "name or group. That is a NAMING miss, not 'RTINGS does not measure it': "
-                "try a synonym (noise -> loudness, lag -> latency), browse rt_schema(silo) "
-                "for the group, or check rt_product prose."
+                else (
+                    "RTINGS publishes no prices or running costs, so no test carries them; "
+                    "cost-per-print on printers is the one exception (find='cost')."
+                    if any(
+                        w in words
+                        for words, _ in queries
+                        for w in ("price", "cost", "dollar", "cheap", "budget")
+                    )
+                    else f"no test, test value or usage on this bench has the words of "
+                    f"{find!r}. That is a NAMING miss, not 'RTINGS does not measure it': "
+                    "try a synonym (noise -> loudness, lag -> latency, stability -> "
+                    "uniformity, reheat -> Leftovers), browse rt_schema(silo) for the "
+                    "group, or check rt_product prose. This bench's usages: "
+                    + ", ".join(u.name for u in usages)
+                    + "."
+                )
             ),
         }
     elif group is None:
@@ -366,7 +413,8 @@ async def rt_schema(
             ],
             "notice": (
                 "insider_only marks a test gate-able, never gated: 16 of 28 silos serve "
-                "those values anonymously. Call rt_ratings to see what is actually served."
+                "those values anonymously. Call rt_ratings to see what is actually served. "
+                "A group flagged no_scored_tests: " + NO_LEAF_NOTE
             ),
         }
     else:
@@ -432,8 +480,9 @@ def _schema_tree(schema: SiloSchema, tests: list[TestDef]) -> list[dict[str, Any
             if test.kind == "group" and not leaves and not children:
                 # Monitor "Text Clarity" and robot-vacuum "Pet Hair Pickup" are groups with
                 # no scored test at all. Left unmarked, every evaluator drilled into them
-                # (an empty `tests: []`) and then guessed where the content lived.
-                node["note"] = NO_LEAF_NOTE
+                # (an empty `tests: []`) and then guessed where the content lived. The
+                # explanation is said once, in the tree's notice (nine nodes repeated it).
+                node["no_scored_tests"] = True
             out.append(node)
         return out
 
@@ -469,6 +518,9 @@ def _test_json(schema: SiloSchema, test: TestDef) -> dict[str, Any]:
         out["precision"] = test.value_precision
         if test.number_display_unit and test.number_display_unit != test.value_unit:
             out["display_unit"] = test.number_display_unit
+        if (test.value_unit or "").lower() == "score":
+            # vpn "No-Log Policy" displays as "0": that is 0 out of 10, not zero days.
+            out["note"] = "the value is itself RTINGS' 0-10 rating for this test"
     if test.words:
         # A `word` test's vocabulary can be a display string per product — mattress
         # "Firmness Level" carries ~100 distinct "Medium (46 Pa/mm)" entries — and dumping
@@ -716,7 +768,9 @@ async def rt_ratings(
         # test's name, kind, unit, hierarchy and flags — 3 tests x 83 switches fitted 11
         # products in the budget. Rows now carry the answer; this carries the definition.
         "tests": _lift_uniform_as_of(_test_legend(schema, test_ids, flat), flat),
-        "usages": _usage_legend(schema, usage_ids),
+        "usages": _lift_uniform_as_of(
+            _usage_legend(schema, usage_ids), flat, rows_key="usage_scores"
+        ),
         "groups": groups,
     }
     # Three of five evaluators lost their first ranking call to the client's tool-result
@@ -725,6 +779,7 @@ async def rt_ratings(
     # which is an upper bound on the wire (the output model drops nulls).
     warnings.extend(_fit_response_budget(data, groups, ctx.config.max_response_chars))
     window = [row for group in groups for row in group["products"]]
+    served_ids = {str(row.get("product_id")) for row in window}
     data["returned"] = len(window)
     statuses = [
         value.get("status")
@@ -739,7 +794,11 @@ async def rt_ratings(
     return Envelope(
         data=data,
         session=probe.session if probe else "unknown",
-        data_tier=derive_data_tier(all_raw_rows, insider_ids),
+        # What THIS response proves: the raw rows behind the products actually served. A
+        # zero-row window claimed `unblurred` off rows the caller never saw.
+        data_tier=derive_data_tier(
+            [r for r in all_raw_rows if str(r.get("product_id")) in served_ids], insider_ids
+        ),
         scores_available=scores.to_json(),
         # Benches the site renders together but for which RTINGS publishes no schema carry
         # no display name and no tests; listing them as an empty population is noise.
@@ -1043,6 +1102,15 @@ def _test_value_json(
 _FIND_STOPWORDS = frozenset({"per", "of", "the", "a", "an", "and", "or", "in", "for", "to"})
 
 
+def _find_score(words: list[str], phrase: str, path: str) -> int:
+    """Words match at word starts only — "pet" must not hit "carpet" — and the whole
+    phrase in order outranks any scatter of its words."""
+    score = sum(1 for w in words if re.search(r"(?<![a-z0-9])" + re.escape(w), path))
+    if score and phrase and phrase in path:
+        score += 10
+    return score
+
+
 def _find_words(text: str) -> list[str]:
     """Search words: lowercase, stripped of punctuation and connective words, with a light
     stem so "printing" and "print" meet ("print speed" -> "Printing Speed")."""
@@ -1103,7 +1171,7 @@ def _test_legend(
 
 
 def _lift_uniform_as_of(
-    legend: dict[str, dict[str, Any]], rows: list[dict[str, Any]]
+    legend: dict[str, dict[str, Any]], rows: list[dict[str, Any]], *, rows_key: str = "tests"
 ) -> dict[str, dict[str, Any]]:
     """When every row of a test came from one slice, say its `as_of` once in the legend.
 
@@ -1114,14 +1182,14 @@ def _lift_uniform_as_of(
         stamps = {
             value.get("as_of")
             for row in rows
-            for value in (row.get("tests") or [])
+            for value in (row.get(rows_key) or [])
             if value.get("original_id") == test_id and value.get("as_of") is not None
         }
         if len(stamps) != 1:
             continue
         entry["as_of"] = next(iter(stamps))
         for row in rows:
-            for value in row.get("tests") or []:
+            for value in row.get(rows_key) or []:
                 if value.get("original_id") == test_id:
                     value.pop("as_of", None)
     return legend
@@ -1370,16 +1438,13 @@ def _uncatalogued_group(
         "products": products[offset : offset + limit] if include_rows else [],
     }
     group["notice"] = (
-        f"{len(products)} product(s) returned measurements but are absent from RTINGS' "
-        "product listing, so their name, brand and bench are unknown here (ids in "
-        "`product_ids`). Sampled across categories, these are RTINGS' internal copies and "
-        "retests (names ending in '(Copy)' or 'TBF <bench version>'), not products for "
-        "sale, so do not recommend one. rt_product(<id>, silo=...) identifies any of them. "
+        f"{len(products)} of RTINGS' internal copies/retests (names ending '(Copy)' or "
+        "'TBF <bench>', not for sale) also returned measurements; ids in `product_ids`. "
         + (
-            "Their rows are included because you asked for them."
+            "Rows included as requested."
             if include_rows
-            else "Pass include_uncatalogued=true, or filters={'product_ids': [...]}, to "
-            "rank their values here."
+            else "include_uncatalogued=true ranks them; rt_product(<id>, silo=...) "
+            "identifies one."
         )
     )
     return group
@@ -1452,11 +1517,27 @@ def _build_groups(
 def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
     """Resolve a filter/sort key to ``(kind, id)`` where kind is ``test``/``usage``."""
     text = str(key).strip()
+    forced: str | None = None
+    for prefix in ("test:", "usage:"):
+        if text.lower().startswith(prefix):
+            forced, text = prefix[:-1], text[len(prefix) :].strip()
     if text.isdigit():
-        if schema.test(text) is not None:
-            return "test", text
-        if schema.usage(text) is not None:
-            return "usage", text
+        is_test = schema.test(text) is not None
+        is_usage = schema.usage(text) is not None
+        if forced == "test" or (is_test and not is_usage):
+            return ("test", text) if is_test else None
+        if forced == "usage" or (is_usage and not is_test):
+            return ("usage", text) if is_usage else None
+        if is_test and is_usage:
+            # The two id spaces overlap: vacuum's 35602 is BOTH the "Maximum Runtime" test
+            # and the "Pet Hair Pickup" usage. Picking one silently would compare minutes
+            # where a 0-10 score was meant.
+            raise RtingsError(
+                errors.UNKNOWN_TEST,
+                f"id {text} is both the test {schema.test(text).name!r} and the usage "
+                f"{schema.usage(text).name!r}; pass 'test:{text}' or 'usage:{text}', or "
+                "the name",
+            )
         return None
     lowered = text.lower()
     # "Group/Name" (or "Category/Group/Name") addresses a leaf whose bare name repeats:
@@ -1478,6 +1559,8 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
     # `filters` and `sort` hit the same tie. (`_group_name_or_id` prefers the other way
     # round, deliberately: `group=` addresses a section.)
     for want_structure in (False, True):
+        if forced == "usage":
+            break
         matches = [
             test
             for test in schema.tests.values()
@@ -1500,6 +1583,8 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
                 "or qualify it as 'Group/Name'",
                 details={"matches": options},
             )
+    if forced == "test":
+        return None
     if not qualifiers:
         for usage in schema.usages.values():
             if usage.name.lower() == lowered:
@@ -1651,13 +1736,41 @@ def _apply_filters(
                 "matches'."
             )
             continue
-        comparator, operand = _parse_expression(expression)
+        clauses = _parse_clauses(expression)
         out = [
             r
             for r in out
-            if _matches(_values_for(r, kind, field_id), comparator, operand, kind)
+            if all(
+                _matches(_values_for(r, kind, field_id), comparator, operand, kind)
+                for comparator, operand in clauses
+            )
         ]
     return out, warnings
+
+
+_RANGE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(?:\.\.|\bto\b)\s*(-?\d+(?:\.\d+)?)\s*$")
+_CLAUSE_SPLIT_RE = re.compile(r"\s*,\s*|\s+(?=[<>!=])")
+
+
+def _parse_clauses(expression: Any) -> list[tuple[str, Any]]:
+    """One field, several conditions: `"13..14"`, `"13 to 14"`, `">=13 <=14"`, `">=13,<=14"`.
+
+    A 13-to-14-inch laptop took two passes and a hand filter with one comparator per
+    field. Every clause must hold.
+    """
+    if isinstance(expression, (int, float)) and not isinstance(expression, bool):
+        return [_parse_expression(expression)]
+    text = str(expression)
+    bounded = _RANGE_RE.match(text)
+    if bounded:
+        low, high = sorted((float(bounded.group(1)), float(bounded.group(2))))
+        return [(">=", low), ("<=", high)]
+    parts = [part for part in _CLAUSE_SPLIT_RE.split(text) if part.strip()]
+    if len(parts) > 1:
+        matches = [_COMPARATOR_RE.match(part) for part in parts]
+        if all(m is not None and m.group(1) for m in matches):
+            return [_parse_expression(part) for part in parts]
+    return [_parse_expression(expression)]
 
 
 def _normalize_variant(value: Any) -> str:
@@ -2644,6 +2757,7 @@ async def rt_recommendations(
 
     envelope = await repo.recommendation(silo, list, refresh=refresh)
     payload = envelope.payload or {}
+    schema = await repo.schema(silo)
     picks = []
     cap = max(1, int(limit)) if limit is not None else None
     for rank, pick in enumerate(payload.get("product_recommendations") or [], start=1):
@@ -2672,7 +2786,9 @@ async def rt_recommendations(
                 # 65-inch list). The review's tested size can differ — a "Best 65-inch"
                 # pick was reviewed at 77" — and only rt_product says which.
                 "recommended_sku": _sku_name(pick),
-                "featured_results": _featured_results(pick.get("featured_test_results")),
+                "featured_results": _featured_results(
+                    pick.get("featured_test_results"), schema
+                ),
                 "usage_scores": _featured_ratings(pick.get("ratings")),
             }
         )
@@ -2690,6 +2806,25 @@ async def rt_recommendations(
         for row in (pick.get("featured_test_results") or [])
         if isinstance(row, dict) and (row.get("test") or {}).get("insider_only")
     ]
+    scores = ScoresAvailable(
+        has_public=any(not t.insider_only for t in schema.tests.values() if t.is_leaf_value),
+        has_insider=any(t.insider_only for t in schema.tests.values() if t.is_leaf_value),
+        has_usages=bool(schema.usages),
+    )
+    for pick in payload.get("product_recommendations") or []:
+        if not isinstance(pick, dict):
+            continue
+        for row in pick.get("featured_test_results") or []:
+            if not isinstance(row, dict) or row.get("status") != "tested":
+                continue
+            stub = row.get("test") if isinstance(row.get("test"), dict) else {}
+            if stub.get("kind") in MEDIA_KINDS or stub.get("kind") == "group":
+                continue
+            bucket = scores.insider_tests if stub.get("insider_only") else scores.public_tests
+            bucket.add(unblurred=bool(row.get("unblurred")))
+        for row in pick.get("ratings") or []:
+            if isinstance(row, dict):
+                scores.usage_ratings.add(unblurred=bool(row.get("unblurred")))
     return Envelope(
         data={
             "silo": silo,
@@ -2699,6 +2834,12 @@ async def rt_recommendations(
             "updated_at": payload.get("updated_at"),
             "introduction": payload.get("introduction") if include_reasoning else None,
             "picks": picks,
+            "featured_notice": (
+                "featured_results rows of kind 'group' carry RTINGS' 0-10 score for that "
+                "GROUP of tests (vacuum 'Pet Hair Pickup' = carpet pickup tests); a usage "
+                "of the same name in usage_scores or rt_ratings is a different, broader "
+                "number."
+            ),
             "pick_count": sum(
                 1 for p in (payload.get("product_recommendations") or []) if isinstance(p, dict)
             ),
@@ -2710,6 +2851,7 @@ async def rt_recommendations(
         },
         session=probe.session if probe else "unknown",
         data_tier=derive_data_tier(featured_rows, {"featured"}),
+        scores_available=scores.to_json(),
         fetched_at=iso(envelope.fetched_at),
         from_cache=requests_made() == 0,
         stale=envelope.is_stale(TTL_RECS),
@@ -2723,10 +2865,19 @@ def list_warnings(repo: Any) -> list[str]:
     return list(repo.warnings)
 
 
-def _featured_results(rows: Any) -> list[dict[str, Any]]:
+def _featured_results(rows: Any, schema: SiloSchema | None = None) -> list[dict[str, Any]]:
     """Recommendation rows carry an inline ``test`` stub with **no ``original_id``**
-    (verified 2026-09-03), so they cannot be joined to the schema. They are reported with
-    the same seven-state honesty using the stub's own name/kind, and no value is coerced."""
+    (verified 2026-09-03), so they cannot be joined to the schema by key. They are reported
+    with the same seven-state honesty using the stub's own name/kind, and no value is
+    coerced. Since 2026-09-06 the stub's NAME is matched against the bench's tests: a
+    unique name gets its ``original_id`` and ``hierarchy``, a repeated one lists the
+    candidates — air-purifier features "Measured PM1.0 CADR" twice, max-speed on one list
+    and quiet-setting on another, and nothing else told them apart."""
+    by_name: dict[str, list[TestDef]] = {}
+    if schema is not None:
+        for test in schema.tests.values():
+            if not test.is_structure:
+                by_name.setdefault(test.name.lower(), []).append(test)
     out: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
@@ -2759,6 +2910,21 @@ def _featured_results(rows: Any) -> list[dict[str, Any]]:
         }
         if entry["display"] is not None:
             entry["gated"] = False
+        name = str(entry["name"] or "").lower()
+        candidates = by_name.get(name, []) if stub.get("kind") != "group" else []
+        if len(candidates) == 1:
+            entry["original_id"] = candidates[0].original_id
+            entry["hierarchy"] = schema.ancestry(candidates[0].original_id) if schema else None
+            if not candidates[0].has_score:
+                # A spec flag ("Sensor Size: Full Frame") ships `score: 0.0`; that is
+                # "unscored", not a rating of nought out of ten.
+                entry["score"] = None
+        elif len(candidates) > 1:
+            entry["original_id_candidates"] = [
+                {"original_id": c.original_id, "hierarchy": schema.ancestry(c.original_id)}
+                for c in candidates
+                if schema
+            ]
         out.append(entry)
     return out
 
@@ -2798,7 +2964,7 @@ def _strip_wrappers(html: Any) -> Any:
     """
     if not isinstance(html, str):
         return html
-    return _WRAPPER_TAG_RE.sub("", html).strip()
+    return _WRAPPER_TAG_RE.sub("", html).replace("&nbsp;", " ").strip()
 
 
 def _sku_name(pick: dict[str, Any]) -> str | None:

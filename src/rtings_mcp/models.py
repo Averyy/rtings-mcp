@@ -84,6 +84,7 @@ class ScoresAvailableOut(Permissive):
     ``available`` every row of that surface came back unblurred; ``gated`` none did;
     ``partial`` some did (with a ratio field alongside); ``absent`` the category has no such
     surface; ``unknown`` this call did not query that surface, so nothing can be said.
+    Always the same three-key shape, on every tool.
     """
 
     public_tests: Availability | None = None

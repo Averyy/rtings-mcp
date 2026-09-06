@@ -564,7 +564,10 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   checked, plausible enough to ship. `unit` on every row is `TestDef.value_unit` (input unit,
   else display, else custom) and `display_unit` is added only when it differs. The cacheable
   schema carries a `cacheable_version`; a cached parse from before these fields is a MISS,
-  not a hit, or the mislabel survives its 30-day TTL.
+  not a hit, or the mislabel survives its 30-day TTL. **The review path is the other way
+  round:** its number is parsed out of the DISPLAY string ("2.1 lbs (1.0 kg)" → 2.1), so a
+  rendered value is labelled with the display unit and no `display_unit` — the first fix
+  labelled rt_product's 2.1 as kilograms, caught by the laptop scenario the same day.
 - **IMPORTANT: "Inf" is a VALUE RTINGS publishes, never a null and never a 1 (2026-09-06).**
   An OLED's contrast is `value: "Inf"`, `rendered_value: "Inf : 1"`. `float("Inf")` is
   accepted silently and then serialised as null, so the two best contrast readings on the
@@ -580,6 +583,24 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   the hierarchy) as well as the id. `rt_schema(find=…)` is the discovery path — one substring
   search over the bench's tests and usages instead of the three-to-six tree-then-group calls
   every shopper agent made.
+- **Test ids and usage ids are SEPARATE spaces that collide (2026-09-06).** vacuum's `35602`
+  is both the "Maximum Runtime" test and the "Pet Hair Pickup" usage. `_field_lookup` used to
+  try tests first, so a filter meant for the usage compared minutes; now a digit that exists in
+  both raises `unknown_test` naming the `test:`/`usage:` prefixes, which it also accepts.
+- **`rt_schema(find=)` matches WORD STARTS over the full path and prefers the phrase.** A
+  plain substring found "pet" inside "carpet" and ranked "Low-Pile Carpet" above "Pet Hair
+  Pickup"; a leaf-name-only search missed every "Printing Speed" test (named "Black Only Text
+  Document") and reported "input lag" as not measured. Stopwords and a light stem
+  ("printing" → "print"), `(?<![a-z0-9])` boundaries, +10 for the phrase in order. A miss on
+  price/cost words answers with the "no prices" rule instead of "try a synonym", which sent one
+  agent through six synonyms for a fact the instructions already ruled out.
+- **A best-of pick's featured row is tied to the schema by NAME, never by its stub `id`.**
+  `column_options` carries no per-bench `id`, so the stub's `test.id` joins to nothing. A
+  unique name gets `original_id` + `hierarchy`; a repeated one (air-purifier features
+  "Measured PM1.0 CADR" twice — max speed on one list, quiet setting on another) lists
+  `original_id_candidates`. A `kind: "group"` row is RTINGS' group score and is deliberately
+  not joined: vacuum's "Pet Hair Pickup" group (carpet pickup tests) and the usage of the same
+  name are different numbers, and `featured_notice` says so.
 - **An unmatched `product_ids` entry is explained, one lookup each (2026-09-06).** Three ids in,
   two rows out, no word about the third: it was tested on a legacy bench outside the recent set,
   and a shrinking `matched` reads as "never tested". Each missing id (capped) is resolved
@@ -623,6 +644,22 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   score in the served rows (`higher_is_better` / `lower_is_better` / `mixed`, only with three
   or more pairs, labelled derived) — every shopper agent had inferred this by eye. `rt_product`
   keeps its per-row `hierarchy`: it is one product, and the breadcrumb is the point.
+- **A clock unit ("mm:ss") describes the DISPLAY; the machine value is SECONDS (2026-09-06).**
+  toaster-oven "Time To Reach 350°F" is `value: 105`, `rendered_value: "01:45"`, and both
+  `number_input_unit` and `number_display_unit` say "mm:ss". Labelled as shipped, 105 "mm:ss"
+  is nonsense, and the review path parsed "01:45" as 1.0 — off by 60-100x on two products.
+  `TestDef.value_unit` maps `CLOCK_UNITS` to "seconds" with `display_unit: "mm:ss"`, and
+  `parse_rendered_number` folds `h:mm:ss` into seconds.
+- **`data_tier` is derived from the rows behind the products SERVED, not the slice fetched.** A
+  `product_ids` filter matching nothing returned zero rows and `data_tier: unblurred` — proof
+  from rows the caller never saw. `scores_available` stays population-level (it describes the
+  bench); `data_tier` describes this response.
+- **`rt_schema(find=)` also searches a word test's VALUES** ("countertop" → microwave
+  "Installation", `match: "value"`), and a miss lists the bench's usage names, because
+  "reheat" is the "Leftovers" usage and no synonym table would have said so.
+- **A filter takes several clauses on one field** (`"13..14"`, `"13 to 14"`, `">=13 <=14"`,
+  `">=13,<=14"`; added 2026-09-06): a 13-to-14-inch laptop took two passes and a hand filter
+  with one comparator per field.
 - **`filters={"product_ids": [...]}` is the head-to-head path.** Every agent comparing two
   named products guessed a `name_contains` substring after an `rt_search`, which matches
   siblings. Ids are identity; it applies to the uncatalogued group too.

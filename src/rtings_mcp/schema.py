@@ -24,6 +24,10 @@ MEDIA_KINDS = frozenset({"picture", "video", "dropdown_images", "audio", "3d_mod
 GRAPH_KIND = "graph"
 
 
+#: RTINGS' clock-style units: the display is "mm:ss", the stored value is seconds.
+CLOCK_UNITS = frozenset({"mm:ss", "hh:mm:ss", "h:mm:ss", "m:ss"})
+
+
 @dataclass(slots=True, frozen=True)
 class TestDef:
     original_id: str
@@ -62,8 +66,13 @@ class TestDef:
 
     @property
     def value_unit(self) -> str | None:
-        """The unit of the machine ``value``: the input unit when RTINGS converts."""
-        return self.number_input_unit or self.number_display_unit
+        """The unit of the machine ``value``: the input unit when RTINGS converts.
+
+        A clock unit ("mm:ss") describes the DISPLAY; the machine value behind "01:45" is
+        105, seconds, so that is what the value is labelled.
+        """
+        unit = self.number_input_unit or self.number_display_unit
+        return "seconds" if unit and unit.lower() in CLOCK_UNITS else unit
 
     @property
     def value_precision(self) -> int | None:

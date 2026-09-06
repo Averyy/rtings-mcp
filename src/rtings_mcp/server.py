@@ -80,16 +80,20 @@ mcp = MCPServer(
         "best-of lists by use, size and budget (pet-hair, by-size/65-inch, side-sleepers, "
         "budget…) with their reasoning — usually the ranking you were about to derive by "
         "hand. A list answers ONE angle: for a multi-attribute ask (quiet AND wireless AND "
-        "low-profile) take candidates from the lists and confirm every attribute with "
-        "rt_ratings, since a list's #1 can fail the attribute the list is not about.\n"
+        "low-profile) take candidates from the lists and confirm every attribute with ONE "
+        "rt_ratings(filters={'product_ids': [the picks' product_id values]}) call, since a "
+        "list's #1 can fail the attribute the list is not about.\n"
         "3. Need a test's id? rt_schema(silo) gives the category tree; "
         "rt_schema(silo, group=<id>) gives that group's tests with their original_ids. A "
         "group with leaf_test_count 0 is scored as a usage or described only in prose.\n"
         "4. FULL category: rt_ratings(silo, tests=[ids], sort=<id or name>, filters=...) "
-        "ranks and compares. Keep it small: pass bench=[current bench id] (the default "
-        "spans 2-4 benches), a few tests, limit<=10. Responses over ~40K characters are "
-        "trimmed per group with a `response_truncated` warning — page with offset. To "
-        "compare specific products use filters={'product_ids': [...]}.\n"
+        "ranks and compares. Keep it small: a few tests, limit<=10. The default bench set "
+        "is every bench RTINGS still renders together (2 on mouse, 10 on running-shoes); "
+        "narrowing with bench=[...] drops products tested on the other recent benches, so "
+        "do it only when the warning that names a product's bench tells you to. "
+        "Responses over ~40K characters are trimmed per group with a `response_truncated` "
+        "warning — page with offset. To compare specific products use "
+        "filters={'product_ids': [...]}.\n"
         "5. GATED category, not signed in: the numbers are withheld, so use rt_product(url, "
         "include_verdicts=true) for RTINGS' written verdict, pros and cons on one product, "
         "rt_recommendations(silo) for their ranking with reasoning, and rt_graph for the "
@@ -185,11 +189,15 @@ async def rt_schema(
 
     With no `group`, returns the group/category tree with per-group counts. Pass a group's
     `original_id` (or name) as `group` to get that group's leaf tests with their units and
-    precision. **`find="input lag"` searches every test and usage on the bench by name** in
+    precision — a top-level CATEGORY id works too and returns every test beneath it in one
+    call. **`find="input lag"` searches every test and usage on the bench by name** in
     one call — use it instead of walking the tree when you know roughly what the test is
-    called. `original_id` is the stable key everywhere in this server — names repeat across
-    groups (headphones has three "RMS Deviation From Target"); a repeated name must be
-    passed as its id or qualified as "Group/Name".
+    called; several terms at once as `find="face, weight, battery"` (each hit says which
+    terms it matched). Feature flags and specs ("bagel", "slice capacity", "USB-C") are
+    tests too, so `find` locates them faster than walking the tree. `original_id` is the
+    stable key everywhere in this server — names repeat across groups (headphones has three
+    "RMS Deviation From Target"); a repeated name must be passed as its id or qualified as
+    "Group/Name".
 
     `insider_only: true` marks a test *gate-able*, not gated. Whether it is actually served
     depends on the category; `rt_ratings` reports what came back.
@@ -220,15 +228,18 @@ async def rt_ratings(
     **Size.** Responses are trimmed to a character budget per call: when a window would
     exceed it, each group keeps the head of its ranking and the envelope carries a
     `response_truncated` warning with the offset to continue from. To fit more products per
-    call, pass `bench=[<current bench id>]` (the default spans every recent bench), fewer
-    `tests`/`usages`, or `limit<=10`.
+    call, pass fewer `tests`/`usages` or `limit<=10`. `bench=[...]` narrows to named
+    benches; the default is every recent bench (2 to 10 depending on the category), and a
+    product tested on an older recent bench drops out of a narrowed call (the `product_ids`
+    warning names its bench).
 
     **Shape.** Each product's `tests` rows carry only the answer (`original_id`, `status`,
     `value`, `gated`, `score`, `display`, `as_of`); `data.tests[original_id]` holds the
     definition once — name, kind, `unit` (of `value`), `display_unit`, hierarchy — plus
     `score_direction`, derived from RTINGS' own scores in this response (`lower_is_better`
     for input lag or a scratchy factor). `sort` on a test ranks by its value, never its
-    score.
+    score. A `number` test whose `unit` is `"score"` is itself a 0-10 rating (robot-vacuum
+    "Water Left On Floor"), not a physical quantity.
 
     **Specific products.** `filters={"product_ids": ["39008", "63313"]}` compares exactly
     those (ids from rt_search); `name_contains` is a substring match and can catch siblings.
@@ -256,10 +267,15 @@ async def rt_ratings(
     `review_unpublished` (the review is in progress) or `coverage_unknown` (the cached data
     cannot be shown to cover this product). A gated null is NOT `not_tested`.
 
-    `filters` accepts `{"<test original_id or name>": ">1000"}` plus `brand`,
-    `name_contains`, `published`, and `variant` — the size RTINGS tested, e.g.
-    `{"variant": "65"}` for 65-inch TVs. Most categories have no "Size" test, so `variant`
-    is the only way to ask that. `sort` takes a test/usage id or name (prefix `-` for
+    `filters` accepts `{"<test original_id or name>": ">1000"}` — also a two-sided range
+    (`"13..14"`, `"13 to 14"`, `">=13 <=14"`); a word test matches its value exactly or as a
+    substring (`{"Bagel Mode": "One-Sided"}`) and `"!=No"` excludes — plus `brand`,
+    `name_contains`, `published`,
+    and `variant` — the size RTINGS tested, e.g. `{"variant": "65"}` for 65-inch TVs. TVs,
+    soundbars and the like have no "Size" test, so `variant` is the way to ask that;
+    laptop and monitor DO have a numeric "Size" test (rt_schema(find="size")), filed
+    with Weight under Portability/Display rather than under the screen group.
+    `sort` takes a test/usage id or name (prefix `-` for
     descending, `+` for ascending; **no prefix means descending**, so prefix `+` for
     lower-is-better metrics like input lag or dE); it defaults to release date.
 
@@ -397,7 +413,9 @@ async def rt_recommendations(
 
     With no `list`, returns the category's discovered best-of lists. Pass one of those
     `list` values to get that ranking: ordered picks, each with RTINGS' own explanation of
-    why it is there (`reasoning`, HTML), the SKU the list recommends (`recommended_sku`),
+    why it is there (`reasoning`, HTML), its `product_id` — the join key: pass the picks'
+    ids to `rt_ratings(filters={"product_ids": [...]})` for one comparison table instead of
+    one call per pick — the SKU the list recommends (`recommended_sku`),
     and two blocks of numbers RTINGS chose to feature for that list: `featured_results`
     (tests AND group scores — on this surface a group carries a 0-10 score, unlike
     rt_ratings) and `usage_scores`. Both follow the same `status`/`gated` rules as

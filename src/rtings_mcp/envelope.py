@@ -135,6 +135,13 @@ def observe_rating_rows(
         scores.usage_ratings.add(unblurred=bool(row.get("unblurred")))
 
 
+SCORES_UNKNOWN = {
+    "public_tests": "unknown",
+    "insider_tests": "unknown",
+    "usage_ratings": "unknown",
+}
+
+
 @dataclass(slots=True)
 class Envelope:
     """The wire envelope. Built by every tool, declared in every ``outputSchema``."""
@@ -159,7 +166,10 @@ class Envelope:
             "auth_state": derive_auth_state(self.session, self.data_tier),
             "data_tier": self.data_tier,
             "session": self.session,
-            "scores_available": self.scores_available,
+            # One shape on every tool: the three-key object, `unknown` where this call
+            # did not query that surface. A bare null on rt_silos/rt_schema beside an
+            # object on rt_ratings made clients coded against one shape choke on the other.
+            "scores_available": self.scores_available or dict(SCORES_UNKNOWN),
             "rank_scope": self.rank_scope,
             "test_benches": self.test_benches,
             "sorted_by": self.sorted_by,

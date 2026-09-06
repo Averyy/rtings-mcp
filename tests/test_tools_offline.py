@@ -2549,8 +2549,10 @@ async def test_a_group_with_no_scored_test_says_where_its_content_lives(ctx):
     tree = _schema_tree(schema, [*tests, empty])
     by_name = {node["name"]: node for node in tree}
     assert by_name["Text Clarity"]["leaf_test_count"] == 0
-    assert by_name["Text Clarity"]["note"] == NO_LEAF_NOTE
-    assert all("note" not in node for node in tree if node["name"] != "Text Clarity")
+    assert by_name["Text Clarity"]["no_scored_tests"] is True
+    assert all("no_scored_tests" not in node for node in tree if node["name"] != "Text Clarity")
+    top = await services.rt_schema(ctx, "tv")
+    assert NO_LEAF_NOTE in top["data"]["notice"]
 
     # And a `group=` drilldown that finds no scored test says the same thing.
     out = await services.rt_schema(ctx, "tv", group="13907")
@@ -2880,3 +2882,209 @@ def test_score_direction_reads_lower_is_better_off_the_scores():
     assert _score_direction([row(20, 9.0), row(40, 6.0), row(80, 2.0)], "x") == "lower_is_better"
     assert _score_direction([row(20, 9.0), row(40, 6.0)], "x") is None, "too few to say"
     assert _score_direction([row(1, 5.0), row(2, 9.0), row(3, 1.0), row(4, 7.0)], "x") == "mixed"
+
+
+async def test_a_rendered_number_is_labelled_with_the_unit_it_was_parsed_in(ctx):
+    """Laptop Weight on rt_product: `value: 2.1` parsed from "2.1 lbs (1.0 kg)" was labelled
+    "kilograms" once the table path learned about input units. A rendered number is in
+    the DISPLAY unit."""
+    from dataclasses import replace
+
+    from rtings_mcp.normalize import normalize_review_row
+
+    schema = await ctx.repo.schema("tv")
+    converted = replace(
+        schema.test("11"),
+        number_input_unit="kilograms",
+        number_input_precision=3,
+        number_display_unit="pounds",
+        number_display_precision=1,
+    )
+    row = normalize_review_row(
+        {"status": "tested", "unblurred": True, "rendered_value": "2.1 lbs (1.0 kg)", "score": 8.0},
+        converted,
+        product_id="1",
+        schema=schema,
+    ).to_json()
+    assert row["value"] == 2.1 and row["value_source"] == "rendered"
+    assert row["unit"] == "pounds" and row["precision"] == 1
+    assert "display_unit" not in row
+
+
+async def test_a_filter_takes_a_two_sided_range(ctx):
+    from rtings_mcp.services import _parse_clauses
+
+    assert _parse_clauses("13..14") == [(">=", 13.0), ("<=", 14.0)]
+    assert _parse_clauses("14 to 13") == [(">=", 13.0), ("<=", 14.0)]
+    assert _parse_clauses(">=13 <=14") == [(">=", 13.0), ("<=", 14.0)]
+    assert _parse_clauses(">=13,<=14") == [(">=", 13.0), ("<=", 14.0)]
+    assert _parse_clauses(">1000") == [(">", 1000.0)]
+    assert _parse_clauses("4k") == [("=", "4k")]
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="1200", score=5.0),
+                make_test_row("2", "11", unblurred=True, value="5000", score=8.0),
+                make_test_row("3", "11", unblurred=True, value="9000", score=9.0),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], filters={"11": "2000..8000"})
+    assert [p["product_id"] for g in out["data"]["groups"] for p in g["products"]] == ["2"]
+
+
+async def test_find_matches_word_starts_and_prefers_the_phrase(ctx):
+    from rtings_mcp.services import _find_score
+
+    assert _find_score(["pet"], "pet", "low-pile carpet") == 0, "'pet' must not hit 'carpet'"
+    assert _find_score(["pet", "hair"], "pet hair", "performance pet hair pickup") == 12
+    assert _find_score(["pet", "hair"], "pet hair", "hair pet tool") == 2
+
+
+async def test_a_colliding_numeric_id_must_say_which_space(ctx):
+    from dataclasses import replace
+
+    from rtings_mcp.services import _field_lookup
+
+    schema = await ctx.repo.schema("tv")
+    usage = next(iter(schema.usages.values()))
+    schema.usages["11"] = replace(usage, original_id="11")
+    with pytest.raises(RtingsError) as excinfo:
+        _field_lookup(schema, "11")
+    assert "test:11" in str(excinfo.value)
+    assert _field_lookup(schema, "test:11") == ("test", "11")
+    assert _field_lookup(schema, "usage:11") == ("usage", "11")
+    assert _field_lookup(schema, "usage:Native Contrast") is None
+
+
+async def test_featured_results_are_tied_to_the_schema_by_name(ctx):
+    """A pick's featured stub has no original_id. A unique name is resolved; a repeated
+    name (air-purifier's two "Measured PM1.0 CADR") lists the candidates instead."""
+    from dataclasses import replace
+
+    from rtings_mcp.services import _featured_results
+
+    schema = await ctx.repo.schema("tv")
+    rows = [
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "5000 : 1",
+            "score": 9.0,
+            "test": {"name": "Native Contrast", "kind": "number", "insider_only": True},
+        },
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "1000 cd/m²",
+            "score": 8.0,
+            "test": {"name": "Peak Brightness", "kind": "number", "insider_only": True},
+        },
+    ]
+    out = _featured_results(rows, schema)
+    assert out[0]["original_id"] == "11" and out[0]["hierarchy"]
+    schema.tests["12001"] = replace(
+        schema.test("12000"), original_id="12001", parent_original_id="31615",
+        derived_category_id=None,
+    )
+    out = _featured_results(rows, schema)
+    assert "original_id" not in out[1]
+    assert {c["original_id"] for c in out[1]["original_id_candidates"]} == {"12000", "12001"}
+    ranked = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert ranked["data"]["picks"][0]["featured_results"][0]["original_id"] == "11"
+
+
+async def test_find_says_no_prices_instead_of_try_a_synonym(ctx):
+    out = await services.rt_schema(ctx, "tv", find="filter cost")
+    assert "publishes no prices" in out["data"]["notice"]
+
+
+async def test_find_takes_several_terms_in_one_call(ctx):
+    out = await services.rt_schema(ctx, "tv", find="contrast, brightness")
+    names = {t["name"]: t["matched_terms"] for t in out["data"]["tests"]}
+    assert names["Native Contrast"] == ["contrast"]
+    assert names["Peak Brightness"] == ["brightness"]
+
+
+async def test_an_unscored_featured_spec_carries_no_score(ctx):
+    from dataclasses import replace
+
+    from rtings_mcp.services import _featured_results
+
+    schema = await ctx.repo.schema("tv")
+    schema.tests["208"] = replace(schema.test("208"), has_score=False)
+    rows = [
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "4k",
+            "score": 0.0,
+            "test": {"name": "Resolution", "kind": "word", "insider_only": False},
+        }
+    ]
+    out = _featured_results(rows, schema)
+    assert out[0]["display"] == "4k" and out[0]["score"] is None
+
+
+async def test_a_clock_display_is_seconds_on_both_paths(ctx):
+    """Toaster-oven "Time To Reach 350°F": the table serves 105 (seconds) and the review
+    path parsed "01:45" as 1.0. Both now say 105 seconds, displayed as mm:ss."""
+    from dataclasses import replace
+
+    from rtings_mcp.normalize import normalize_review_row, normalize_table_row
+
+    schema = await ctx.repo.schema("tv")
+    clock = replace(
+        schema.test("11"), number_input_unit="mm:ss", number_display_unit="mm:ss"
+    )
+    table = normalize_table_row(
+        {**make_test_row("1", "11", unblurred=True, value="105"), "rendered_value": "01:45"},
+        clock,
+        schema=schema,
+    ).to_json()
+    assert table["value"] == 105.0 and table["unit"] == "seconds"
+    assert table["display_unit"] == "mm:ss" and table["display"] == "01:45"
+    review = normalize_review_row(
+        {"status": "tested", "unblurred": True, "rendered_value": "01:45", "score": 9.0},
+        clock,
+        product_id="1",
+        schema=schema,
+    ).to_json()
+    assert review["value"] == 105.0 and review["unit"] == "seconds"
+    assert review["display_unit"] == "mm:ss"
+    long = normalize_review_row(
+        {"status": "tested", "unblurred": True, "rendered_value": "1:02:03", "score": 9.0},
+        clock,
+        product_id="1",
+        schema=schema,
+    ).to_json()
+    assert long["value"] == 3723.0
+
+
+async def test_find_searches_a_word_tests_values(ctx):
+    """"countertop" is a VALUE of the microwave "Installation" test; an agent spent three
+    schema calls finding it."""
+    out = await services.rt_schema(ctx, "tv", find="4k")
+    hit = next(t for t in out["data"]["tests"] if t["name"] == "Resolution")
+    assert hit["match"] == "value" and "4k" in [v.lower() for v in hit["matched_values"]]
+    miss = await services.rt_schema(ctx, "tv", find="no such thing")
+    assert "This bench's usages:" in miss["data"]["notice"]
+
+
+async def test_a_zero_row_response_proves_nothing(ctx):
+    """`product_ids` matching nothing still reported `data_tier: unblurred` off rows the
+    caller never saw."""
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1")
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["11"], usages=[], filters={"product_ids": ["424242"]}
+    )
+    assert out["data"]["returned"] == 0
+    assert out["data_tier"] == "unproven"
+    served = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    assert served["data_tier"] == "unblurred"
+
+
+async def test_recommendation_lists_report_scores_available(ctx):
+    out = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert out["scores_available"]["insider_tests"] == "gated"
+    assert out["scores_available"]["usage_ratings"] == "gated"

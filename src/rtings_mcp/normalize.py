@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from .schema import SiloSchema, TestDef
+from .schema import CLOCK_UNITS, SiloSchema, TestDef
 
 TESTED_VISIBLE = "tested_visible"
 TESTED_GATED = "tested_gated"
@@ -63,6 +63,8 @@ def _iso(timestamp: float) -> str:
 _TAG_RE = re.compile(r"<[^>]+>")
 #: RTINGS' spelling of an unbounded reading, as a whole value ("Inf") …
 _INFINITE_RE = re.compile(r"^([+-]?)(?:inf|infinity|∞)$", re.IGNORECASE)
+#: A clock-style display ("01:45", "1:02:03"), whose machine value is seconds.
+_CLOCK_RE = re.compile(r"^\s*(\d{1,3}):(\d{2})(?::(\d{2}))?\b")
 #: … and at the head of a display string ("Inf : 1").
 _INFINITE_PREFIX_RE = re.compile(r"^([+-]?)(?:inf|infinity|∞)(?![a-z])", re.IGNORECASE)
 
@@ -210,6 +212,17 @@ def parse_rendered_number(definition: TestDef, rendered: Any) -> tuple[float | N
         # dark-room shopper was comparing. The number regex must never see the unit text
         # of an infinite reading.
         return (-math.inf if infinite.group(1) == "-" else math.inf), None
+    clock = _CLOCK_RE.match(text)
+    if clock:
+        # "01:45" parsed as 1.0 — the digits before the colon — where the table path
+        # serves 105 (seconds). Same number on both paths now.
+        parts = [int(clock.group(1)), int(clock.group(2))]
+        if clock.group(3) is not None:
+            parts.append(int(clock.group(3)))
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + part
+        return seconds, None
     match = _NUMBER_RE.search(text)
     if not match:
         return None, (
@@ -402,6 +415,15 @@ def normalize_review_row(
         value, warning = parse_rendered_number(definition, rendered)
         row.value = value
         row.value_source = "rendered" if value is not None else None
+        # A rendered number is read out of the DISPLAY string, so it is in the display
+        # unit: "2.1 lbs (1.0 kg)" yields 2.1, pounds — not the kilograms the machine
+        # value is stored in. The table path is where `value_unit` applies.
+        row.unit = definition.number_display_unit
+        row.precision = definition.number_display_precision
+        row.display_unit = None
+        if row.unit and row.unit.lower() in CLOCK_UNITS:
+            # The parsed number is seconds; the clock string is how RTINGS shows it.
+            row.unit, row.display_unit = "seconds", row.unit
         if warning:
             row.warning = warning
     elif definition.kind == "word":
