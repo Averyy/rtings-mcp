@@ -235,6 +235,23 @@ def parse_rendered_number(definition: TestDef, rendered: Any) -> tuple[float | N
         return None, f"could not parse a number from {text!r}"
 
 
+_PARENTHESISED_NUMBER_RE = re.compile(r"\(\s*(-?\d[\d,]*(?:\.\d+)?)\s*[^)]*\)")
+
+
+def _parenthesised_number(rendered: Any) -> float | None:
+    """The figure RTINGS shows in parentheses — "(1.0 kg)" beside "2.1 lbs"."""
+    text = strip_html(rendered)
+    if not text:
+        return None
+    match = _PARENTHESISED_NUMBER_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
 def _base(
     definition: TestDef, product_id: str | None, schema: SiloSchema | None
 ) -> NormalizedValue:
@@ -413,14 +430,26 @@ def normalize_review_row(
         return row
     if definition.kind == "number":
         value, warning = parse_rendered_number(definition, rendered)
-        row.value = value
-        row.value_source = "rendered" if value is not None else None
         # A rendered number is read out of the DISPLAY string, so it is in the display
-        # unit: "2.1 lbs (1.0 kg)" yields 2.1, pounds — not the kilograms the machine
-        # value is stored in. The table path is where `value_unit` applies.
+        # unit: "2.1 lbs (1.0 kg)" yields 2.1, pounds. When RTINGS shows the stored unit
+        # in parentheses as well, that figure is taken instead, so this path agrees with
+        # rt_ratings (1.0, kilograms) rather than labelling the same test two ways.
         row.unit = definition.number_display_unit
         row.precision = definition.number_display_precision
         row.display_unit = None
+        alt = _parenthesised_number(rendered) if value is not None else None
+        if (
+            alt is not None
+            and definition.number_input_unit
+            and definition.number_input_unit != definition.number_display_unit
+            and definition.number_input_unit.lower() not in CLOCK_UNITS
+        ):
+            value = alt
+            row.unit = definition.number_input_unit
+            row.precision = definition.number_input_precision
+            row.display_unit = definition.number_display_unit
+        row.value = value
+        row.value_source = "rendered" if value is not None else None
         if row.unit and row.unit.lower() in CLOCK_UNITS:
             # The parsed number is seconds; the clock string is how RTINGS shows it.
             row.unit, row.display_unit = "seconds", row.unit

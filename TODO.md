@@ -82,6 +82,38 @@ Also confirmed: the credential rotates on disk with every run (`stored_at` advan
 `rt_auth_status` `session: unknown` on a fresh process is by design (no probe yet) — the first
 data tool fills it in.
 
+### The shopper round (2026-09-06) — 31 scenarios, all 28 categories
+
+Fresh agents answered realistic shopping questions through a stdio CLI that spawns the server
+from the working tree (`describe` first, then tool calls), then graded the experience. Each
+FAIL below was a defect that is now fixed and covered by a test; the verification round re-ran
+the failing categories with new questions.
+
+| Batch | Category (scenario) | Verdict | What it found |
+|---|---|---|---|
+| 0 | tv (bright room), mattress, headphones (XM6 vs QC Ultra), robot-vacuum, monitor | tools worked; effort 2-3/5 | stale anonymous recs served to a member; `header: []` on graphs; 70-80 K responses dropped by the client; nameless "uncatalogued" rows on every call |
+| 1 | tv (dark room) | FAIL | "Inf : 1" contrast parsed as 1.0 on the review path, null on the table path |
+| 1 | monitor (1080p family desk) | FAIL | converted values labelled with the display unit (10.7 "inches" for 10.7 cm) |
+| 1 | headphones (gym earbuds) | FAIL | canned cross-category examples in a warning; a `product_ids` entry on another bench vanished silently |
+| 1 | tv (PS5), monitor (ultrawide), headphones (open-back), soundbar | PASS | — |
+| 2 | projector | FAIL | `find` searched leaf names only: "input lag" reported as not measured |
+| 2 | laptop | FAIL | the unit fix mislabelled rendered values (2.1 "kilograms" for 2.1 lbs); "no Size test" guidance wrong for laptop |
+| 2 | mouse, keyboard, keyboard-switch, printer, speaker | PASS | duplicated test names, `find` synonyms, wrapper divs, truncation at 11 products |
+| 3 | humidifier | FAIL (calls) | usage names ("Leftovers") unreachable by `find`; 18 calls |
+| 3 | robot-vacuum (mop), vacuum, air-purifier, dehumidifier, air-conditioner, refrigerator | PASS | test/usage id collision (vacuum 35602); "pet" matched "carpet"; `scores_available` shape |
+| 4 | toaster-oven | FAIL | "01:45" parsed as 1.0 on the review path; 105 labelled "mm:ss" on the table path |
+| 4 | microwave, running-shoes, blender | FAIL (calls) | "countertop" three schema calls deep; zero-row response claimed `unblurred`; "2-4 benches" wrong (10 on running-shoes); `product_id` not documented as the join key |
+| 4 | camera, air-fryer, toaster, router, mattress (couple), vpn | PASS | unscored specs carried `score: 0.0`; several `find` terms per call |
+
+Correctness of the final answer scored 4-5/5 on every scenario; every cross-check between two
+tools agreed. What changed is in `CLAUDE.md` (rules dated 2026-09-06) and the two commits
+`055707d` and `b922ab3`.
+
+**How to run another round.** `scratchpad/rtcli.py` in the session scratchpad is the harness
+(`describe` / `call <tool> '<json>'`); it is not part of the repo. Give an agent a real
+question, tell it to run `describe` first, and ask for the call log, dead ends, cross-checks
+and a PASS/FAIL. Use a scratch `RTINGS_CACHE_DIR`.
+
 ### Still NOT tested
 
 1. **q2 and capture (o) — need a FREE account.** A membership cannot answer them; see below.

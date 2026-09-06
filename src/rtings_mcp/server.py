@@ -273,8 +273,8 @@ async def rt_ratings(
     `name_contains`, `published`,
     and `variant` — the size RTINGS tested, e.g. `{"variant": "65"}` for 65-inch TVs. TVs,
     soundbars and the like have no "Size" test, so `variant` is the way to ask that;
-    laptop and monitor DO have a numeric "Size" test (rt_schema(find="size")), filed
-    with Weight under Portability/Display rather than under the screen group.
+    laptop and monitor DO have a numeric "Size" test, and there `{"Size": "31..33"}` is
+    the test (with operators and ranges), while `variant` stays the tested SKU.
     `sort` takes a test/usage id or name (prefix `-` for
     descending, `+` for ascending; **no prefix means descending**, so prefix `+` for
     lower-is-better metrics like input lag or dE); it defaults to release date.
@@ -312,6 +312,7 @@ async def rt_product(
     product: str,
     silo: str | None = None,
     group: str | None = None,
+    tests: list[str] | None = None,
     include_prose: bool = False,
     include_media: bool = False,
     include_verdicts: bool = False,
@@ -323,7 +324,8 @@ async def rt_product(
     """Every test result for one product, each row carrying its place in RTINGS' hierarchy.
 
     `product` takes a review URL, a numeric RTINGS product id, or a model name to search
-    for. Pass `group` (a group `original_id`) to bound the response: it scopes `results`
+    for. Pass `group` (a group `original_id`) or `tests=[ids or names]` to bound the
+    response (`tests` is the cheap cross-check of a few known numbers): `group` scopes `results`
     and the per-group `commentary`, while the review-level `summary`, `verdicts` and
     `scoring` are whole-review by nature. `include_prose` adds RTINGS' commentary (HTML,
     with site-relative links) and `include_media` adds image/video URLs. A group with no
@@ -339,8 +341,10 @@ async def rt_product(
     rows when you only want the words (a full review is ~240 rows).
 
     Numbers on this path are parsed from RTINGS' display strings and are display-rounded
-    (each is labelled `value_source: "rendered"`). When you need the unrounded value, use
-    `rt_ratings` with `tests=[...]`.
+    (each is labelled `value_source: "rendered"`); where the display shows the stored unit
+    in parentheses ("4.0 lbs (1.8 kg)") the parenthesised figure is served in that unit,
+    so `unit` agrees with rt_ratings. When you need the unrounded value, use `rt_ratings`
+    with `tests=[...]`.
 
     COST: on a free RTINGS account this endpoint spends one of your metered review
     previews. It refuses by default; pass `consume_preview=true` to allow it. Anonymous and
@@ -353,6 +357,7 @@ async def rt_product(
             product,
             silo=silo,
             group=group,
+            tests=tests,
             include_prose=include_prose,
             include_media=include_media,
             include_verdicts=include_verdicts,

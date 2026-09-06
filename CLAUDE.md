@@ -566,8 +566,11 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   schema carries a `cacheable_version`; a cached parse from before these fields is a MISS,
   not a hit, or the mislabel survives its 30-day TTL. **The review path is the other way
   round:** its number is parsed out of the DISPLAY string ("2.1 lbs (1.0 kg)" → 2.1), so a
-  rendered value is labelled with the display unit and no `display_unit` — the first fix
-  labelled rt_product's 2.1 as kilograms, caught by the laptop scenario the same day.
+  rendered value is labelled with the display unit — the first fix labelled rt_product's 2.1
+  as kilograms, caught by the laptop scenario the same day. **Then the parenthesised figure
+  wins:** RTINGS shows the stored unit beside the display one ("4.0 lbs (1.8 kg)"), and
+  `_parenthesised_number` serves 1.8 kilograms with `display_unit: pounds`, so both paths
+  label the same test the same way; a display with one figure keeps the display unit.
 - **IMPORTANT: "Inf" is a VALUE RTINGS publishes, never a null and never a 1 (2026-09-06).**
   An OLED's contrast is `value: "Inf"`, `rendered_value: "Inf : 1"`. `float("Inf")` is
   accepted silently and then serialised as null, so the two best contrast readings on the
@@ -657,6 +660,12 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 - **`rt_schema(find=)` also searches a word test's VALUES** ("countertop" → microwave
   "Installation", `match: "value"`), and a miss lists the bench's usage names, because
   "reheat" is the "Leftovers" usage and no synonym table would have said so.
+- **`filters={"size": …}` means the tested variant ONLY where no test is called Size (2026-09-06).**
+  Monitor and laptop have a numeric "Size" test; the catalog alias hijacked it, so
+  `{"Size": ">31"}` matched the tested-variant string and returned nothing, silently, while the
+  same predicate by id matched 46 — "0 results" reading as "no such monitor", the failure the
+  whole project exists to prevent. `_apply_filters` and `_fields_to_fetch` both defer to
+  `_field_lookup(schema, "size")` before treating the word as the alias.
 - **A filter takes several clauses on one field** (`"13..14"`, `"13 to 14"`, `">=13 <=14"`,
   `">=13,<=14"`; added 2026-09-06): a 13-to-14-inch laptop took two passes and a hand filter
   with one comparator per field.

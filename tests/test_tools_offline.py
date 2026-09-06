@@ -2906,9 +2906,20 @@ async def test_a_rendered_number_is_labelled_with_the_unit_it_was_parsed_in(ctx)
         product_id="1",
         schema=schema,
     ).to_json()
-    assert row["value"] == 2.1 and row["value_source"] == "rendered"
-    assert row["unit"] == "pounds" and row["precision"] == 1
-    assert "display_unit" not in row
+    # RTINGS shows the stored unit in parentheses: that figure is served, so this path
+    # agrees with rt_ratings (kilograms) instead of labelling the test two ways.
+    assert row["value"] == 1.0 and row["value_source"] == "rendered"
+    assert row["unit"] == "kilograms" and row["display_unit"] == "pounds"
+    assert row["precision"] == 3
+    # Without a parenthesised figure the display unit is the only honest label.
+    single = normalize_review_row(
+        {"status": "tested", "unblurred": True, "rendered_value": "2.1 lbs", "score": 8.0},
+        converted,
+        product_id="1",
+        schema=schema,
+    ).to_json()
+    assert single["value"] == 2.1 and single["unit"] == "pounds"
+    assert "display_unit" not in single
 
 
 async def test_a_filter_takes_a_two_sided_range(ctx):
@@ -3088,3 +3099,58 @@ async def test_recommendation_lists_report_scores_available(ctx):
     out = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
     assert out["scores_available"]["insider_tests"] == "gated"
     assert out["scores_available"]["usage_ratings"] == "gated"
+
+
+async def test_rt_product_can_be_bounded_to_named_tests(ctx):
+    out = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", tests=["Native Contrast", "208"]
+    )
+    assert out["error"] is None
+    assert {r["original_id"] for r in out["data"]["results"]} <= {"11", "208"}
+    assert out["data"]["result_count"] == len(out["data"]["results"])
+
+
+async def test_find_names_the_terms_that_matched_nothing(ctx):
+    out = await services.rt_schema(ctx, "tv", find="contrast, vent fan")
+    assert out["data"]["terms_with_no_matches"] == ["vent fan"]
+    assert [t["name"] for t in out["data"]["tests"]][:1] == ["Native Contrast"]
+
+
+async def test_a_repeated_test_name_is_flagged_on_the_row(ctx):
+    from dataclasses import replace
+
+    schema = await ctx.repo.schema("tv")
+    schema.tests["12001"] = replace(
+        schema.test("12000"), original_id="12001", parent_original_id="31615",
+        derived_category_id=None,
+    )
+    from rtings_mcp.services import _test_json
+
+    assert _test_json(schema, schema.test("12000"))["name_repeats_on_bench"] is True
+    assert _test_json(schema, schema.test("12001"))["name_repeats_on_bench"] is True
+    assert "name_repeats_on_bench" not in _test_json(schema, schema.test("11"))
+
+
+async def test_a_test_named_size_is_not_hijacked_by_the_variant_alias(ctx):
+    """Monitor and laptop have a numeric "Size" test. `{"Size": ">31"}` was routed to the
+    tested-variant alias and matched nothing, silently; by id it matched 46."""
+    from dataclasses import replace
+
+    schema = await ctx.repo.schema("tv")
+    # Rename the fixture's numeric test to "Size" for this bench.
+    schema.tests["11"] = replace(schema.test("11"), name="Size")
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="27", score=5.0),
+                make_test_row("2", "11", unblurred=True, value="32", score=8.0),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", filters={"Size": ">31"}, usages=[])
+    assert [p["product_id"] for g in out["data"]["groups"] for p in g["products"]] == ["2"]
+    assert "11" in out["data"]["tests"], "the filter field was fetched"
+    # Where no test is called Size, the word still means the tested variant.
+    schema.tests["11"] = replace(schema.test("11"), name="Native Contrast")
+    out = await services.rt_ratings(ctx, "tv", filters={"size": "55"}, usages=[])
+    assert [p["product_id"] for g in out["data"]["groups"] for p in g["products"]] == ["2"]

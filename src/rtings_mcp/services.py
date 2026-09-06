@@ -351,7 +351,10 @@ async def rt_schema(
                         {
                             "original_id": u.original_id,
                             "name": u.name,
-                            "kind": "usage",
+                            # RTINGS' own kind ("usage" or "performance"), the same word
+                            # rt_product's verdicts use for the same id.
+                            "kind": u.kind or "usage",
+                            "is_usage": True,
                             "is_sub_usage": u.is_sub_usage,
                             "parent_usage_name": u.parent_usage_name,
                         },
@@ -367,6 +370,16 @@ async def rt_schema(
             "usages": usage_hits[:MAX_FIND_HITS],
             "test_matches": len(hits),
             "usage_matches": len(usage_hits),
+            "shown": (
+                f"{min(len(hits), MAX_FIND_HITS)} of {len(hits)} tests"
+                if len(hits) > MAX_FIND_HITS
+                else None
+            ),
+            # A seven-term search that matched fan/vent nowhere said so for no term; the
+            # caller re-ran with fewer terms to learn which had missed.
+            "terms_with_no_matches": (
+                _unmatched_terms(terms, queries, hits, usages) if len(terms) > 1 else None
+            ),
             "notice": (
                 "Word match over each test's full path (category/group/name), a word "
                 "test's values (match: 'value') and each usage's name, best matches first. "
@@ -521,6 +534,16 @@ def _test_json(schema: SiloSchema, test: TestDef) -> dict[str, Any]:
         if (test.value_unit or "").lower() == "score":
             # vpn "No-Log Policy" displays as "0": that is 0 out of 10, not zero days.
             out["note"] = "the value is itself RTINGS' 0-10 rating for this test"
+    if any(
+        other.original_id != test.original_id
+        and not other.is_structure
+        and other.name.lower() == test.name.lower()
+        for other in schema.tests.values()
+    ):
+        # Two "Dishwasher Safe" tests on one blender bench (jar, blades); an agent grabbing
+        # the flag by name got the blades'. The hierarchy tells them apart, and the row
+        # says so instead of relying on the caller to notice.
+        out["name_repeats_on_bench"] = True
     if test.words:
         # A `word` test's vocabulary can be a display string per product — mattress
         # "Firmness Level" carries ~100 distinct "Medium (46 Pa/mm)" entries — and dumping
@@ -908,7 +931,10 @@ def _fields_to_fetch(
         # `sort` carries its direction as a leading +/-; the field lookup must not see it.
         keys.append(str(sort).strip().lstrip("+-"))
     for key in keys:
-        if str(key).lower() in _CATALOG_FILTER_KEYS:
+        lowered_key = str(key).lower()
+        if lowered_key in _CATALOG_FILTER_KEYS and not (
+            lowered_key == "size" and _field_lookup(schema, "size") is not None
+        ):
             continue
         resolved = _field_lookup(schema, key)
         if resolved is None:
@@ -1102,6 +1128,25 @@ def _test_value_json(
 _FIND_STOPWORDS = frozenset({"per", "of", "the", "a", "an", "and", "or", "in", "for", "to"})
 
 
+def _unmatched_terms(
+    terms: list[str],
+    queries: list[tuple[list[str], str]],
+    hits: list[dict[str, Any]],
+    usages: list[Any],
+) -> list[str]:
+    out: list[str] = []
+    for term, (words, phrase) in zip(terms, queries, strict=True):
+        if any(term in (h.get("matched_terms") or [term]) for h in hits):
+            continue
+        usage_paths = (
+            " ".join(filter(None, [u.parent_usage_name, u.name])).lower() for u in usages
+        )
+        if any(_find_score(words, phrase, path) for path in usage_paths):
+            continue
+        out.append(term)
+    return out
+
+
 def _find_score(words: list[str], phrase: str, path: str) -> int:
     """Words match at word starts only — "pet" must not hit "carpet" — and the whole
     phrase in order outranks any scatter of its words."""
@@ -1207,6 +1252,10 @@ def _usage_legend(schema: SiloSchema, usage_ids: list[str]) -> dict[str, dict[st
             "parent_usage_name": definition.parent_usage_name,
             "is_unscored": definition.is_unscored,
         }
+        if "in development" in definition.name.lower():
+            # RTINGS' own label ("Microphone (In Development)"): a score it is still
+            # calibrating, served as ordinary data with nothing else saying so.
+            legend[usage_id]["in_development"] = True
     return legend
 
 
@@ -1355,7 +1404,8 @@ def _fit_response_budget(
     return [
         f"response_truncated: the full window would have been ~{full_size} characters "
         f"against a {budget}-character budget (RTINGS_MAX_RESPONSE_CHARS), so "
-        f"each group shows {widest} of the {requested} product(s) it matched. Page with "
+        f"each group shows {widest} of the {requested} product(s) in its page (each "
+        "group's `matched` counts its whole population). Page with "
         f"offset={data.get('offset', 0) + widest}, or narrow tests/usages/bench to fit more "
         "products per call."
         + (
@@ -1661,7 +1711,13 @@ def _apply_filters(
             wanted_bool = str(expression).lower() in {"1", "true", "yes"}
             out = [r for r in out if bool(r.get("published")) is wanted_bool]
             continue
-        if lowered in {"variant", "size", "tested_variant"}:
+        if lowered in {"variant", "tested_variant"} or (
+            lowered == "size" and _field_lookup(schema, "size") is None
+        ):
+            # "size" is the tested-variant alias ONLY where no test is called Size. Laptop
+            # and monitor have a numeric "Size" test, and the alias hijacked it:
+            # `{"Size": ">31"}` matched the tested-variant string instead and returned
+            # nothing, silently, while `{"1602": ">31"}` matched 46.
             wanted_variant = _normalize_variant(expression)
             kept = [
                 r
@@ -1938,6 +1994,7 @@ async def rt_product(
     *,
     silo: str | None = None,
     group: str | None = None,
+    tests: list[str] | None = None,
     include_prose: bool = False,
     include_media: bool = False,
     include_verdicts: bool = False,
@@ -2152,6 +2209,10 @@ async def rt_product(
                 "refresh=true resolves it"
             )
     values.extend(missing)
+    if tests:
+        # A cross-check of seven known numbers pulled all 151 rows (56 K characters).
+        wanted = {_name_or_id(schema, t, kind="test") for t in tests}
+        values = [v for v in values if v.get("original_id") in wanted]
 
     data: dict[str, Any] = {
         "product": {
