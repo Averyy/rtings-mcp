@@ -190,7 +190,8 @@ async def rt_schema(
     With no `group`, returns the group/category tree with per-group counts. Pass a group's
     `original_id` (or name) as `group` to get that group's leaf tests with their units and
     precision — a top-level CATEGORY id works too and returns every test beneath it in one
-    call. **`find="input lag"` searches every test and usage on the bench by name** in
+    call. **`find="input lag"` searches every test and usage on the bench** by name, by
+    group path ("panel" finds Panel Technology's Sub-Type) and by a word test's values, in
     one call — use it instead of walking the tree when you know roughly what the test is
     called; several terms at once as `find="face, weight, battery"` (each hit says which
     terms it matched). Feature flags and specs ("bagel", "slice capacity", "USB-C") are

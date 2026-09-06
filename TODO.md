@@ -112,6 +112,13 @@ microwave 8 PASS (was 14), blender 12 PASS, running-shoes 8 PASS (was 18), lapto
 by the tested-variant alias, and slash-containing test names colliding with the `Group/Name`
 syntax — with the fixes verified live (`5b7cb92` and the commit after it).
 
+**Final confirmation round on the popular categories** (new questions, final build): tv 6 calls
+PASS, headphones 7 PASS, monitor PASS. The monitor path found and fixed two last defects on the
+way (a digit string against a word test parsed as a number; `rt_schema(group=<test id>)`
+answering "no scored tests"), tv dropped `recommended_sku` (wrong on 2 of 3 picks of one list,
+from RTINGS' own sku block) and picks now carry `tested_variant`/`test_bench`, and headphones
+made an off-index best-of slug fetchable. 40 scenarios in all.
+
 Correctness of the final answer scored 4-5/5 on every scenario; every cross-check between two
 tools agreed. What changed is in `CLAUDE.md` (rules dated 2026-09-06) and the commits from
 `055707d` onward.
