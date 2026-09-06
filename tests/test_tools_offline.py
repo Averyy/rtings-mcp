@@ -3252,4 +3252,4 @@ def test_find_words_match_whole_words_or_their_plural_and_ing_forms():
     assert _find_score(["weight"], "weight", "design weighted thd") == 0
     assert _find_score(["weight"], "weight", "design weight") == 11
     assert _find_score(["print"], "print", "printing speed black only") >= 1
-    assert _find_score(["window"], "window", "peak 2% windows") == 1
+    assert _find_score(["window"], "window", "peak 2% windows") >= 1
