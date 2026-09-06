@@ -422,7 +422,9 @@ async def rt_recommendations(
     `list` values to get that ranking: ordered picks, each with RTINGS' own explanation of
     why it is there (`reasoning`, HTML), its `product_id` — the join key: pass the picks'
     ids to `rt_ratings(filters={"product_ids": [...]})` for one comparison table instead of
-    one call per pick — and two blocks of numbers RTINGS chose to feature for that list:
+    one call per pick — the `tested_variant` and `test_bench` RTINGS measured (a "75-77
+    inch" list can carry picks tested at 65") — and two blocks of numbers RTINGS chose to
+    feature for that list:
     `featured_results`
     (tests AND group scores — on this surface a group carries a 0-10 score, unlike
     rt_ratings) and `usage_scores`. Both follow the same `status`/`gated` rules as

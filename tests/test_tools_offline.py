@@ -3236,3 +3236,20 @@ async def test_a_multi_word_find_term_is_matched_only_when_all_its_words_hit(ctx
     assert contrast.get("matched_terms") == []
     assert contrast["partially_matched_terms"] == ["wind contrast"]
     assert out["data"]["terms_with_no_matches"] == []
+
+
+async def test_a_pick_says_which_size_and_bench_rtings_tested(ctx):
+    out = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    pick = out["data"]["picks"][0]
+    assert pick["product_id"] == "1"
+    assert pick["tested_variant"] == '65"'
+    assert pick["test_bench"]["id"] == "227"
+
+
+def test_find_words_match_whole_words_or_their_plural_and_ing_forms():
+    from rtings_mcp.services import _find_score
+
+    assert _find_score(["weight"], "weight", "design weighted thd") == 0
+    assert _find_score(["weight"], "weight", "design weight") == 11
+    assert _find_score(["print"], "print", "printing speed black only") >= 1
+    assert _find_score(["window"], "window", "peak 2% windows") == 1

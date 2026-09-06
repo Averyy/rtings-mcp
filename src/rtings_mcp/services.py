@@ -1178,7 +1178,13 @@ def _unmatched_terms(
 def _find_score(words: list[str], phrase: str, path: str) -> int:
     """Words match at word starts only — "pet" must not hit "carpet" — and the whole
     phrase in order outranks any scatter of its words."""
-    score = sum(1 for w in words if re.search(r"(?<![a-z0-9])" + re.escape(w), path))
+    # A whole word, or its plural / "-ing" form: "print" hits "printing" but "weight"
+    # must not hit "Weighted THD".
+    score = sum(
+        1
+        for w in words
+        if re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?:s|es|ing)?(?![a-z0-9])", path)
+    )
     if score and phrase and phrase in path:
         score += 10
     return score
@@ -2924,6 +2930,22 @@ async def rt_recommendations(
         )
     payload = envelope.payload or {}
     schema = await repo.schema(silo)
+    # The catalog says which SKU and bench each pick was actually tested on: a "Best
+    # 75-77 inch" list had two picks measured at 65", and nothing on the page says so.
+    tested: dict[str, dict[str, Any]] = {}
+    try:
+        benches, _info = await repo.resolve_benches(silo, None)
+        for bench_id, generation in (await repo.catalog(silo, benches)).items():
+            for entry in generation.products:
+                if not isinstance(entry, dict):
+                    continue
+                tested_variant, _variants = _variant_info(entry)
+                tested[str(entry.get("id"))] = {
+                    "tested_variant": tested_variant,
+                    "test_bench": _bench_json(schema, bench_id),
+                }
+    except RtingsError:
+        pass  # the picks stand without the join; nothing is invented
     picks = []
     cap = max(1, int(limit)) if limit is not None else None
     for rank, pick in enumerate(payload.get("product_recommendations") or [], start=1):
@@ -2948,6 +2970,7 @@ async def rt_recommendations(
                 "url": page.get("url"),
                 "overall_score": product.get("preferred_scoreset_score"),
                 "variants": product.get("variants_rendered_list"),
+                **tested.get(_str_or_none(pick.get("product_id") or product.get("id")) or "", {}),
                 # No `recommended_sku`: the page's sku block was wrong on 2 of 3 picks of
                 # the 43-inch list (a Samsung model number on the Vizio pick, a C4 SKU on
                 # the C6 review). The review's own size table is the source for that.
