@@ -1,3 +1,7 @@
+# Delegated-review run artifacts: full prompts, stdout and rollouts of subagent runs.
+# They quote repo source verbatim and are per-machine scratch, never part of the project.
+.codex-dobby/
+
 # Browser-automation recon artifacts — contain analytics client IDs, coarse geo,
 # UA fingerprints and verbatim scrapes of third-party page content.
 .playwright-mcp/

@@ -3,11 +3,86 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-05: the anonymous server is built and working, and has been through a
-seven-lens review round (15 defects found and fixed — see Built, below).** All seven tools run against the
-live API, 297 offline + 9 live tests pass, and the release-gate re-scan reproduces the 12-enforcing /
-16-open map with zero drift. What the build measured is in `RECON.md` §12. Everything still open is
-below.
+**Status 2026-09-06: built, working, and signed in.** Three review rounds (15 defects, then 10,
+then 7 more found while testing the sign-in end to end — see Built, below). All seven data tools
+run against the live API, **382 offline + 9 live tests pass**, and the release-gate re-scan
+reproduces the 12-enforcing / 16-open map with zero drift — re-run today *with* a membership
+stored, which the scan ignores by construction. What the build measured is in `RECON.md` §12; what
+the membership measured is in §13.
+
+**Phase 0 is DONE for everything a membership can answer** (`RECON.md` §13): q1 is YES, the
+member/free field is `current_user.is_insider`, the browser headers turn out not to matter,
+`user_has_access` flips, and member/anonymous curves are byte-identical. `RTINGS_MEMBER_MODE`
+therefore defaults to **`true`** as of 2026-09-06. The only questions left need a **free**
+account — see below.
+
+## Handoff — read this before touching anything (2026-09-06)
+
+### Where things stand
+
+- **A real membership is signed in.** The credential lives at `~/.config/rtings-mcp/session.json`
+  (`0600`), and it **rotates on use** — the session slides, so it stays alive as long as the server
+  is used and dies 30 days after it stops. Observed rotating and being persisted correctly today.
+- **`RTINGS_MEMBER_MODE` now defaults to `true`** (v0.2.0). Setting it to `0` still works and is
+  what the anonymous-label guard exists for.
+- **Committed 2026-09-06 as v0.2.0** — the sign-in, the guards and the docs are on `main`.
+  The project still forbids committing unasked.
+- **The real cache contains no member data** (verified: no `.member.`/`.free.` files). Everything in
+  `~/.cache/rtings-mcp` is anonymous slices from 2026-09-04/05.
+- **Any MCP server process you find running is STALE** — they predate today's code. Restart the
+  client before testing through MCP, or you will be testing the old build.
+
+### Already verified live — do not spend a session redoing these
+
+Sign-in end to end (window → cookie → validate → store → in-process adopt, browser reaped, no PII
+stored); Phase-0 q1 and captures a, c, d, f, g, p (`RECON.md` §13); the release scan's anonymity
+guard with a real cookie on disk (12/16, zero drift); the write guard live on tv and mattress in
+both flag states; member-tier writes and cache hits; **382 offline + 9 live tests**, the offline
+suite hermetic even under a hostile environment.
+
+### What has NOT been tested — in priority order
+
+1. **The MCP tool layer with a member session.** Everything today ran through `services.*`
+   in-process. `server.py`'s wrappers and the Pydantic output models have **never serialized an
+   unblurred member response**. The null-dropping / `ALWAYS_PRESENT` rules are exactly the kind of
+   thing that behaves differently when `value` is suddenly non-null. Restart MCP, then call
+   `rt_ratings("tv", tests=[...])` and check the wire shape.
+2. **`rt_silos()` after a member fetch — the highest-value regression check.** This is the bug
+   fixed today: a member's fetch of a gated silo used to make `rt_silos` report it `full`
+   permanently. Fetch tv signed in, then call `rt_silos()`; **tv must still report gated**. If it
+   says `full`, observation provenance has regressed.
+3. **`rt_product` as a member on a gated silo.** Untested. It should return unblurred values, and
+   the metered-preview path should no-op (a member has no meter: `access_limit: null`), so it must
+   not demand `consume_preview`.
+4. **`rt_graph` / `rt_recommendations` / `rt_search` / `rt_schema` signed in.** None has ever run
+   with a cookie attached. Curves are known byte-identical (§13.6), so `rt_graph` is low risk.
+5. **Expired-session behaviour — never observed in any state.** What happens when the cookie dies:
+   does the probe classify `expired`, does write-time demotion fire, does `rt_sign_in` offer
+   renewal *without* `force`? Simulable by storing a garbage cookie; do it in a scratch config dir.
+6. **q2 and capture (o) — need a FREE account.** A membership cannot answer them; see below.
+7. **q16 — does enforcement hold on legacy benches and the review path for a member?** All member
+   measurement so far is the current bench (227) on the table path.
+8. **Two MCP clients sharing one cache dir** with member data — the cross-process lock and the
+   preview budget have never been exercised concurrently against real member responses.
+
+### Cautions
+
+- **Use a scratch `RTINGS_CACHE_DIR` for experiments**, so probing does not fill the cache the
+  server serves from.
+- **Never commit a fixture containing unblurred member values**, and redact any `GLOBALS.session`
+  capture — the real one carries the user's email, username and numeric user id.
+- **Do not add a new scan/measurement path without the anonymity guard** that `rtings-mcp scan`
+  uses. A member session measuring enforcement reports every gated silo as open.
+- The delegated-review MCP (`codex-dobby`) had **expired auth** on 2026-09-06 and returned zero
+  findings while reporting success. If you delegate a review, check it actually ran.
+
+```bash
+.venv/bin/pytest tests/ -q                 # 382 offline, ~4 s
+.venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
+.venv/bin/ruff check src/ tests/
+.venv/bin/rtings-mcp auth --status         # what credential is stored, and its session
+.venv/bin/rtings-mcp scan --silo tv        # release gate, one silo (anonymous by construction)
+```
 
 ## Built
 
@@ -19,47 +94,95 @@ below.
       `RECON.md` §12.3), the two-source auth join, `scores_available` derived per (silo, bench).
 - [x] **Anonymous tools** — all seven, plus the catalog filter/sort engine with the gated-field
       guard, and `rt_silos()` routing on **observed** enforcement.
-- [x] **Member layer, gated off** — tier selection, write-time demotion and the preview budget are
-      implemented and unit-tested behind `RTINGS_MEMBER_MODE` (default `false`). Rotation
-      write-back is deliberately **not** implemented (`SPEC.md` §10).
+- [x] **In-conversation sign-in (2026-09-06)** — `rt_sign_in` / `rt_auth_status`, ported in shape
+      from `consumer-reports-mcp`: a background task plus a 45 s long-poll, because Claude Desktop
+      kills a tool call at 60 s and offers no terminal for `rtings-mcp auth`. A headed Playwright
+      window (optional `[browser]` extra) opens on RTINGS' login page; the human types and the
+      server reads one boolean, then one cookie. Also `rtings-mcp auth --browser` for a terminal.
+      **The ready signal is `GLOBALS.session.current_user`, never the cookie's presence** — RTINGS
+      mints `_rtings_session` anonymously and rotates it on every response, so a CR-style
+      "the token appeared" poll would capture an anonymous session and overwrite a working
+      credential. Validated against RTINGS before anything is stored; `free` counts as signed in.
+- [x] **Member layer, now ON** — tier selection, write-time demotion and the preview budget are
+      implemented and unit-tested behind `RTINGS_MEMBER_MODE`, **on by default since
+      2026-09-06** now that `RECON.md` §13.1 measured the gate opening.
+- [x] **Rotation write-back IS implemented** (corrected here 2026-09-06; this file still said
+      "deliberately not implemented", which `RECON.md` §12.15 reversed and the code had already
+      followed). The session slides on use, so refusing to persist a rotation caused the monthly
+      re-paste it was meant to prevent. Gated on proof: only a jar value from a response the HTML
+      probe saw logged in, and only for a file-sourced credential.
 - [x] **Release gate** — `rtings-mcp scan` and `pytest -m "live and slow"` both re-derive the
-      per-silo map and diff it against `docs/enforcement-snapshot.json`.
+      per-silo map and diff it against `docs/enforcement-snapshot.json`. Verified 2026-09-06 that
+      the scan's anonymity guard holds with a real member cookie on disk: all 12 enforcing silos
+      still scanned `unblurred 0`. That guard had never been exercised against a live credential.
+- [x] **The anonymous-label write guard (2026-09-06)** — `SPEC.md` §8. With `RTINGS_MEMBER_MODE=0`
+      a live credential still returns member data, which cannot honestly be stamped `anonymous`
+      and cannot be stamped higher either, so the write is **refused**, the rows are still served,
+      and a `not_cached` warning names the real cause. The load-bearing condition is proof that a
+      signed-out fetch sees the same thing: **16 of 28 silos serve `insider_only` rows unblurred
+      to anonymous**, so the naive "unblurred insider rows ⇒ member-only" predicate would refuse
+      every legitimate write on more than half the catalog.
+- [x] **Observation provenance (2026-09-06)** — `SPEC.md` §7. `data_completeness` is a claim about
+      what *anonymous* gets, so `record()` now requires a `provenance` and only an anonymous
+      observation may say `full`. Without it a member's fetch of a gated silo made `rt_silos()`
+      report it `full` permanently on that machine — the stale-map lie the release re-scan exists
+      to catch, reached locally.
+- [x] **The offline suite is hermetic (2026-09-06)** — an autouse fixture in `tests/conftest.py`
+      redirects the cache and config dirs and clears the auth env vars. `test_server.py` reaches a
+      tool through the process-wide `get_context()`, so before this a signed-in developer's real
+      `~/.cache` made it fail. Whether the suite passes must not depend on who is signed in.
 
-## Research — needs a bought membership (Phase 0, capture all in one logged-in session)
+## Research — Phase 0, MEASURED 2026-09-06
 
-Ordered by how much they gate. `SPEC.md` §10 holds the **full capture list (a–i)** — it is one
-session, so a missed item costs another membership month. Highlights:
+**The membership was bought and signed in on 2026-09-06, and every question a member account
+can answer is now answered** — the facts are in `RECON.md` §13, which is the citable record;
+this list is only the checklist. The two that remain need a **free** account, not a member one.
 
-- [ ] **q1 — does a member/insider cookie flip `unblurred:true` on the API?** BLOCKING for member
-      mode, but **~90% expected to succeed** (`RECON.md` §5). Run one `table_tool__test_results` call
-      with a logged-in `_rtings_session` **+ real browser headers** (`SPEC.md` §9). Fallback ladder if
-      blurred: add headers → try `app/product_vue_page__page_body` with `url_path` → then failed.
-      **On success: set `RTINGS_MEMBER_MODE=true` and the whole tier mechanism is already live.**
-- [ ] **capture a — a logged-in `GLOBALS.session` in full.** Which field separates `member` from
-      `free` is **unknown**; only the anonymous shape has ever been measured. The classifier
-      currently calls a logged-in session `member` only on positive evidence
-      (`has_insider_access`, or `access_level > preview_level`) and `free` otherwise, and says in
-      the envelope's `note` that the boundary is provisional. Redact before committing as a fixture.
-- [ ] **capture f — CONFIRM ONLY.** Already answered anonymously (`SPEC.md` §10): `/tv/tools/table`
-      returns `Cache-Control: ... private`, which CloudFront does not cache, so the demotion guard
-      should never fire. One check with the cookie that `X-Cache` still says `Miss`; do not design
-      around it.
-- [ ] **capture c — the exact `test_results` body a logged-in front end sends.**
-- [ ] **capture o (Stage 1) — is `app/side_by_side__review` metered?** It is the public compare tool rather
-      than the review page, and a tool that spent a preview per comparison would be unusable
-      — but that is reasoning, not measurement. Check `previewed_products` before and after
-      an `include_verdicts` call on the free account. Cheap, and it is in Stage 1.
-- [ ] **capture p (Stage 2) — does `user_has_access` flip for a member on a gated silo?** It is `false` on TV
-      and `true` on mattress anonymously, so it tracks silo enforcement. If a membership
-      flips it on TV, it is a second, independent confirmation of q1 — and it is an auth
-      marker *inside* the API, which §1 says does not exist.
-- [ ] **capture d — the same request with and without the browser headers.** Turns the one
-      "unprovable" origin-validation risk into a measured one.
-- [ ] **capture g — one curve fetched with the cookie, diffed against the anonymous copy.**
-      `graphs/` is untiered on the assumption they are identical.
-- [ ] **q2 — the metered preview's unit** (per product, per session, per day). The budget control is
-      built and enforced; only the constant is unknown. Capture
-      `previewed_products`/`access_limit` before and after one `rt_product` call.
+- [x] ~~**q1 — does a member/insider cookie flip `unblurred:true` on the API?**~~ **YES**
+      (`RECON.md` §13.1). tv bench 227, 6 `insider_only` tests x 98 products: member
+      **588/588 unblurred with values**, anonymous **0/588**, identical call. It succeeded on
+      the first rung — no header ladder, no `page_body` fallback. tv is an *enforcing* silo, so
+      this is the gate opening rather than an open silo answering. The tier mechanism is now
+      justified by measurement; enabling it is a flag, not a migration.
+- [x] ~~**capture a — a logged-in `GLOBALS.session` in full.**~~ **ANSWERED** (`RECON.md` §13.2).
+      **`current_user.is_insider` is the member/free field** — a literal boolean inside the
+      object the probe already parses, so the boundary stops being provisional. `access_level: 3`,
+      `preview_level: 2`, `access_limit: null`, `previewed_products: []`. The three older signals
+      (`user_is_insider`, `has_insider_access`, `access_level > preview_level`) all agreed and
+      stay as corroboration.
+- [x] ~~**capture f — CONFIRM ONLY.**~~ **CONFIRMED** (`RECON.md` §13.4). With the cookie,
+      `/tv/tools/table` returns `x-cache: Miss from cloudfront` and
+      `cache-control: max-age=0, private, must-revalidate`. The CloudFront demotion guard should
+      never fire; it stays a guard, not a design assumption.
+- [x] ~~**capture c — the exact `test_results` body a logged-in front end sends.**~~ **ANSWERED
+      BY CONSTRUCTION** — the body this project already sends returned fully unblurred member
+      data in §13.1, so there is nothing to adjust for the member case.
+- [x] ~~**capture p — does `user_has_access` flip for a member on a gated silo?**~~ **YES**
+      (`RECON.md` §13.5). `true` on tv with the cookie (anonymously `false` on tv, `true` on
+      mattress), 11/11 usage score sets scored. So it tracks membership *and* enforcement, and it
+      is a real auth marker inside the API. It does **not** change the rule that `verdicts/`
+      demotion keys on the usage scores — the deadlock that rule guards against is simply retired.
+- [x] ~~**capture d — the same request with and without the browser headers.**~~ **ANSWERED**
+      (`RECON.md` §13.3): 98/98 unblurred **both ways**. There is no server-side origin validation
+      on `/api/v2/safe/`; the one "unprovable" risk is measured and absent. The headers stay
+      because they cost nothing, but nothing depends on them.
+- [x] ~~**capture g — one curve fetched with the cookie, diffed against the anonymous copy.**~~
+      **IDENTICAL** (`RECON.md` §13.6): same CDN path, byte-identical JSON. `graphs/` stays
+      untiered, and the CDN still needs no cookie.
+
+### Still open — these need a FREE account, not a member one
+
+A member has no meter (`access_limit: null`, `previewed_products: []`), so no amount of member
+session time can measure the preview budget. The control is built and enforced; only the constant
+is unknown.
+
+- [ ] **q2 — the metered preview's unit** (per product, per session, per day). Capture
+      `previewed_products`/`access_limit` before and after one `rt_product` call **on a free
+      account**.
+- [ ] **capture o — is `app/side_by_side__review` metered?** Check `previewed_products` before and
+      after an `include_verdicts` call **on a free account**. Reasoning says no (it is the public
+      compare tool, not the review page), but that is reasoning, not measurement.
+
 - [x] ~~**q3 / capture e — does the session slide?**~~ **ANSWERED 2026-09-04, anonymously,
       no membership needed** (`RECON.md` §12.15). It slides on *every* response, HTML and API
       alike, with a fresh 30-day expiry each time — so a session lives indefinitely with use
@@ -68,6 +191,22 @@ session, so a missed item costs another membership month. Highlights:
       same holds for a logged-in session (it is the same Rails mechanism).
 - [ ] **q7 — minor-bench comparability** (are v2.0.1/v2.1/v2.2 rescored or additive?). Needs member
       scores to compare. Decides whether the default comparable population is one bench or the set.
+
+## Product — from the second best-of template (2026-09-05)
+
+- [ ] **"Notable Mentions" is not extracted on the server-rendered template.**
+      `recommendation_mentions` comes back `[]` there while the props template populates it, and
+      the section is plainly on the page. Nothing surfaces mentions today, so this is latent
+      rather than broken.
+- [ ] **The static template's featured `target_id` cannot be joined to the schema.** Its
+      `DistributionTooltip` gives `target_label` / `target_type` and an id in a different
+      namespace — Side Sleeping is `38309` there and `36553` in the schema — so those rows carry
+      a null `original_id` and a real name. Whether a mapping exists is unmeasured; a wrong join
+      key would be worse than none.
+- [ ] **Template drift has no automated check.** `RECON.md` §12.17 is a dated snapshot (mattress
+      and running-shoes migrated, 12 others not), and the release checklist covers it as a MANUAL
+      step. One `rt_recommendations(silo, list=<first>)` per silo would catch it; the symptom is
+      `recommendations_missing` on a silo that used to work.
 
 ## Research — answerable anonymously
 

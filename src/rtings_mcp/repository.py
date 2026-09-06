@@ -56,6 +56,7 @@ from .config import (
 from .errors import RtingsError
 from .fsutil import file_lock
 from .htmlprobe import (
+    SessionProbe,
     extract_bench_list,
     extract_data_props,
     extract_globals,
@@ -64,6 +65,7 @@ from .htmlprobe import (
 )
 from .http import SingleFlight, Transport
 from .normalize import strip_html
+from .observations import ObservationStore
 from .schema import SiloSchema, parse_column_options, schema_from_cacheable, schema_to_cacheable
 
 log = logging.getLogger(__name__)
@@ -79,6 +81,16 @@ _REC_LINK_RE = re.compile(r'href="(/([a-z0-9-]+)/reviews/best/([a-z0-9-]+))"')
 #: bodies interleave even at `RTINGS_CONCURRENCY=1`, which only bounds in-flight requests.
 _WARNINGS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
     "rtings_warnings", default=None
+)
+
+#: Slices fetched during THIS call that the anonymous-label guard refused to write
+#: (:meth:`AuthManager.anonymous_write_refusal`). A refused write must still be served —
+#: the rows are real and the caller asked for them — so they are held here, keyed exactly
+#: as the cache would key them, and the read path consults this before the disk. Scoped to
+#: one call for the same reason warnings are: the repository is process-wide, and an
+#: instance dict would serve one call's member-only rows to the next call as a "hit".
+_UNCACHED: contextvars.ContextVar[dict[tuple[str, str, str], Envelope] | None] = (
+    contextvars.ContextVar("rtings_uncached_slices", default=None)
 )
 
 
@@ -233,9 +245,11 @@ class Repository:
             yield
             return
         token = _WARNINGS.set([])
+        uncached_token = _UNCACHED.set({})
         try:
             yield
         finally:
+            _UNCACHED.reset(uncached_token)
             _WARNINGS.reset(token)
 
     @property
@@ -250,6 +264,93 @@ class Repository:
             return
         if message not in collected:
             collected.append(message)
+
+    # -- refused writes, held for this call only -----------------------------------
+
+    @staticmethod
+    def _uncached_slice(directory: str, bench_id: str, key: str) -> Envelope | None:
+        held = _UNCACHED.get()
+        if not held:
+            return None
+        return held.get((directory, bench_id, key))
+
+    def _hold_uncached(self, envelope: Envelope, directory: str, bench_id: str, key: str) -> None:
+        """Serve a refused write for the rest of this call without writing it.
+
+        Outside a call scope (the CLI, a bare repository call in a test) there is nowhere to
+        hold it: the rows are dropped and the read path reports ``coverage_unknown`` for
+        them, which is honest — nothing was cached and nothing was served.
+        """
+        held = _UNCACHED.get()
+        if held is None:
+            return
+        held[(directory, bench_id, key)] = envelope
+
+    CAUSE_MEMBER_MODE_OFF = "member_mode_off"
+    CAUSE_DEMOTED = "demoted"
+
+    def _label_cause(self, *, demoted: bool, probe: SessionProbe | None) -> str:
+        """Why a write is about to carry the ``anonymous`` label.
+
+        Three distinct reasons, and the warning must name the real one: the flag is off
+        (the remedy is to turn it on), the response contradicted the probe and was demoted
+        (the remedy is to check the session — nothing to enable), or the probe itself did
+        not justify a higher tier (``free`` on the table path, ``expired``, ``unknown``).
+        The first wording used to be hardcoded, so with the flag on it told the user to
+        enable a flag that was already enabled.
+        """
+        if not self.config.member_mode:
+            return self.CAUSE_MEMBER_MODE_OFF
+        if demoted:
+            return self.CAUSE_DEMOTED
+        return f"probe:{probe.session if probe else 'none'}"
+
+    def _refuse_uncached_warning(
+        self, silo: str, directory: str, reason: str, count: int, *, cause: str
+    ) -> None:
+        what = f"{count} {directory} slice(s)" if count != 1 else f"a {directory} slice"
+        if reason == "early_access_unblurred":
+            why = (
+                "it holds an Early Access (published:false) row that came through unblurred, "
+                "which only a signed-in session sees on any category"
+            )
+        else:
+            why = (
+                f"it holds unblurred insider-only rows and no signed-out fetch has shown "
+                f"{silo} to serve them anonymously, so they may be member-only"
+            )
+        if cause == self.CAUSE_MEMBER_MODE_OFF:
+            label = "because RTINGS_MEMBER_MODE is off"
+            remedy = (
+                "Enable RTINGS_MEMBER_MODE to cache member data under its own tier, or "
+                "fetch this category once signed out so the server can record what "
+                "anonymous gets."
+            )
+        elif cause == self.CAUSE_DEMOTED:
+            label = (
+                "because the response contradicted the session probe — its gate-able rows "
+                "came back withheld, so the write was demoted"
+            )
+            remedy = (
+                "Check rt_auth_status — the session may have lapsed mid-fetch — or fetch "
+                "this category once signed out so the server can record what anonymous gets."
+            )
+        else:
+            session = cause.partition(":")[2] or "unknown"
+            label = (
+                f"because the session probe read {session!r}, which does not justify a tier "
+                "above anonymous on this surface"
+            )
+            remedy = (
+                "Check rt_auth_status, or fetch this category once signed out so the server "
+                "can record what anonymous gets."
+            )
+        self.warn(
+            f"not_cached: {what} for {silo} came back on a signed-in session and would have "
+            f"been cached under the `anonymous` label {label} — a label it cannot honestly "
+            f"carry, since {why}. The rows ARE in this response; they were not written to "
+            f"the cache and the next call will fetch them again. {remedy}"
+        )
 
     # -- pages ----------------------------------------------------------------------
 
@@ -725,6 +826,10 @@ class Repository:
         missing: set[str] = set()
         for original_id in ids:
             for bench_id in benches:
+                if self._uncached_slice(directory, bench_id, original_id) is not None:
+                    # Fetched earlier in this same call and refused a write: served from
+                    # the in-call hold, never refetched within the call.
+                    continue
                 variants = self.cache.list_variants(directory, bench_id, key=original_id)
                 usable = False
                 for variant in variants:
@@ -794,6 +899,32 @@ class Repository:
                 raise
             fetched_at = time.time()
 
+            # The tier is resolved ONCE, here, for every file this response produces —
+            # the catalogued buckets and the `_unassigned` ones alike. It used to be
+            # computed after the unassigned block, which therefore hardcoded `anonymous`
+            # and, with member mode on, was refused by the label guard on every call while
+            # the catalogued buckets from the same response were written `member` and hit.
+            #
+            # Placement matters: the re-probe is unthrottled and must run AFTER the fetch
+            # (a lapse during the fetch is what write-time demotion catches) and BEFORE any
+            # tier-keyed write. Both hold here, exactly as they did lower down; the probe
+            # lock it takes is a leaf, so holding the surface key lock across it is the
+            # ordering already in force.
+            write_tier = self.auth.write_tier(surface, probe)
+            if write_tier != ANONYMOUS:
+                # A successful probe is a precondition for any tier-keyed write, and this
+                # probe is NEVER throttled: the read-path throttle exists so a cache hit is
+                # cheap, not so a write can be labelled from a stale answer.
+                probe = await self.auth.session_probe(force=True)
+                write_tier = self.auth.write_tier(surface, probe)
+            may_unblur = self.auth.session_may_unblur(probe)
+            observations = ObservationStore(self.cache)
+            refused: dict[str, tuple[int, str]] = {}
+
+            def refuse(reason: str, cause: str) -> None:
+                count, _ = refused.get(reason, (0, cause))
+                refused[reason] = (count + 1, cause)
+
             product_bench: dict[str, str] = {}
             for bench_id, generation in generations.items():
                 for product_id in generation.product_ids:
@@ -839,26 +970,54 @@ class Repository:
                     "without a name, brand or bench"
                 )
                 for original_id, rows_for_id in unassigned.items():
+                    # Same response, same tier, same demotion rule as the catalogued
+                    # buckets. An uncatalogued product is in no generation, so nothing can
+                    # mark it Early Access; the empty set is the honest input.
+                    tier = write_tier
+                    demoted = self.auth.should_demote(
+                        tier=tier,
+                        surface=surface,
+                        rows=rows_for_id,
+                        insider_ids=insider_ids,
+                        unpublished_product_ids=set(),
+                        probe=probe,
+                    )
+                    if demoted:
+                        tier = ANONYMOUS
                     envelope = Envelope(
                         fetched_at=fetched_at,
                         source_url=f"{BASE_URL}/{silo}/tools/table",
-                        cache_tier=ANONYMOUS,
+                        cache_tier=tier,
                         request={"silo": silo, "test_bench_ids": list(benches)},
                         payload={"rows": rows_for_id},
                         silo=silo,
                         notes={"unassigned": True},
                     )
+                    # The label guard applies whenever the label is `anonymous`. An
+                    # uncatalogued product sits on no known bench, so the proof has to hold
+                    # for every bench the request spanned.
+                    reason = (
+                        self.auth.anonymous_write_refusal(
+                            surface=surface,
+                            rows=rows_for_id,
+                            insider_ids=insider_ids,
+                            unpublished_product_ids=set(),
+                            probe=probe,
+                            anonymous_serves=all(
+                                observations.anonymous_serves(silo, b, surface=surface)
+                                for b in benches
+                            ),
+                        )
+                        if tier == ANONYMOUS and may_unblur
+                        else None
+                    )
+                    if reason is not None:
+                        refuse(reason, self._label_cause(demoted=demoted, probe=probe))
+                        self._hold_uncached(envelope, directory, "_unassigned", original_id)
+                        continue
                     self.cache.put_variant(
                         envelope, directory, "_unassigned", key=original_id
                     )
-
-            write_tier = self.auth.write_tier(surface, probe)
-            if write_tier != ANONYMOUS:
-                # A successful probe is a precondition for any tier-keyed write, and this
-                # probe is NEVER throttled: the read-path throttle exists so a cache hit is
-                # cheap, not so a write can be labelled from a stale answer.
-                probe = await self.auth.session_probe(force=True)
-                write_tier = self.auth.write_tier(surface, probe)
 
             for (bench_id, original_id), bucket in buckets.items():
                 generation = generations.get(bench_id)
@@ -866,15 +1025,38 @@ class Repository:
                     continue
                 unpublished = set(generation.unpublished_ids)
                 tier = write_tier
-                if self.auth.should_demote(
+                demoted = self.auth.should_demote(
                     tier=tier,
                     surface=surface,
                     rows=bucket,
                     insider_ids=insider_ids,
                     unpublished_product_ids=unpublished,
                     probe=probe,
-                ):
+                )
+                if demoted:
                     tier = ANONYMOUS
+                # The anonymous-label guard. `tier` is `anonymous` here because member mode
+                # is off, because the probe justified nothing higher, or because the
+                # response contradicted the probe; in each case a signed-in session may
+                # have unblurred rows a signed-out one never sees, and an `anonymous` file
+                # holding them is served to the next signed-out caller as a hit. Refuse the
+                # write, keep the rows for this call, and say why. Anonymous sessions never
+                # reach the predicate (`may_unblur` is false by construction), so nothing
+                # changes for them — no probe, no observation read, no warning.
+                reason = (
+                    self.auth.anonymous_write_refusal(
+                        surface=surface,
+                        rows=bucket,
+                        insider_ids=insider_ids,
+                        unpublished_product_ids=unpublished,
+                        probe=probe,
+                        anonymous_serves=observations.anonymous_serves(
+                            silo, bench_id, surface=surface
+                        ),
+                    )
+                    if tier == ANONYMOUS and may_unblur
+                    else None
+                )
                 envelope = Envelope(
                     fetched_at=fetched_at,
                     source_url=f"{BASE_URL}/{silo}/tools/table",
@@ -893,8 +1075,14 @@ class Repository:
                     silo=silo,
                     notes=envelope_notes_for(bucket, insider_ids, surface=surface),
                 )
+                if reason is not None:
+                    refuse(reason, self._label_cause(demoted=demoted, probe=probe))
+                    self._hold_uncached(envelope, directory, bench_id, original_id)
+                    continue
                 self.cache.put_variant(envelope, directory, bench_id, key=original_id)
                 self.cache.prune_variants(directory, bench_id, key=original_id)
+            for reason, (count, cause) in refused.items():
+                self._refuse_uncached_warning(silo, directory, reason, count, cause=cause)
             self.cache.flush_lru()
 
     def read_slice(
@@ -914,6 +1102,11 @@ class Repository:
         tier is provenance; the row's own ``unblurred`` bit is the selector.
         """
         variants = self.cache.read_variants(directory, bench_id, key=original_id)
+        held = self._uncached_slice(directory, bench_id, original_id)
+        if held is not None:
+            # The refused write is the freshest observation of this pair by construction —
+            # it was fetched during this call — so it leads the merge.
+            variants = [held, *variants]
         if not variants:
             return None
         merged: dict[str, MergedRow] = {}
@@ -957,7 +1150,11 @@ class Repository:
         """
         out: dict[str, dict[str, dict[str, Any]]] = {}
         for original_id in original_ids:
-            for slice_env in self.cache.read_variants(directory, "_unassigned", key=original_id):
+            variants = self.cache.read_variants(directory, "_unassigned", key=original_id)
+            held = self._uncached_slice(directory, "_unassigned", original_id)
+            if held is not None:
+                variants = [held, *variants]
+            for slice_env in variants:
                 for row in (slice_env.payload or {}).get("rows", []):
                     product_id = str(row.get("product_id") or "")
                     if product_id:
@@ -974,9 +1171,14 @@ class Repository:
         ``scores_available``'s "freshest response", both of which must reflect the tier the
         hit rule accepted.
         """
+        held = self._uncached_slice(directory, bench_id, original_id)
+        if held is not None and tier_rank(held.cache_tier) >= tier_rank(demand):
+            return held
         variants = self.cache.read_variants(directory, bench_id, key=original_id, min_tier=demand)
         if variants:
             return variants[0]
+        if held is not None:
+            return held
         fallback = self.cache.read_variants(directory, bench_id, key=original_id)
         return fallback[0] if fallback else None
 
@@ -1173,7 +1375,7 @@ class Repository:
                 generation = generations.get(bench_id)
                 if generation is not None:
                     unpublished = set(generation.unpublished_ids)
-            if self.auth.should_demote(
+            demoted = self.auth.should_demote(
                 tier=tier,
                 surface="reviews",
                 rows=row_ids,
@@ -1181,7 +1383,8 @@ class Repository:
                 unpublished_product_ids=unpublished,
                 probe=probe,
                 product_id=product,
-            ):
+            )
+            if demoted:
                 tier = ANONYMOUS
 
             envelope = Envelope(
@@ -1195,9 +1398,33 @@ class Repository:
                 unpublished_product_ids=sorted(unpublished & {product}),
                 notes=envelope_notes_for(row_ids, insider_ids, surface="reviews"),
             )
-            self.cache.put_variant(envelope, "reviews", key=product, compress=True)
-            self.cache.prune_variants("reviews", key=product)
-            self.cache.flush_lru()
+            # The anonymous-label guard, as on the table path: a review unblurred by a
+            # membership (or a free account's metered preview) must not be filed as what
+            # anonymous gets. The envelope is still returned — the caller asked for it —
+            # it simply is not written.
+            reason = (
+                self.auth.anonymous_write_refusal(
+                    surface="reviews",
+                    rows=row_ids,
+                    insider_ids=insider_ids,
+                    unpublished_product_ids=unpublished,
+                    probe=probe,
+                    anonymous_serves=bool(bench_id)
+                    and ObservationStore(self.cache).anonymous_serves(
+                        key, bench_id or "", surface="reviews"
+                    ),
+                )
+                if tier == ANONYMOUS and self.auth.session_may_unblur(probe)
+                else None
+            )
+            if reason is not None:
+                self._refuse_uncached_warning(
+                    key, "reviews", reason, 1, cause=self._label_cause(demoted=demoted, probe=probe)
+                )
+            else:
+                self.cache.put_variant(envelope, "reviews", key=product, compress=True)
+                self.cache.prune_variants("reviews", key=product)
+                self.cache.flush_lru()
             if would_spend:
                 # Refresh previewed_products so the next call's budget check is current.
                 await self.auth.session_probe(force=True)
@@ -1237,6 +1464,7 @@ class Repository:
                     raise
                 probe = self.auth.cached_probe()
                 tier = self.auth.write_tier("reviews", probe)
+                demoted = False
                 if tier != ANONYMOUS:
                     probe = await self.auth.session_probe(force=True)
                     tier = self.auth.write_tier("reviews", probe)
@@ -1244,8 +1472,44 @@ class Repository:
                     # under a member probe was served as member data for the full 30-day
                     # TTL. See `verdicts_contradict_tier` for why the predicate is the
                     # usage scores and NOT `user_has_access`.
-                    if verdicts_contradict_tier(review, tier):
+                    demoted = verdicts_contradict_tier(review, tier)
+                    if demoted:
                         tier = ANONYMOUS
+                reason: str | None = None
+                if tier == ANONYMOUS and self.auth.session_may_unblur(probe):
+                    # The anonymous-label guard for verdicts. The scores here are usage
+                    # ratings by another name, so they are judged as a ratings surface:
+                    # any non-null score under a session that may have unblurred it, on a
+                    # silo no signed-out fetch has shown to serve usage scores, is
+                    # member-only until proven otherwise; an Early Access product's scores
+                    # are member-only on every silo.
+                    bench = review.get("test_bench")
+                    bench_id = (
+                        str(bench.get("id"))
+                        if isinstance(bench, dict) and bench.get("id")
+                        else None
+                    )
+                    unpublished: set[str] = set()
+                    if bench_id:
+                        generation = (await self.catalog(key, [bench_id])).get(bench_id)
+                        if generation is not None:
+                            unpublished = set(generation.unpublished_ids)
+                    score_rows = [
+                        {"product_id": product, "unblurred": entry.get("score") is not None}
+                        for entry in (review.get("product_score_sets") or [])
+                        if isinstance(entry, dict)
+                    ]
+                    reason = self.auth.anonymous_write_refusal(
+                        surface="ratings",
+                        rows=score_rows,
+                        insider_ids=set(),
+                        unpublished_product_ids=unpublished,
+                        probe=probe,
+                        anonymous_serves=bool(bench_id)
+                        and ObservationStore(self.cache).anonymous_serves(
+                            key, bench_id or "", surface="verdicts"
+                        ),
+                    )
                 envelope = Envelope(
                     fetched_at=time.time(),
                     source_url=f"{BASE_URL}/{key}/tools/compare",
@@ -1262,6 +1526,15 @@ class Repository:
                         "has_unblurred_insider": bool(review.get("user_has_access")),
                     },
                 )
+                if reason is not None:
+                    self._refuse_uncached_warning(
+                        key,
+                        "verdicts",
+                        reason,
+                        1,
+                        cause=self._label_cause(demoted=demoted, probe=probe),
+                    )
+                    return envelope, False
                 self.cache.put_variant(envelope, "verdicts", key=product, compress=True)
                 self.cache.prune_variants("verdicts", key=product)
                 self.cache.flush_lru()

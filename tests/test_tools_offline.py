@@ -416,6 +416,29 @@ def ctx(tmp_path, payloads):
     return Context(config=config, cache=cache, transport=transport, auth=auth, repo=repo)
 
 
+@pytest.fixture
+def flag_off_ctx(tmp_path, payloads):
+    """A context with `RTINGS_MEMBER_MODE` explicitly **off**.
+
+    The default flipped on 2026-09-06 once Phase 0 was measured (`RECON.md` §13.1), but the
+    flag-off state is exactly what the write guard exists for: a live credential with the
+    tier machinery pinned to `anonymous`, where a member's rows cannot honestly be labelled.
+    Inheriting the default here would leave every guard test below asserting nothing.
+    """
+    config = load_config(
+        {
+            "RTINGS_CACHE_DIR": str(tmp_path / "off"),
+            "RTINGS_CONFIG_DIR": str(tmp_path / "offcfg"),
+            "RTINGS_MEMBER_MODE": "0",
+        }
+    )
+    cache = Cache(config)
+    transport = StubTransport(config, payloads)
+    auth = AuthManager(config=config, cache=cache, transport=transport)
+    repo = Repository(config, cache, transport, auth)
+    return Context(config=config, cache=cache, transport=transport, auth=auth, repo=repo)
+
+
 def values(out, product_id):
     for group in out["data"]["groups"]:
         for row in group["products"]:
@@ -1377,24 +1400,24 @@ async def test_from_cache_is_false_on_a_cold_fetch(ctx):
 
 async def test_a_narrow_observation_does_not_erase_a_wide_one(ctx):
     """Cumulative counts make an open->gated flip read `partial` forever."""
-    from rtings_mcp.observations import ObservationStore, ScoresAvailable
+    from rtings_mcp.observations import PROVENANCE_ANONYMOUS, ObservationStore, ScoresAvailable
 
     store = ObservationStore(ctx.cache)
     wide = ScoresAvailable(has_insider=True)
     for _ in range(50):
         wide.insider_tests.add(unblurred=True)
-    store.record("tv", "227", wide)
+    store.record("tv", "227", wide, provenance=PROVENANCE_ANONYMOUS)
     assert store.read("tv", "227").completeness == "full"
 
     narrow = ScoresAvailable(has_insider=True)
     narrow.insider_tests.add(unblurred=False)
-    store.record("tv", "227", narrow)
+    store.record("tv", "227", narrow, provenance=PROVENANCE_ANONYMOUS)
     assert store.read("tv", "227").insider_total == 50, "a 1-row read must not overwrite 50"
 
     flip = ScoresAvailable(has_insider=True)
     for _ in range(50):
         flip.insider_tests.add(unblurred=False)
-    store.record("tv", "227", flip)
+    store.record("tv", "227", flip, provenance=PROVENANCE_ANONYMOUS)
     assert store.read("tv", "227").completeness == "gated", "an equally wide read must win"
 
 
@@ -1917,3 +1940,367 @@ async def test_a_stale_review_against_a_newer_schema_is_not_a_false_not_tested(c
     by_name = {v["name"]: v for v in out["data"]["results"]}
     assert by_name["Peak Brightness"]["status"] == "coverage_unknown"
     assert any("bench_mismatch" in w for w in out["warnings"]), out["warnings"]
+
+
+# -- the anonymous-label guard: member mode OFF, a member cookie live -------------------
+#
+# Measured 2026-09-06: with a member cookie stored and RTINGS_MEMBER_MODE off, a tv fetch
+# came back 98/98 unblurred and was written as `tests/227/141.anonymous.<ts>.json`. The label
+# promises "a signed-out session would have received these bytes"; it did not. And the same
+# fetch's observation made `rt_silos()` call tv `full` on that machine, permanently.
+#
+# `ctx` here has the flag OFF; `member_probe(ctx)` injects the credential and the probe.
+
+
+def anonymous_proof_of_open(ctx, bench="227", *, insider=20, usage=5):
+    """What a signed-out fetch of an OPEN silo leaves behind (mattress-shaped)."""
+    from rtings_mcp.observations import PROVENANCE_ANONYMOUS, ObservationStore, ScoresAvailable
+
+    seen = ScoresAvailable(has_insider=True, has_usages=True)
+    for _ in range(insider):
+        seen.insider_tests.add(unblurred=True)
+    for _ in range(usage):
+        seen.usage_ratings.add(unblurred=True)
+    ObservationStore(ctx.cache).record("tv", bench, seen, provenance=PROVENANCE_ANONYMOUS)
+
+
+def unblurred_insider_payload(*pids):
+    return {
+        "data": {
+            "test_results": [
+                make_test_row(pid, "11", unblurred=True, value="5000", score=8.0) for pid in pids
+            ]
+        }
+    }
+
+
+async def test_member_data_is_served_but_never_written_under_an_anonymous_label(flag_off_ctx):
+    """Defect 1, tv-shaped: no signed-out fetch has shown tv to be open, so the unblurred
+    insider rows may be the membership's doing. The response still carries them — the
+    caller asked and they are real — but no `anonymous` file is written, the call says so,
+    and the next call fetches again rather than serving a lie as a hit."""
+    member_probe(flag_off_ctx)
+    flag_off_ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload(
+        "1", "2"
+    )
+
+    out = await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    row = values(out, "1")["tests"][0]
+    assert row["status"] == "tested_visible" and row["value"] == 5000.0, "served, not lost"
+    assert out["data_tier"] == "unblurred"
+    assert any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
+    assert flag_off_ctx.cache.list_variants("tests", "227", key="11") == [], "nothing was written"
+
+    before = flag_off_ctx.transport.calls.count("table_tool__test_results")
+    again = await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    assert flag_off_ctx.transport.calls.count("table_tool__test_results") == before + 1
+    assert values(again, "1")["tests"][0]["value"] == 5000.0
+
+
+async def test_member_observations_never_become_the_published_completeness(ctx):
+    """Defect 2: the same fetch used to make `rt_silos()` report tv as `full` — the routing
+    signal the calling LLM is told to trust — and nothing would ever replace it, because
+    with a stored credential no signed-out fetch of equal width happens again."""
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "2")
+    await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+
+    out = await services.rt_silos(ctx)
+    tv = out["data"]["silos"][0]
+    assert tv["data_completeness"] == "unknown", "never `full` off a signed-in fetch"
+    assert tv["observed"]["provenance"] == "logged_in"
+    assert tv["observed"]["insider_unblurred_ratio"] == 1.0, "the counts are still reported"
+
+
+async def test_a_signed_out_proof_of_open_lets_the_signed_in_write_through(flag_off_ctx):
+    """The trap, mattress-shaped: 16 of 28 silos serve insider rows unblurred anonymously,
+    so a member's bytes there ARE what anonymous gets and refusing would refuse every
+    legitimate write on those silos whenever a user is signed in. With a signed-out
+    observation of the same bench on disk, the write goes through, silently, and the
+    signed-in fetch's own observation does not overwrite the signed-out one."""
+    anonymous_proof_of_open(flag_off_ctx)
+    member_probe(flag_off_ctx)
+    flag_off_ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload(
+        "1", "2"
+    )
+
+    out = await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    assert values(out, "1")["tests"][0]["value"] == 5000.0
+    assert not any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
+    tiers = {v.tier for v in flag_off_ctx.cache.list_variants("tests", "227", key="11")}
+    assert tiers == {"anonymous"}, "an honest anonymous write"
+
+    before = flag_off_ctx.transport.calls.count("table_tool__test_results")
+    await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    assert flag_off_ctx.transport.calls.count("table_tool__test_results") == before, "a real hit"
+
+    silos = await services.rt_silos(flag_off_ctx)
+    assert silos["data"]["silos"][0]["data_completeness"] == "full"
+    assert silos["data"]["silos"][0]["observed"]["provenance"] == "anonymous"
+
+
+async def test_an_unblurred_early_access_row_is_refused_even_with_the_proof(flag_off_ctx):
+    """Early Access is blurred for anonymous on every silo and a membership lifts it, so a
+    member's unblurred row for product 3 (`published:false`) is member-only data even on
+    an open silo. The row is still served — as `tested_visible`, which is what it is for
+    this session — but it is not filed as what anonymous gets."""
+    anonymous_proof_of_open(flag_off_ctx)
+    member_probe(flag_off_ctx)
+    flag_off_ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload(
+        "1", "3"
+    )
+
+    out = await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    assert values(out, "3")["tests"][0]["status"] == "tested_visible"
+    assert values(out, "3")["tests"][0]["value"] == 5000.0
+    assert any("Early Access" in w for w in out["warnings"]), out["warnings"]
+    assert flag_off_ctx.cache.list_variants("tests", "227", key="11") == []
+
+
+async def test_the_guard_is_inert_for_an_anonymous_session(ctx):
+    """No credential, open-silo-shaped response: written, no warning, no extra request —
+    the ordinary user must see no behaviour change at all, and `rt_silos()` learns the
+    silo is open from their fetch exactly as before."""
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "2")
+
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    assert values(out, "1")["tests"][0]["value"] == 5000.0
+    assert out["warnings"] == []
+    probe = ctx.auth.cached_probe()
+    assert probe.session == "anonymous" and probe.source_url == "", "no HTML probe ran"
+    assert {v.tier for v in ctx.cache.list_variants("tests", "227", key="11")} == {"anonymous"}
+
+    silos = await services.rt_silos(ctx)
+    assert silos["data"]["silos"][0]["data_completeness"] == "full"
+    assert silos["data"]["silos"][0]["observed"]["provenance"] == "anonymous"
+
+
+async def test_usage_scores_unblurred_on_a_signed_in_session_are_not_written(flag_off_ctx):
+    """The ratings surface has neither `status` nor `insider_only`, so it needs its own
+    branch: every unblurred usage row is gate-relevant, and the proof is the signed-out
+    observation of the USAGE surface, not of the insider tests."""
+    member_probe(flag_off_ctx)  # the stock payload already carries an unblurred score for product 1
+    out = await services.rt_ratings(flag_off_ctx, "tv", usages=["1"])
+    assert values(out, "1")["usage_scores"][0]["score"] == 8.1
+    assert any("ratings" in w and w.startswith("not_cached:") for w in out["warnings"])
+    assert flag_off_ctx.cache.list_variants("ratings", "227", key="1") == []
+
+    anonymous_proof_of_open(flag_off_ctx)
+    out = await services.rt_ratings(flag_off_ctx, "tv", usages=["1"])
+    assert not any(w.startswith("not_cached:") for w in out["warnings"])
+    tiers = {v.tier for v in flag_off_ctx.cache.list_variants("ratings", "227", key="1")}
+    assert tiers == {"anonymous"}
+
+
+async def test_a_review_unblurred_on_a_signed_in_session_is_not_written(flag_off_ctx):
+    """The review path writes `reviews/` with the same label and has the same exposure — a
+    member's page body on tv carries every insider value. Served; not cached."""
+    member_probe(flag_off_ctx)
+    page = flag_off_ctx.transport.payloads["app/product_vue_page__page_body"]
+    rows = page["data"]["page"]["product"]["review"]["test_results"]
+    rows[1] = {
+        "status": "tested",
+        "unblurred": True,
+        "rendered_value": "1873 cd/m²",
+        "score": 8.8,
+        "test": {"original_id": "11"},
+    }
+    out = await services.rt_product(flag_off_ctx, "/tv/reviews/alpha/alpha-one")
+    gated = [v for v in out["data"]["results"] if v["original_id"] == "11"]
+    assert gated and gated[0]["status"] == "tested_visible"
+    assert any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
+    assert flag_off_ctx.cache.list_variants("reviews", key="1") == []
+
+    before = flag_off_ctx.transport.calls.count("app/product_vue_page__page_body")
+    await services.rt_product(flag_off_ctx, "/tv/reviews/alpha/alpha-one")
+    assert flag_off_ctx.transport.calls.count("app/product_vue_page__page_body") == before + 1
+
+
+async def test_a_blurred_review_on_a_signed_in_session_is_still_written(ctx):
+    """Vacuous under the predicate: nothing came through that anonymous would not get, so
+    the write is honest and a member with a lapsed session is not refused forever."""
+    member_probe(ctx)
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    assert not any(w.startswith("not_cached:") for w in out["warnings"])
+    assert ctx.cache.list_variants("reviews", key="1")
+
+
+async def test_verdict_scores_unblurred_on_a_signed_in_session_are_not_written(flag_off_ctx):
+    """Verdict scores are usage ratings by another name, and `verdicts/` is the surface
+    that had no demotion at all. A non-null score under a session that may have unblurred
+    it, on a silo not proven to serve usage scores anonymously, is not filed as anonymous."""
+    import copy
+
+    member_probe(flag_off_ctx)
+    payload = copy.deepcopy(SBS_PAYLOAD)
+    payload["data"]["review"]["user_has_access"] = True
+    payload["data"]["review"]["product_score_sets"][0]["score"] = 8.2
+    flag_off_ctx.transport.payloads["app/side_by_side__review"] = payload
+
+    out = await services.rt_product(
+        flag_off_ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+    )
+    assert out["data"]["verdicts"][0]["score"] == 8.2
+    assert any("verdicts" in w and w.startswith("not_cached:") for w in out["warnings"])
+    assert flag_off_ctx.cache.list_variants("verdicts", key="1") == []
+
+    anonymous_proof_of_open(flag_off_ctx)
+    out = await services.rt_product(
+        flag_off_ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+    )
+    assert not any("verdicts" in w and w.startswith("not_cached:") for w in out["warnings"])
+    assert flag_off_ctx.cache.list_variants("verdicts", key="1")
+
+
+async def test_a_refused_slice_is_served_only_within_the_call_that_fetched_it(flag_off_ctx):
+    """The hold is per call, like warnings: the repository is process-wide, and an instance
+    dict would serve one call's member-only rows to the next call as a 'hit'."""
+    member_probe(flag_off_ctx)
+    flag_off_ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload(
+        "1", "2"
+    )
+    await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    assert flag_off_ctx.repo.read_slice("tests", "227", "11", demand="anonymous") is None
+    assert flag_off_ctx.repo.slice_meta("tests", "227", "11", demand="anonymous") is None
+
+
+async def test_a_refused_slice_is_not_refetched_within_the_same_call(ctx):
+    """Inside one call the hold stands in for the file: a second `ensure_*` for the same
+    pair must not fetch again, or a tool that touches a pair twice spends two requests."""
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "2")
+    with ctx.repo.warning_scope():
+        await ctx.repo.ensure_test_slices("tv", ["227"], ["11"])
+        before = ctx.transport.calls.count("table_tool__test_results")
+        await ctx.repo.ensure_test_slices("tv", ["227"], ["11"])
+        assert ctx.transport.calls.count("table_tool__test_results") == before
+        assert ctx.repo.read_slice("tests", "227", "11", demand="anonymous")["1"].row["value"]
+
+
+async def test_uncatalogued_rows_get_the_same_guard(flag_off_ctx):
+    """With the flag off, `_unassigned` files are `anonymous`-labelled like everything else
+    and hold real rows for products outside every catalog generation — on tv those are
+    blurred anonymously, so a member's unblurred ones are member-only too. Served in the
+    uncatalogued group; not written."""
+    ctx = flag_off_ctx
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "99")
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
+    assert orphan and orphan[0]["products"][0]["product_id"] == "99"
+    assert orphan[0]["products"][0]["tests"][0]["value"] == 5000.0
+    assert ctx.cache.list_variants("tests", "_unassigned", key="11") == []
+
+
+# -- member mode ON: the `_unassigned` bucket carries the response's tier ---------------
+
+
+def tiers_of(ctx, directory, bench, key):
+    return {v.tier for v in ctx.cache.list_variants(directory, bench, key=key)}
+
+
+async def test_uncatalogued_rows_are_written_at_the_response_tier_with_member_mode_on(ctx):
+    """Measured live 2026-09-06 after the flag flipped: `tests/227/141.member.<ts>.json`
+    was written and hit, yet a `not_cached` warning fired for the 9 uncatalogued products
+    on every call. The `_unassigned` envelope was built BEFORE the tier was resolved and so
+    hardcoded `anonymous`, which the label guard then (correctly) refused — forever, since
+    nothing about the next call differed. Same response, same tier: the orphan bucket is
+    written `member` beside the catalogued ones, with no warning, and the next call hits."""
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "99")
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
+    assert orphan and orphan[0]["products"][0]["tests"][0]["value"] == 5000.0
+    assert not any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
+    assert tiers_of(ctx, "tests", "227", "11") == {"member"}
+    assert tiers_of(ctx, "tests", "_unassigned", "11") == {"member"}, "same tier as the rest"
+
+    before = ctx.transport.calls.count("table_tool__test_results")
+    again = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    assert ctx.transport.calls.count("table_tool__test_results") == before, "a real hit"
+    assert not any(w.startswith("not_cached:") for w in again["warnings"]), again["warnings"]
+    orphan = [g for g in again["data"]["groups"] if g.get("coverage") == "uncatalogued"]
+    assert orphan and orphan[0]["products"][0]["tests"][0]["value"] == 5000.0
+
+
+async def test_uncatalogued_rows_are_demoted_with_the_rest_of_the_response(ctx):
+    """Write-time demotion applies to the orphan bucket too: a member probe whose response
+    came back fully withheld must not leave a `member` orphan file beside demoted
+    `anonymous` catalogued ones — a hit on it would serve nulls as member data for the TTL.
+    All-blurred is vacuous under the label guard, so nothing is refused or warned."""
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {"test_results": [make_test_row("1", "11"), make_test_row("99", "11")]}
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    assert not any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
+    assert tiers_of(ctx, "tests", "227", "11") == {"anonymous"}
+    assert tiers_of(ctx, "tests", "_unassigned", "11") == {"anonymous"}
+
+
+# -- the refusal warning names the real reason for the label --------------------------
+
+
+async def test_a_flag_off_refusal_says_the_flag_is_off(flag_off_ctx):
+    member_probe(flag_off_ctx)
+    flag_off_ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload(
+        "1", "2"
+    )
+    out = await services.rt_ratings(flag_off_ctx, "tv", tests=["11"], usages=[])
+    warning = next(w for w in out["warnings"] if w.startswith("not_cached:"))
+    assert "RTINGS_MEMBER_MODE is off" in warning
+    assert "Enable RTINGS_MEMBER_MODE" in warning
+
+
+async def test_a_flag_on_refusal_never_tells_the_user_to_enable_the_flag(ctx):
+    """A free account on the table path: the flag is on, but `free` justifies no tier
+    above anonymous there, so an unblurred insider row is refused — and the old wording
+    told the user to enable a flag that was already enabled."""
+    free_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "2")
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    assert values(out, "1")["tests"][0]["value"] == 5000.0
+    warning = next(w for w in out["warnings"] if w.startswith("not_cached:"))
+    assert "'free'" in warning and "rt_auth_status" in warning
+    assert "RTINGS_MEMBER_MODE" not in warning
+    assert ctx.cache.list_variants("tests", "227", key="11") == []
+
+
+async def test_a_demoted_refusal_names_the_demotion(ctx):
+    """Member probe, catalogued rows withheld (so the slice demotes to anonymous), but an
+    Early Access row came through unblurred: the label guard refuses on the Early Access
+    row, and the warning must say the slice was demoted rather than blame the flag."""
+    member_probe(ctx)
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11"),
+                make_test_row("3", "11", unblurred=True, value="5000", score=8.0),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    warning = next(w for w in out["warnings"] if w.startswith("not_cached:"))
+    assert "demoted" in warning and "Early Access" in warning
+    assert "RTINGS_MEMBER_MODE" not in warning
+    assert ctx.cache.list_variants("tests", "227", key="11") == []
+
+
+async def test_the_tier_is_labelled_from_a_re_probe_taken_after_the_fetch(ctx):
+    """The re-probe that precedes any tier-keyed write is unthrottled and must run AFTER
+    the fetch: a probe from before it cannot vouch for what the session was when the rows
+    came back. Here the in-memory probe says `member` (and is far too fresh for the
+    throttled path to refresh), but the page now says logged out. Every file from the
+    response — the catalogued bucket and the orphan one alike — must carry a tier the
+    re-probe can justify, never `member` off the stale reading."""
+    member_probe(ctx)
+    ctx.transport.session_page = "anonymous"  # the configured cookie now reads logged out
+    ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "99")
+    await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+
+    calls = ctx.transport.calls
+    post = calls.index("table_tool__test_results")
+    assert "GET /tv/tools/table" in calls[post + 1 :], "no re-probe after the fetch"
+    assert ctx.auth.cached_probe().session == "expired"
+    assert "member" not in tiers_of(ctx, "tests", "227", "11")
+    assert "member" not in tiers_of(ctx, "tests", "_unassigned", "11")

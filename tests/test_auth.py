@@ -175,11 +175,23 @@ def test_the_credential_file_is_never_in_the_cache_dir(tmp_path):
 
 @pytest.fixture
 def auth(tmp_path):
+    """Member mode explicitly **OFF**.
+
+    It was the shipped default until 2026-09-06, when Phase 0's evidence bar was met
+    (`RECON.md` §13.1) and the default flipped to on. The flag-off path did not go away —
+    it is what a user gets by setting `RTINGS_MEMBER_MODE=0` with a live cookie, and it is
+    the state the whole write guard exists for — so it is pinned here rather than inherited,
+    or these tests would quietly stop testing it.
+    """
     from rtings_mcp.cache import Cache
     from rtings_mcp.http import Transport
 
     config = load_config(
-        {"RTINGS_CACHE_DIR": str(tmp_path / "c"), "RTINGS_CONFIG_DIR": str(tmp_path / "cfg")}
+        {
+            "RTINGS_CACHE_DIR": str(tmp_path / "c"),
+            "RTINGS_CONFIG_DIR": str(tmp_path / "cfg"),
+            "RTINGS_MEMBER_MODE": "0",
+        }
     )
     return AuthManager(config=config, cache=Cache(config), transport=Transport(config))
 
@@ -200,8 +212,14 @@ def member_auth(tmp_path):
 
 
 def test_member_mode_off_pins_every_tier_to_anonymous(auth):
-    """Whether a membership cookie flips `unblurred` on the API is unmeasured, so no tier
-    above anonymous may be demanded or written until it is."""
+    """The escape hatch still works: with the flag off, no tier above anonymous may be
+    demanded or written, whatever the probe says.
+
+    This was Phase 0's safety pin while "does a cookie flip `unblurred`?" was unmeasured.
+    That is now measured (`RECON.md` §13.1) and the default is on, but the flag remains —
+    and with it, this behaviour — because it is the only way to run a live credential
+    without tiering the cache at all.
+    """
     assert auth.probe_tier(probe("member")) == ANONYMOUS
     assert auth.demand_tier("tests", probe("member")) == ANONYMOUS
     assert auth.demand_tier("reviews", probe("member")) == ANONYMOUS
@@ -409,3 +427,140 @@ def test_verdicts_demotion_ignores_user_has_access(member_auth):
 def test_anonymous_verdicts_never_demote(member_auth):
     review = {"product_score_sets": [{"score": None}]}
     assert auth_module.verdicts_contradict_tier(review, ANONYMOUS) is False
+
+
+# -- the anonymous-label guard (member mode OFF) ------------------------------------
+#
+# With the flag off every write is stamped `anonymous`. A member's fetch of tv came back
+# 588/588 unblurred and was written under that label, so a later signed-out session got a
+# cache HIT on member-only measurements. The guard below decides when `anonymous` is a
+# true label; these tests pin the predicate on BOTH kinds of silo.
+
+
+from rtings_mcp.auth import REFUSAL_EARLY_ACCESS, REFUSAL_UNPROVEN_OPEN  # noqa: E402
+
+
+@pytest.fixture
+def signed_in_auth(auth):
+    """Member mode OFF, a credential configured, and a probe that read it as `member` —
+    the exact situation the defect was measured in."""
+    auth.transport.credential.configured = "PLACEHOLDER"
+    auth._probe = probe("member", probed_at=9e12)
+    return auth
+
+
+def test_no_credential_means_the_session_cannot_have_unblurred_anything(auth):
+    """The switch that keeps the guard inert for the ordinary anonymous user: with nothing
+    configured nothing was sent, so this is an inference from our own configuration, costs
+    no probe, and holds even if a stale member probe is lying around in memory."""
+    auth._probe = probe("member", probed_at=9e12)
+    assert auth.session_may_unblur() is False
+
+
+def test_member_free_and_unknown_probes_may_have_unblurred(signed_in_auth):
+    """`free` counts: a metered preview unblurs a review. `unknown` counts: a failed probe
+    proves nothing in either direction, and the safe direction is to refuse the write."""
+    for session in ("member", "free", "unknown"):
+        assert signed_in_auth.session_may_unblur(probe(session)) is True, session
+
+
+def test_an_expired_probe_did_not_unblur(signed_in_auth):
+    """A dead session cannot resurrect, so what came back is what anonymous gets — and the
+    write is honest. Refusing here would refuse an expired user's open-silo writes forever."""
+    assert signed_in_auth.session_may_unblur(probe("expired")) is False
+
+
+def test_a_cloudfront_cached_expired_probe_is_not_trusted(signed_in_auth):
+    """If the probe page was the CDN's anonymous copy answered to a live member cookie, the
+    `expired` reading is the cache's, not the session's — the same hazard `should_demote`
+    refuses on, read in the other direction."""
+    assert signed_in_auth.session_may_unblur(probe("expired", x_cache="Hit from cloudfront"))
+
+
+def test_a_configured_credential_with_no_probe_at_all_may_have_unblurred(signed_in_auth):
+    signed_in_auth._probe = None
+    assert signed_in_auth.session_may_unblur() is True
+
+
+def refusal(auth, rows, *, surface="tests", anonymous_serves=False, unpublished=frozenset()):
+    return auth.anonymous_write_refusal(
+        surface=surface,
+        rows=rows,
+        insider_ids=INSIDER,
+        unpublished_product_ids=set(unpublished),
+        probe=auth.cached_probe(),
+        anonymous_serves=anonymous_serves,
+    )
+
+
+TV_SHAPED = [{"original_id": "11", "status": "tested", "unblurred": True, "product_id": "1"}]
+
+
+def test_a_member_unblurred_insider_row_on_an_unproven_silo_is_refused(signed_in_auth):
+    """tv: anonymous gets 0/588, a member 588/588. Written as `anonymous`, the next
+    signed-out caller is served member measurements as a cache hit."""
+    assert refusal(signed_in_auth, TV_SHAPED) == REFUSAL_UNPROVEN_OPEN
+
+
+def test_the_same_rows_on_a_silo_proven_open_are_an_honest_anonymous_write(signed_in_auth):
+    """mattress: anonymous receives insider rows unblurred as ordinary behaviour, so a
+    member's bytes there ARE what anonymous gets. The naive predicate — 'logged in and
+    unblurred' — would refuse every legitimate write on 16 of 28 silos; the tie-break is a
+    signed-out observation of the same bench, and with it the write goes through."""
+    assert refusal(signed_in_auth, TV_SHAPED, anonymous_serves=True) is None
+
+
+def test_an_unblurred_na_row_is_not_evidence(signed_in_auth):
+    """47% of `na` rows are `unblurred:true` anonymously (RECON §11.4); refusing on them
+    would refuse all-`na` slices forever on gated silos too."""
+    rows = [{"original_id": "11", "status": "na", "unblurred": True, "product_id": "1"}]
+    assert refusal(signed_in_auth, rows) is None
+
+
+def test_an_unblurred_public_row_is_not_evidence(signed_in_auth):
+    """Public tests ship their value anonymously on every silo, so a public-only slice
+    must stay writable — otherwise the tier deadlock returns through this door."""
+    rows = [{"original_id": "208", "status": "tested", "unblurred": True, "product_id": "1"}]
+    assert refusal(signed_in_auth, rows) is None
+
+
+def test_an_all_blurred_response_is_an_honest_anonymous_write(signed_in_auth):
+    rows = [{"original_id": "11", "status": "tested", "unblurred": False, "product_id": "1"}]
+    assert refusal(signed_in_auth, rows) is None
+
+
+def test_an_unblurred_early_access_row_is_refused_even_on_an_open_silo(signed_in_auth):
+    """`published:false` is blurred for anonymous on EVERY silo and a membership is what
+    lifts it (RECON §12.10), so an unblurred one is member-only data wherever it appears —
+    the proof of openness does not cover it. Applies to public tests too: an in-progress
+    review is blurred on all of its tests."""
+    rows = [{"original_id": "208", "status": "tested", "unblurred": True, "product_id": "3"}]
+    assert (
+        refusal(signed_in_auth, rows, anonymous_serves=True, unpublished={"3"})
+        == REFUSAL_EARLY_ACCESS
+    )
+
+
+def test_a_blurred_early_access_row_is_not_refused(signed_in_auth):
+    rows = [{"original_id": "11", "status": "tested", "unblurred": False, "product_id": "3"}]
+    assert refusal(signed_in_auth, rows, unpublished={"3"}) is None
+
+
+def test_usage_rows_key_on_unblurred_alone(signed_in_auth):
+    """A ratings row has no `status` and no `insider_only`; every unblurred one is
+    gate-relevant, and the proof is the anonymous observation of the USAGE surface."""
+    rows = [{"original_id": "1", "unblurred": True, "product_id": "1"}]
+    assert refusal(signed_in_auth, rows, surface="ratings") == REFUSAL_UNPROVEN_OPEN
+    assert refusal(signed_in_auth, rows, surface="ratings", anonymous_serves=True) is None
+    early = [{"original_id": "1", "unblurred": True, "product_id": "3"}]
+    assert (
+        refusal(signed_in_auth, early, surface="ratings", anonymous_serves=True, unpublished={"3"})
+        == REFUSAL_EARLY_ACCESS
+    )
+
+
+def test_the_guard_is_a_no_op_for_an_anonymous_session(auth):
+    """No credential: the same tv-shaped rows are what anonymous got, so the label is true
+    by construction and nothing is refused — no probe, no observation, no warning."""
+    assert refusal(auth, TV_SHAPED) is None
+    assert refusal(auth, TV_SHAPED, unpublished={"1"}) is None

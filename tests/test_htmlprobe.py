@@ -43,6 +43,19 @@ MEMBER_GLOBALS = """
 """
 
 
+#: The shape a REAL member session returns, measured 2026-09-06 (RECON §13.2) and redacted:
+#: `current_user.is_insider` is the field that separates member from free. Every string value
+#: is a placeholder — the real object carries a name, an email and a subscription date.
+INSIDER_GLOBALS = """
+<script>var GLOBALS = {"session": {"current_user": {"id": "REDACTED",
+ "email": "REDACTED", "username": "REDACTED", "is_insider": true,
+ "insider_status": "REDACTED", "insider_end_at": "REDACTED",
+ "is_confirmed": true, "is_admin": false, "paywall_test_account": null},
+ "access_state": {"access_level": 1, "preview_level": 2, "access_limit": null,
+  "previewed_products": []}}, "static": {"silos": []}};</script>
+"""
+
+
 def test_extract_globals_and_title():
     parsed = extract_globals(ANON_GLOBALS)
     assert set(parsed) == {"session", "static", "ads"}
@@ -130,6 +143,59 @@ def test_member_requires_positive_evidence():
     )
     assert probe.session == "free"
     assert probe.note  # the member/free boundary is provisional and says so
+
+
+def test_current_user_is_insider_alone_decides_member():
+    """The measured field leads, and it must work when nothing else corroborates.
+
+    `INSIDER_GLOBALS` is deliberately hostile to the three older signals: no analytics
+    marker, no `has_insider_access`, and `access_level 1` which is BELOW `preview_level 2`.
+    Before `is_insider` was read, that combination classified a paying member as `free` —
+    and per `config._session_override` a member read as free is quietly crippled: served
+    cached anonymous nulls for up to 7 days and refused `rt_product` without
+    `consume_preview`. Nothing here corroborates, which is the point.
+    """
+    probe = classify_session(
+        extract_globals(INSIDER_GLOBALS),
+        cookie_configured=True,
+        source_url="/",
+        probed_at=0.0,
+    )
+    assert probe.session == "member"
+    assert probe.note is None, "a measured positive signal needs no provisional caveat"
+
+
+def test_is_insider_is_read_strictly_so_a_truthy_value_cannot_promote():
+    """`is True`, never truthiness. A string `"false"` is truthy in Python, so a loose check
+    would promote every free account the day RTINGS changes the field to an enum."""
+    for value in ("true", "false", 1, "insider", {}):
+        globals_obj = extract_globals(INSIDER_GLOBALS)
+        globals_obj["session"]["current_user"]["is_insider"] = value
+        probe = classify_session(
+            globals_obj, cookie_configured=True, source_url="/", probed_at=0.0
+        )
+        assert probe.session == "free", f"{value!r} is not a measured insider signal"
+
+
+def test_is_insider_false_with_no_other_evidence_is_free_and_names_the_field():
+    globals_obj = extract_globals(INSIDER_GLOBALS)
+    globals_obj["session"]["current_user"]["is_insider"] = False
+    probe = classify_session(
+        globals_obj, cookie_configured=True, source_url="/", probed_at=0.0
+    )
+    assert probe.session == "free"
+    assert "is_insider=False" in (probe.note or ""), "the note must say what it actually saw"
+
+
+def test_a_missing_current_user_object_does_not_crash_the_classifier():
+    """`current_user` is `null` for anonymous, so the `is_insider` lookup must tolerate it."""
+    probe = classify_session(
+        extract_globals(ANON_GLOBALS),
+        cookie_configured=False,
+        source_url="/",
+        probed_at=0.0,
+    )
+    assert probe.session == "anonymous"
 
 
 def test_has_insider_access_is_found_inside_escaped_data_props():

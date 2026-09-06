@@ -13,10 +13,13 @@ runs locally. Nothing is hosted and nothing is shared.
 RTINGS' JSON API is keyless and public, and a lot comes back anonymously. Signing in adds data on
 the 12 categories that gate.
 
-> **Status: the anonymous server works.** All seven tools run against the live API.
-> **Member mode is built but switched off.** Whether a membership cookie actually unblurs the
-> JSON API is still unverified, so `RTINGS_MEMBER_MODE` defaults to `false` and every cached file
-> is written at the `anonymous` tier until a bought membership settles it.
+> **Status: working, anonymous and signed in.** All seven data tools run against the live API, and
+> two more connect a membership.
+> **A membership cookie does unblur the JSON API** — measured 2026-09-06 on a bought membership:
+> 588 of 588 withheld rows came back with real values where anonymous got none
+> ([`RECON.md`](RECON.md) §13). Member mode is on by default as of that measurement, so a
+> signed-in session caches its rows under their own tier; `RTINGS_MEMBER_MODE=0` pins everything
+> back to `anonymous`.
 > [`SPEC.md`](SPEC.md) is the design of record and [`RECON.md`](RECON.md) the measured evidence.
 
 ## What anonymous gets
@@ -39,7 +42,8 @@ Every category reports `has_paywall: true`, so that flag carries no information.
 data shows the split. What decides it is unknown and it will change, so the server never hardcodes
 it; `rt_silos()` reports what your machine observed. The map is re-scanned before each release
 against [`docs/enforcement-snapshot.json`](docs/enforcement-snapshot.json) (baseline 2026-09-03,
-re-verified 2026-09-05: 12/16, unchanged).
+re-verified 2026-09-06: 12/16, unchanged — and re-verified *with* a membership stored, which the
+scan ignores by construction, so the map stays an anonymous measurement).
 
 ## Honest nulls
 
@@ -84,6 +88,8 @@ No configuration is needed to start. Anonymous is the default and never an error
 | `rt_graph(product, test)` | one test's measurement curve, resampled by selecting shipped points |
 | `rt_search(query)` | model name/number → candidates across all categories |
 | `rt_recommendations(silo, list?)` | the category's best-of lists, or one ranked list with reasoning |
+| `rt_sign_in(force?)` | opens a browser window on RTINGS' sign-in page and stores the resulting cookie |
+| `rt_auth_status(wait_s?)` | what credential is stored, and how a sign-in in progress is going |
 
 Results are compared within a **test bench**, RTINGS' version of its methodology. Cross-bench
 results come back nested in separate groups and `limit` applies within each.
@@ -123,21 +129,42 @@ review.
 | `RTINGS_GRAPH_MAX_POINTS` | `200` | default curve resampling target |
 | `RTINGS_CDN_RATE_INTERVAL_S` / `RTINGS_CDN_RATE_BURST` | `0.25` / `10` | the asset CDN's own budget |
 | `RTINGS_TELEMETRY` | `true` | append header-only request records to `telemetry/requests.jsonl` |
-| `RTINGS_MEMBER_MODE` | `false` | enables member-tier caching once a membership has been verified |
+| `RTINGS_MEMBER_MODE` | `true` | member-tier caching. Set `0` to pin every cached file to the `anonymous` tier — a signed-in session then serves its rows but cannot cache them |
 | `RTINGS_SESSION_OVERRIDE` | unset | `member`/`free`/`anonymous` — assert your own tier if the probe reads it wrong |
 
 ## Signing in (optional, and only adds anything on the 12 gated categories)
 
-You supply your own RTINGS session cookie. **No password is ever requested and login is never
-automated.**
+You supply your own RTINGS session. **No password is ever requested and login is never automated** —
+you type it into RTINGS' own page, and the server keeps the resulting cookie.
 
-`_rtings_session` is **HttpOnly**, so `document.cookie` can't read it and "Copy as cURL" is the
-only way to capture it: open rtings.com logged in → DevTools → Network → right-click any request →
-Copy → Copy as cURL, then:
+**In a conversation** (works in Claude Desktop and Claude Code):
+
+> "sign me in to RTINGS"
+
+That calls `rt_sign_in`, which opens a browser window on the sign-in page and answers straight
+away; `rt_auth_status(wait_s=45)` waits for you to finish. It needs the browser extra:
+
+```bash
+uv sync --extra browser        # or: pip install "rtings-mcp[browser]"
+```
+
+**In a terminal**, the same capture without an MCP client:
+
+```bash
+.venv/bin/rtings-mcp auth --browser
+```
+
+**Without a browser at all**, paste one instead. `_rtings_session` is **HttpOnly**, so
+`document.cookie` can't read it and "Copy as cURL" is the only way to get it by hand: open
+rtings.com logged in → DevTools → Network → right-click any request → Copy → Copy as cURL, then:
 
 ```bash
 .venv/bin/rtings-mcp auth     # paste, press Ctrl-D; it validates and tells you what you have
 ```
+
+Every path validates the cookie against RTINGS before storing it. A session that doesn't come back
+signed in is discarded, which matters more than it sounds: RTINGS hands anonymous visitors a
+`_rtings_session` too, so "a cookie appeared" proves nothing on its own.
 
 The cookie is stored `0600` in your config dir, sent only to `www.rtings.com`, never written to
 the cache, never logged, never returned in tool output. It grants access to your account, so treat
@@ -157,6 +184,7 @@ your account does. The server is cache-first, rate-limited, and does no bulk cra
 
 ```bash
 uv pip install -e ".[dev]"
+uv pip install -e ".[browser]"             # only to run the browser sign-in itself
 .venv/bin/pytest tests/ -q                 # offline (the default; no network)
 .venv/bin/pytest -m live -q                # live, anonymous, against the real API
 .venv/bin/pytest -m "live and slow" -q -s  # + the 28-category enforcement re-scan

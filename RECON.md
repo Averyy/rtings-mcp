@@ -1485,3 +1485,106 @@ Both migrated silos are **open** silos, so no blurred sample of this template wa
 blur marker (if any) is unknown. A featured item that renders neither a score nor a value is
 therefore `unknown_row_status`, never `tested_gated` — claiming a paywall nobody measured is the
 project's core failure mode.
+
+## 13. Member session, 2026-09-06 — Phase 0 measured
+
+A membership was bought 2026-09-06 and signed in through `rt_sign_in` (headed browser, cookie
+captured from the jar, validated, stored). Everything below was measured in that one session,
+through the project's own transport, into a **scratch cache dir** so no member-derived bytes
+reached the real cache. No fixture here carries a name, an email or a cookie.
+
+### 13.1 §10 q1 ANSWERED — a member cookie DOES flip `unblurred` on the API
+
+The blocking unknown, and it succeeded on the first rung: no header ladder, no `page_body`
+fallback. One `table_tool__test_results`, silo `tv`, bench `227`, the first 6 `insider_only`
+`number` tests (`12470`, `12471`, `12472`, `141`, `461`, `462`) x 98 products = 588 rows.
+
+| session | rows | `status:"tested"` | `unblurred:true` | non-null `value` |
+|---|---|---|---|---|
+| member | 588 | 588 | **588** | **588** |
+| anonymous | 588 | 588 | **0** | **0** |
+
+Identical call, same process, minutes apart. Sample member row: `original_id 141`,
+`product_id 92248`, `value "1873"`, `score 8.8`. **tv is one of the 12 enforcing silos**
+(§11.1), so this is the gate opening, not an open silo answering.
+
+Consequence: the entire tier mechanism — `cache_tier` in the filename, demand/write rules,
+write-time demotion — is now justified by measurement rather than assumption. `RTINGS_MEMBER_MODE`
+is a flag, not a migration.
+
+### 13.2 Capture (a) — the logged-in `GLOBALS.session`, and the member/free boundary
+
+The shape, redacted (`<str:n>` = a string of that length, never its value):
+
+- `current_user` — `is_insider: true`, `insider_status: <str:10>`, `insider_end_at: <str:17>`,
+  `is_confirmed: true`, `is_admin: false`, `paywall_test_account: null`, `email`/`username`/`id`,
+  and a `user_mailinglists` array.
+- `access_state` — `access_level: 3`, `preview_level: 2`, `access_limit: null`,
+  `previewed_products: []`.
+- page markers — `user_is_insider: true`, `has_insider_access: true`,
+  **`membership_type: "yearly"`**, **`user_type: "Insider"`** (anonymously these read `"no plan"`
+  and `"Visitor"`, so both flip, and `membership_type` names the billing period rather than the
+  tier — do not parse it for entitlement).
+
+**`current_user.is_insider` is the field that separates `member` from `free`** — a literal
+boolean naming exactly the distinction, inside the object the probe already parses. Until now
+the classifier guessed from the analytics marker, `has_insider_access`, and `access_level >
+preview_level`, and called that boundary "provisional"; it no longer has to. The three older
+signals all agreed with it here, so they remain as corroboration.
+
+`access_limit: null` and an empty `previewed_products` confirm a member has **no meter** — the
+preview budget is a free-account mechanism only.
+
+### 13.3 Capture (d) — the browser headers make NO difference
+
+The same `test_results` POST, member cookie, with and without `Origin` / `Referer` /
+`Sec-Fetch-*`:
+
+| request | rows | `unblurred` |
+|---|---|---|
+| with the browser headers | 98 | 98 |
+| without them | 98 | 98 |
+
+So there is **no server-side origin validation** on `/api/v2/safe/` — the one "unprovable"
+Phase-0 risk is now measured, and it is absent. The headers stay (they cost nothing and keep the
+request shaped like the real client's), but nothing depends on them.
+
+### 13.4 Capture (f) CONFIRMED — the probe page is not CloudFront-cached
+
+`GET /tv/tools/table` with the cookie: `x-cache: Miss from cloudfront`,
+`cache-control: max-age=0, private, must-revalidate`, no `age`. As predicted anonymously, so the
+`should_demote` guard against a cache-HIT probe should never fire in practice. It stays as a
+guard, not a design assumption.
+
+### 13.5 Capture (p) ANSWERED — `user_has_access` DOES flip for a member
+
+`app/side_by_side__review`, anonymous, is `false` on tv and `true` on mattress — which looked like
+it tracked silo enforcement rather than membership (§12.16 called that a lead, not a fact). With
+the member cookie it is **`true` on tv**, with 11 of 11 usage score sets scored. So it tracks
+**both**, and it is a real auth marker *inside* the API — the exception §1's "no auth field in the
+response" already noted, now measured in the member direction too.
+
+This is a second, independent confirmation of §13.1. It does **not** change the rule that
+`verdicts/` demotion keys on the usage scores rather than on this flag: the concern that motivated
+that rule was a flag which never flips for a member (which would deadlock demotion), and that
+concern is now retired rather than the rule being wrong. Keying on the scores stays correct and
+depends on nothing unmeasured.
+
+### 13.6 Capture (g) ANSWERED — curves are identical, so `graphs/` may stay untiered
+
+`graph_tool__product_graph_data_url` for tv product `39008`, test `13907` (`kind:"graph"`)
+returned **the same CDN path** (`graph-pqeotf.json`) for the member and for anonymous, and the
+fetched curve JSON was **byte-identical**. The design assumption that `graphs/` needs no
+`cache_tier` is confirmed, and the CDN still needs no cookie.
+
+### 13.7 What a membership CANNOT settle — q2 and capture (o) need a FREE account
+
+Both remaining questions are about the metered preview, and a member has no meter:
+`access_limit: null`, `previewed_products: []`, and nothing to spend. **q2** (the meter's unit —
+per product, per session, per day) and **capture (o)** (is `app/side_by_side__review` metered?)
+therefore need a **free, logged-in** account, not this one. The budget control is built and
+enforced; only the constant is unknown, and it stays unknown.
+
+Capture (c) — "the exact `test_results` body a logged-in front end sends" — is answered by
+construction: the body this project already sends (§1) returned fully unblurred member data in
+§13.1, so it needs no adjustment for the member case.

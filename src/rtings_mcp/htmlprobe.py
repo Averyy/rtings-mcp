@@ -159,11 +159,20 @@ def classify_session(
     ladder the client's own code implies is 1 = anonymous, 2 = logged-in free, higher =
     insider.
 
-    **Which field separates ``member`` from ``free`` is not yet measured** (only the
-    anonymous shape has ever been seen — Phase 0 capture a). Until it is, a logged-in
-    session is called ``member`` only on positive evidence (``has_insider_access`` or an
-    access level above the preview threshold) and ``free`` otherwise, and the note records
-    that the boundary is provisional.
+    **The member/free field IS measured** (2026-09-06, RECON §13.2):
+    ``session.current_user.is_insider`` is a literal boolean naming exactly the distinction,
+    and it leads. The three signals that stood in for it while only the anonymous shape was
+    known — the ``userIsInsider`` analytics marker, ``has_insider_access``, and
+    ``access_level > preview_level`` — all agreed with it on the measured member session and
+    stay as corroboration, because each comes from a different place in the page and any one
+    can be absent.
+
+    The ladder the client's own code implies is 1 = anonymous, 2 = logged-in free, higher =
+    insider (measured: anonymous 1/2, member 3/2).
+
+    A logged-in session with no positive signal at all is still called ``free`` — an
+    under-claim, and the note says the reading is provisional so a real member is not left
+    guessing. Only a **free** account can retire that last caveat.
     """
     session_obj = globals_obj.get("session")
     if not isinstance(session_obj, dict):
@@ -195,13 +204,18 @@ def classify_session(
     logged_in = current_user is not None
     marker_map = dict(markers or {})
     insider_marker = marker_map.get("user_is_insider")
+    # Measured 2026-09-06 (RECON §13.2): the member/free field, inside the object this
+    # function already parses. Read strictly — `is True`, never truthiness — so a string or a
+    # future enum cannot promote a free account by accident.
+    is_insider = current_user.get("is_insider") if isinstance(current_user, dict) else None
     note: str | None = None
 
     if not logged_in:
         # A configured cookie that comes back logged out is expiry, not anonymity.
         session = "expired" if cookie_configured else "anonymous"
     elif (
-        insider_marker is True
+        is_insider is True
+        or insider_marker is True
         or has_insider_access is True
         or (
             access_level is not None
@@ -209,16 +223,17 @@ def classify_session(
             and access_level > preview_level
         )
     ):
-        # `userIsInsider` leads: it is a literal boolean naming exactly the distinction we
-        # need. `has_insider_access` and the access-level comparison corroborate.
+        # `current_user.is_insider` leads (measured); the other three corroborate from three
+        # different places in the page, so any one of them being absent is survivable.
         session = "member"
     else:
         session = "free"
         note = (
-            "logged in without a positive insider signal (userIsInsider="
-            f"{insider_marker!r}, membership_type={marker_map.get('membership_type')!r}); "
-            "the member/free boundary is provisional until a logged-in session has been "
-            "measured — set RTINGS_SESSION_OVERRIDE=member if this is wrong"
+            "logged in without a positive insider signal (current_user.is_insider="
+            f"{is_insider!r}, userIsInsider={insider_marker!r}, "
+            f"membership_type={marker_map.get('membership_type')!r}); "
+            "a member session carries is_insider:true (RECON §13.2), so this reads as a free "
+            "account — set RTINGS_SESSION_OVERRIDE=member if that is wrong"
         )
 
     return SessionProbe(

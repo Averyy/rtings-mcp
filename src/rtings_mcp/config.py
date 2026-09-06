@@ -191,7 +191,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         enable_graph=_env_bool(src, "RTINGS_ENABLE_GRAPH", True),
         graph_max_points=_env_int(src, "RTINGS_GRAPH_MAX_POINTS", 200, minimum=2),
         max_preview_spend=_env_int(src, "RTINGS_MAX_PREVIEW_SPEND", 1, minimum=0),
-        member_mode=_env_bool(src, "RTINGS_MEMBER_MODE", False),
+        member_mode=_env_bool(src, "RTINGS_MEMBER_MODE", True),
         session_override=_session_override(src, warnings),
         telemetry=_env_bool(src, "RTINGS_TELEMETRY", True),
         warnings=warnings,

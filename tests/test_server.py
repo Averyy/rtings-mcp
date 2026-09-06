@@ -9,7 +9,8 @@ import pytest
 from rtings_mcp import server
 from rtings_mcp.normalize import STATUS_VALUES
 
-EXPECTED_TOOLS = {
+#: The seven data tools …
+DATA_TOOLS = {
     "rt_silos",
     "rt_schema",
     "rt_ratings",
@@ -18,6 +19,11 @@ EXPECTED_TOOLS = {
     "rt_search",
     "rt_recommendations",
 }
+#: … and the two that connect a membership. They are separate here because the data tools all
+#: carry `BaseEnvelopeOut` and these two deliberately do not: a sign-in serves no measurement
+#: rows, so `data_tier` / `scores_available` / `test_benches` would be invented claims.
+AUTH_TOOLS = {"rt_sign_in", "rt_auth_status"}
+EXPECTED_TOOLS = DATA_TOOLS | AUTH_TOOLS
 
 
 @pytest.fixture
@@ -26,8 +32,18 @@ async def tools():
     return {tool.name: tool for tool in listed}
 
 
-async def test_exactly_the_seven_tools_are_registered(tools):
+async def test_exactly_the_expected_tools_are_registered(tools):
     assert set(tools) == EXPECTED_TOOLS
+
+
+async def test_the_sign_in_tools_are_not_wired_to_the_measurement_envelope(tools):
+    """`rt_sign_in` serves no rows, so an envelope claiming a `data_tier` for it would be a
+    statement about data nobody fetched."""
+    for name in AUTH_TOOLS:
+        blob = json.dumps(tools[name].output_schema)
+        assert "data_tier" not in blob, f"{name} declares data_tier"
+        assert "scores_available" not in blob, f"{name} declares scores_available"
+        assert "session" in blob, f"{name} must still report credential health"
 
 
 async def test_every_tool_declares_an_output_schema(tools):

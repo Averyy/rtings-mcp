@@ -24,12 +24,14 @@ from .context import Context, get_context
 from .envelope import error_envelope
 from .errors import RtingsError
 from .models import (
+    AuthStatusEnvelope,
     GraphEnvelope,
     ProductEnvelope,
     RatingsEnvelope,
     RecommendationsEnvelope,
     SchemaEnvelope,
     SearchEnvelope,
+    SignInEnvelope,
     SilosEnvelope,
 )
 
@@ -81,7 +83,13 @@ mcp = MCPServer(
         "rt_recommendations(silo) for their ranking with reasoning, and rt_graph for the "
         "curves that are published anyway.\n"
         "5. filters and sort accept a test's original_id OR its name; `variant` filters by "
-        "the size RTINGS tested."
+        "the size RTINGS tested.\n\n"
+        "SIGNING IN: rt_auth_status() reports what credential is stored and whether it is "
+        "live. If the user ASKS to sign in or connect their membership, call rt_sign_in() and "
+        "then rt_auth_status(wait_s=45), repeating while sign_in is 'waiting' — a human takes "
+        "longer than one tool call. NEVER call rt_sign_in unasked: it opens a browser window "
+        "on the user's screen. A gated category is not a reason to sign them in; say what is "
+        "withheld and let them decide."
     ),
 )
 
@@ -136,7 +144,8 @@ async def rt_silos(refresh: bool = False) -> SilosEnvelope:
 
     Call this first. `data_completeness` is derived from what actually came back unblurred
     on this machine's last fetch of that category: `full` (values and scores served),
-    `gated` (withheld without a membership), `partial`, or `unknown` (nothing fetched yet).
+    `gated` (withheld without a membership), `partial`, or `unknown` (nothing fetched yet,
+    or only fetched while signed in, which cannot say what anonymous gets).
     `has_paywall` is true for all 28 and tells you nothing.
     """
     return await _run(SilosEnvelope, services.rt_silos(_ctx(), refresh=refresh))
@@ -323,6 +332,88 @@ async def rt_recommendations(
         RecommendationsEnvelope,
         services.rt_recommendations(_ctx(), silo, list=list, refresh=refresh),
     )
+
+
+@mcp.tool(name="rt_sign_in")
+async def rt_sign_in(force: bool = False) -> SignInEnvelope:
+    """Connect the user's RTINGS membership by signing in, in a real browser window.
+
+    Call this ONLY when the user asks to sign in or connect their membership. It opens a
+    window on RTINGS' own sign-in page; the user types there and the server never sees the
+    password, only the resulting session cookie. Nothing is stored unless RTINGS confirms the
+    cookie is signed in.
+
+    It answers in about a second and does NOT wait for the human. Follow it with
+    `rt_auth_status(wait_s=45)` to wait for the outcome, and repeat that while `sign_in` is
+    still `waiting`. Do not call `rt_sign_in` again while one is in progress.
+
+    `force=true` replaces a credential RTINGS currently accepts — for switching accounts.
+    A rejected or missing one is replaced without it.
+    """
+    from . import auth_tools
+
+    ctx = _ctx()
+    with ctx.repo.warning_scope():
+        try:
+            data = await auth_tools.rt_sign_in(ctx, force=force)
+        except RtingsError as exc:
+            return _safe(SignInEnvelope, _auth_error(exc, ctx))
+        return _safe(
+            SignInEnvelope,
+            {
+                "session": data.get("session", "unknown"),
+                "warnings": list(ctx.repo.warnings),
+                "error": None,
+                "data": data,
+            },
+        )
+
+
+@mcp.tool(name="rt_auth_status")
+async def rt_auth_status(wait_s: int = 0) -> AuthStatusEnvelope:
+    """What credential is stored, and how a sign-in in progress is going.
+
+    Safe to call any time; it never opens a window and never spends anything. `wait_s`
+    long-polls for the next change in a sign-in that is running (capped at 45 s, which is
+    under Claude Desktop's 60 s tool-call limit) — that is how you wait for a human to finish
+    signing in without blocking a single call for minutes.
+
+    `session` is credential health, never entitlement to data: `member`, `free`, `anonymous`,
+    `expired`, or `unknown` when no probe has run yet.
+    """
+    from . import auth_tools
+
+    ctx = _ctx()
+    with ctx.repo.warning_scope():
+        try:
+            data = await auth_tools.rt_auth_status(ctx, wait_s=wait_s)
+        except RtingsError as exc:
+            return _safe(AuthStatusEnvelope, _auth_error(exc, ctx))
+        return _safe(
+            AuthStatusEnvelope,
+            {
+                "session": data.get("session", "unknown"),
+                "warnings": list(ctx.repo.warnings),
+                "error": None,
+                "data": data,
+            },
+        )
+
+
+def _auth_error(exc: RtingsError, ctx: Context) -> dict[str, Any]:
+    """The lean envelope's error shape. `error_envelope` builds the measurement envelope,
+    whose `data_tier`/`scores_available` have no meaning for a sign-in."""
+    probe = ctx.auth.cached_probe()
+    return {
+        "session": probe.session if probe else "unknown",
+        "warnings": list(ctx.repo.warnings),
+        "error": {
+            "code": exc.code,
+            "message": exc.message,
+            "retryable": bool(getattr(exc, "retryable", False)),
+        },
+        "data": None,
+    }
 
 
 def configure_logging(level: str = "INFO") -> None:

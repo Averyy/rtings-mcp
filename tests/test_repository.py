@@ -227,3 +227,54 @@ def test_the_release_hint_has_no_duplicates_and_is_lowercase():
 
     assert len(KNOWN_SILOS) == len(SILO_HINT_SET), "duplicate silo in the hint"
     assert all(s == s.lower().strip() for s in KNOWN_SILOS)
+
+
+# -- the refusal warning's cause -----------------------------------------------------
+
+
+def test_the_label_cause_distinguishes_flag_demotion_and_probe(repo):
+    """Three reasons a write carries the `anonymous` label; the warning must name the real
+    one. Hardcoding the first made it tell a flag-on user to enable the flag."""
+    from rtings_mcp.htmlprobe import SessionProbe
+
+    free = SessionProbe(
+        session="free",
+        logged_in=True,
+        access_level=2,
+        preview_level=2,
+        access_limit=1,
+        previewed_products=[],
+        has_insider_access=False,
+        probed_at=0.0,
+        source_url="",
+    )
+    repo.config.member_mode = False
+    assert repo._label_cause(demoted=True, probe=free) == "member_mode_off"
+    repo.config.member_mode = True
+    assert repo._label_cause(demoted=True, probe=free) == "demoted"
+    assert repo._label_cause(demoted=False, probe=free) == "probe:free"
+    assert repo._label_cause(demoted=False, probe=None) == "probe:none"
+
+
+def test_the_refusal_warning_wording_follows_the_cause(repo):
+    with repo.warning_scope():
+        repo._refuse_uncached_warning(
+            "tv", "tests", "silo_not_proven_open", 2, cause="member_mode_off"
+        )
+        (off,) = repo.warnings
+    assert "RTINGS_MEMBER_MODE is off" in off and "Enable RTINGS_MEMBER_MODE" in off
+    assert "2 tests slice(s)" in off
+
+    with repo.warning_scope():
+        repo._refuse_uncached_warning("tv", "reviews", "early_access_unblurred", 1, cause="demoted")
+        (demoted,) = repo.warnings
+    assert "demoted" in demoted and "Early Access" in demoted
+    assert "RTINGS_MEMBER_MODE" not in demoted and "rt_auth_status" in demoted
+
+    with repo.warning_scope():
+        repo._refuse_uncached_warning(
+            "tv", "ratings", "silo_not_proven_open", 1, cause="probe:expired"
+        )
+        (probed,) = repo.warnings
+    assert "'expired'" in probed and "RTINGS_MEMBER_MODE" not in probed
+    assert "rt_auth_status" in probed

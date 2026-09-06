@@ -15,11 +15,25 @@ model: that is what carries the seven-state `status` enum into the client's sche
 facts the build measured; the rules below marked "(corrected 2026-09-04)" are the ones it
 forced, and those marked **2026-09-05** come from a seven-lens review round that found 15
 defects — several of them reachable anonymously, on silos where nothing is gated. Member mode
-is built but gated off behind `RTINGS_MEMBER_MODE`.
+is built and, since 2026-09-06, **on by default** (`RTINGS_MEMBER_MODE`). Signing in is `rt_sign_in` /
+`rt_auth_status` in a conversation, or `rtings-mcp auth [--browser]` in a terminal.
+
+**Phase 0 was MEASURED 2026-09-06 — `RECON.md` §13 is the record.** A membership was bought and
+signed in, and **q1 is answered YES**: a member cookie returns 588/588 `insider_only` rows
+`unblurred` with values on tv bench 227, where anonymous gets 0/588. Also answered: the
+member/free field is `current_user.is_insider` (§13.2); the browser headers make no difference,
+so there is no origin validation (§13.3); `user_has_access` does flip for a member (§13.5); and
+member and anonymous curves are byte-identical, so `graphs/` stays untiered (§13.6). **What is
+still unknown needs a FREE account, not a member one** — the metered preview's unit (q2) and
+whether `side_by_side` is metered (capture o); a member has no meter at all.
+**`RTINGS_MEMBER_MODE` now defaults to `true`** (flipped 2026-09-06 once the above was measured).
+Setting it to `0` is still supported and still pins every tier to `anonymous`; that path is the
+reason the write guard exists, and it is covered by its own test fixtures (`auth`, `flag_off_ctx`).
 
 - `SPEC.md` — design of record. Read before proposing anything structural.
 - `RECON.md` — measured facts about RTINGS' API, paywall and auth. Cite it; don't re-derive it.
-  Everything in it is **anonymous-only**; the member side is unverified (`RECON.md` §10 q1).
+  §1–§12 are **anonymous-only**; **§13 is the member session**, measured 2026-09-06 on a bought
+  membership. The member side is no longer unverified — see §13.1.
 
 **This is not Consumer Reports with the names changed.** The plumbing is cleaner (a keyless
 parameterized JSON API). **Anonymous is a full data mode for 16 of the 28 silos** (measured
@@ -194,11 +208,26 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   **current** bench for all 28 silos in one fetch (with `replaces_id` chaining backwards), but the
   `is_recent` set costs one page fetch per silo.
 - **Detect `session` from HTML `GLOBALS.session.current_user`** (`null` = anonymous, object = logged
-  in), corroborated by `access_state.access_level` and page-prop `has_insider_access`. **Never** from
-  "a cookie is set", **never** from "scores are null", **never** from a UI string (ported).
+  in). **Never** from "a cookie is set", **never** from "scores are null", **never** from a UI
+  string (ported).
+- **IMPORTANT: member-vs-free is `current_user.is_insider` — MEASURED, no longer a guess
+  (2026-09-06, `RECON.md` §13.2).** A literal boolean inside the object the probe already parses.
+  It **leads**; the three signals that stood in for it — the `user_is_insider` analytics marker,
+  page-prop `has_insider_access`, and `access_level > preview_level` — all agreed with it on the
+  measured session and stay as corroboration, because each comes from a different part of the page
+  and any one can be absent. Read it **strictly** (`is True`, never truthiness): the field could
+  become a string or an enum, and `"false"` is truthy, which would promote every free account.
+  Without it, a member whose page carries `access_level 1` and no marker classified as `free` —
+  and a member read as `free` is quietly crippled (cached anonymous nulls for up to 7 days, and
+  `rt_product` refused without `consume_preview`). The residual caveat is one-sided and stays:
+  a logged-in session with **no** positive signal is still called `free`, which only a free
+  account can retire.
 - **The session cookie is `_rtings_session`** — one Rails encrypted-session cookie, `.rtings.com`,
-  30-day, **HttpOnly**. HttpOnly ⇒ **"Copy as cURL" is the only capture gesture** (no console
-  fallback, differs from CR). Inject with explicit attributes: `_rtings_session=…;
+  30-day, **HttpOnly**. HttpOnly ⇒ **"Copy as cURL" is the only capture gesture BY HAND** (no
+  console fallback, differs from CR) — but not the only one full stop: Playwright's
+  `context.cookies()` reads the jar itself, HttpOnly included, which is what makes the browser
+  sign-in possible at all (see the sign-in rule below). Inject with explicit attributes:
+  `_rtings_session=…;
   Domain=.rtings.com; Path=/; Secure; HttpOnly`. Persist rotations via `session.get_cookie(name,
   https_url)`, **not** `resp.cookies`.
 - **IMPORTANT: member fetches use `max_rotations=0, max_failures=None`.** A wafer rotation rebuilds
@@ -232,7 +261,25 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   sends.** They are client-controlled request params (`RECON.md` §5); a client unblur hint is
   circumvention. Send `unblur_product_ids: []`, `force_blur: false`.
 - **Never store credentials.** Cookie only, user-supplied. Never ask for a password, automate login,
-  solve a CAPTCHA, log a cookie, or write one to the cache (ported).
+  solve a CAPTCHA, log a cookie, or write one to the cache (ported). The browser sign-in does not
+  breach this: it opens a window on RTINGS' own login page and **the human types**. The server
+  never reads, fills or submits a form field, never sees the password, and never touches a
+  CAPTCHA — it polls one boolean and then reads one cookie.
+- **IMPORTANT: the sign-in's ready signal is `GLOBALS.session.current_user`, NEVER "a cookie
+  appeared" (added 2026-09-05).** RTINGS mints `_rtings_session` for anonymous requests
+  (`RECON.md` §5) and re-issues it on every response (§12.15), so within a second of opening the
+  login page both "the cookie exists" and "the cookie changed" are true while still logged out.
+  A capture keyed on either would store an anonymous session over a working credential and leave
+  every later call quietly signed out. So the browser watches the same field the server-side probe
+  reads, and the captured cookie is **still** validated against RTINGS before anything is written:
+  `capture_session()` → `validate_cookie()` → `store_credential()`, and a value that does not come
+  back `member` or `free` is discarded. `free` counts as signed in here — it is what the metered
+  preview budget exists for — which is a real difference from CR, where only `member` does.
+- **The sign-in is a background task plus a status poll, because Claude Desktop kills a tool call
+  at 60 s** and a human takes longer. `rt_sign_in` answers in ~2 s; `rt_auth_status(wait_s<=45)`
+  long-polls. Desktop declares no elicitation capability to a local stdio server, so this shape is
+  the only one available. The CLI (`rtings-mcp auth [--browser]`) stays as the path for a machine
+  with no MCP client, and both front doors call one implementation.
 - **`cache_tier` keying is on the gated surfaces only.** `tests/`/`ratings/`/`reviews/` are
   tier-keyed; `schema/`/`catalog/`/`graphs/`/`bench/`/`recs/` are **not** — they carry no gated
   fields (`RECON.md` §3, §4), so tiering them would store two identical copies. Scored rows are never
@@ -280,13 +327,14 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   blurred refetch could delete a member's only copy of real scores. Ratings key on `unblurred` alone
   (every usage row is gate-relevant); `surface` is a REQUIRED argument to `envelope_notes_for`, not a
   defaulted one, because getting it wrong is silent.
-- **IMPORTANT: `verdicts/` demotion keys on the usage SCORES, never on `user_has_access`.** That flag
-  is the payload's own blur signal, but it *appears* to track silo enforcement rather than membership
-  (`false` on TV, `true` on mattress, both anonymous — two data points, a lead not a fact). If it
-  never flips for a member on a gated silo, demoting on it would demote every member write there,
-  miss every read and refetch forever — the deadlock the `cache_tier`/`data_tier` rule exists to
-  prevent. All-null scores where the tier predicts otherwise is the same evidence, without depending
-  on what the flag means. `SPEC.md` §10 capture (p) settles it.
+- **`verdicts/` demotion keys on the usage SCORES, never on `user_has_access`** — still the rule,
+  but the *reason* changed (measured 2026-09-06, `RECON.md` §13.5). The fear was that the flag might
+  never flip for a member on a gated silo, which would demote every member write there, miss every
+  read and refetch forever. **It does flip**: `true` on TV with a member cookie, against `false` on
+  TV / `true` on mattress anonymously — so it tracks membership *and* enforcement, and the deadlock
+  is retired. Keep keying on the scores anyway: all-null scores where the tier predicts otherwise is
+  the same evidence and depends on nothing about what the flag means, so it stays correct if RTINGS
+  changes the flag's semantics. Capture (p) is closed.
 - **IMPORTANT: DEMOTE `cache_tier` at write time when the response contradicts the probe.** The probe
   and the fetch race, so labelling a file with the last probe writes `member` over a response that
   came back fully blurred after the session lapsed — and the hit rule then serves those nulls to a
@@ -530,7 +578,7 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   with a real name, never the wrong join key. Both migrated silos are open, so no blurred sample
   exists: a featured item rendering neither score nor value is `unknown_row_status`, never
   `tested_gated`.
-- **`RTINGS_MEMBER_MODE` (default `false`) is how Phase 0 is enforced in code.** With it off,
+- **`RTINGS_MEMBER_MODE` (default `true` since 2026-09-06) was how Phase 0 was enforced in code.** With it off,
   `probe_tier()` returns `anonymous` unconditionally, so every tier-keyed write is `anonymous`
   and no read demands a tier — while the whole mechanism (the filename segment, demand/write
   rules, write-time demotion, the preview budget) is built, unit-tested and running. Enabling
@@ -539,14 +587,49 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `RECON.md` §12.15): the rotated cookie is written to disk, but **only** from a response the
   HTML probe proved logged-in (`current_user` non-null) and only for a file-sourced credential.
   Refusing to persist was what caused the monthly re-paste it was meant to prevent.
-- **Phase 0 gates member-tier SELECTION and the member claim — not the cache schema, and not the
-  anonymous surface** (`SPEC.md` §10). Do not implement tier-aware row selection or
-  `member`/`free` classification, and do not claim member support, until a bought membership
-  confirms a cookie flips `unblurred` on the API. **Do** build everything else now: the `cache_tier`
-  filename segment ships from day one carrying `anonymous`, so enabling member mode is never a
-  migration. The entire
-  anonymous surface (silos, schema, catalog, search, graph, recommendations, the seven-state
-  normalizer, the untiered cache) is Phase-0-independent — do not gate it.
+- **Phase 0's evidence bar is MET (2026-09-06); the flag is now a DECISION, not a blocker.** The
+  condition this gate named — "until a bought membership confirms a cookie flips `unblurred` on the
+  API" — is satisfied by `RECON.md` §13.1, and `member`/`free` classification is measured rather
+  than guessed (§13.2), so the flag was flipped to default `true` on 2026-09-06. What Phase 0 always *excluded*
+  is unchanged: the `cache_tier` filename segment ships carrying `anonymous`, so enabling member
+  mode is never a migration, and the entire anonymous surface (silos, schema, catalog, search,
+  graph, recommendations, the seven-state normalizer, the untiered cache) is Phase-0-independent —
+  do not gate it.
+- **IMPORTANT: a live cookie with `member_mode` OFF is a real state (no longer the default, still supported), and it mislabels things.** The
+  credential is still sent and member data still comes back, but `probe_tier()` is pinned to
+  `anonymous`, so member-only measurements get stamped `cache_tier: anonymous` and a member's
+  fetch of a gated silo would record `completeness: "full"` in `observed/` — the stale-map lie the
+  release re-scan exists to catch, reached locally and permanently (with a credential stored, no
+  anonymous fetch ever overwrites it). Anything that derives a durable, published fact from a
+  fetch must therefore check the probe, not just the data. Note the naive predicate is WRONG:
+  **16 of 28 silos serve `insider_only` rows unblurred to anonymous**, so "unblurred insider rows"
+  alone does not mean "only a member could see this".
+- **IMPORTANT: a write that would be labelled `anonymous` but could not have been fetched
+  anonymously is REFUSED, not relabelled** (`auth.anonymous_write_refusal`, added 2026-09-06).
+  The `anonymous` label is a promise that a signed-out session would have received these bytes,
+  and writing a tier above `anonymous` is exactly what `member_mode=0` forbids — so the only
+  honest third option is not to cache. Three conditions, all required: the session **may** have
+  unblurred it (`session_may_unblur`: no credential ⇒ false by construction, so the ordinary
+  anonymous user never reaches the predicate, costs no probe and sees no warning); the response
+  holds a row a signed-out session might not have seen (an `insider_only` `tested` row that is
+  `unblurred`, or on `ratings`/`verdicts` any unblurred usage row — **`na` and public rows are
+  deliberately not evidence**, so all-`na` and public-only slices stay writable and the tier
+  deadlock does not return); and **no signed-out fetch has proven this (silo, bench) serves that
+  surface in full**. Plus one unconditional refusal: an unblurred `tested` row for a
+  `published:false` product, since Early Access is blurred for anonymous on **every** silo
+  (`RECON.md` §12.10), so it is member-only even on an open one. **The rows are still served** —
+  the call returns them with a `not_cached` warning naming the real cause; only the write is
+  dropped. The warning must name that cause (flag off / demoted / what the probe read) and must
+  not tell the user to enable a flag that is already on.
+- **Observations carry a PROVENANCE, and only an anonymous one may prove a silo open.**
+  `ObservationStore.record()` takes `provenance` as a **required** keyword, because the value
+  `rt_silos()` publishes as `data_completeness` is a claim about what *anonymous* gets. A member's
+  fetch of a gated silo sees 100% unblurred; recorded untagged, that silo reads `full` forever on
+  that machine, and with a credential stored no anonymous fetch ever corrects it. So: an anonymous
+  observation is never replaced by a logged-in one; an anonymous one replaces a logged-in one at
+  any width; a logged-in observation reports `unknown` (or `gated` — a membership cannot *add*
+  blur); and legacy untagged observations are treated as unknown-provenance, which is why an
+  existing cache may show `unknown` for one call before it self-heals.
 
 ## HTTP
 
@@ -637,6 +720,7 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
+uv pip install -e ".[browser]"              # only for the browser sign-in (`rt_sign_in`)
 .venv/bin/pytest tests/ -q                 # offline tests (the default; no network)
 .venv/bin/pytest -m live -q                # live, anonymous, against the real API
 .venv/bin/pytest -m "live and slow" -q -s  # + the 28-silo enforcement re-scan (~4 min)
@@ -648,7 +732,8 @@ Run lint and the offline tests before every commit; run the live suite and the e
 re-scan before every version bump.
 
 - **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Verified
-  current 2026-09-03: `mcp>=2.1.1`, `pytest>=9.1`, `pytest-asyncio>=1.4`, `ruff>=0.16`. Re-check at
+  current 2026-09-03: `mcp>=2.1.1`, `pytest>=9.1`, `pytest-asyncio>=1.4`, `ruff>=0.16`, and
+  `playwright>=1.40` in the optional `[browser]` extra (added 2026-09-06). Re-check at
   each release re-scan (below).
 - **Fixtures come from anonymous fetches. Never commit a fixture containing unblurred member values.**
 - **Redact every `GLOBALS.session` fixture before committing.** The member/free auth-state fixtures
@@ -683,8 +768,8 @@ So, as a release gate, before every version bump:
 1. **Re-run the anonymous 28-silo scan** — the enforcement half of the smoke test (`SPEC.md` §10):
    per silo, `column_options` + `products_list` + one `test_results` over the current bench's leaf
    tests, anonymous, no cookie.
-2. **Diff against `docs/enforcement-snapshot.json`** (the committed baseline, last scanned
-   2026-09-03: 12 enforcing / 16 open).
+2. **Diff against `docs/enforcement-snapshot.json`** (the committed baseline: `scanned_at`
+   2026-09-04, re-verified 2026-09-06 with no diff — 12 enforcing / 16 open).
 3. **A diff is a SPEC CHANGE, not a test failure.** Do not "fix" the test to match. Update the
    snapshot, `RECON.md` §11.1, and the framing in `SPEC.md` §5 / this file's preamble, and say so in
    the release notes — the honest description of what anonymous gets is the product's main claim.
@@ -694,8 +779,8 @@ So, as a release gate, before every version bump:
    fails if you forget. Same for the category tables in `README.md`.
    **Do not change `config.KNOWN_SILOS` for this** — that hint is about which silos *exist*, not
    which gate, and a silo outside it already warns `silo_hint_drift` rather than failing.
-4. **Re-check dependency currency** — `mcp`, `wafer-py`, `ruff`, `pytest`, `pytest-asyncio`, and the
-   Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
+4. **Re-check dependency currency** — `mcp`, `wafer-py`, `ruff`, `pytest`, `pytest-asyncio`,
+   `playwright` (the `[browser]` extra), and the Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
    drifted two majors is a bug waiting to surface.
 5. **Re-check the invariants too, not just the split** — they are what the normalizer is built on:
    - blur is still exactly `published:false ∨ (insider_only ∧ silo enforces)` — no third mechanism;

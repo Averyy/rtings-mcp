@@ -68,6 +68,55 @@ async def _probe(ctx: Context) -> None:
         _print("\nCould not read the session from RTINGS. Try again shortly.")
 
 
+async def _auth_browser(config) -> int:
+    """`auth --browser`: the same capture `rt_sign_in` performs, from a terminal.
+
+    One implementation, two front doors — the CLI is what a machine with no MCP client has,
+    and `rt_sign_in` is what Claude Desktop has instead of a terminal.
+    """
+    from .auth_tools import validate_cookie
+    from .browser_auth import (
+        INSTALL_HINT,
+        BrowserExtraMissing,
+        BrowserNotFound,
+        CaptureTimeout,
+        capture_session,
+        extra_installed,
+    )
+
+    if not extra_installed():
+        _print(f"rtings-mcp auth --browser: {INSTALL_HINT}")
+        return 1
+    _print(
+        "Opening a browser window on RTINGS' sign-in page. Sign in there; this never sees "
+        "your password and keeps only the resulting session cookie. The window closes itself "
+        "once you are signed in.\n"
+    )
+    try:
+        cookie = await capture_session(on_launch=lambda label: _print(f"  {label} opened."))
+    except BrowserExtraMissing:
+        _print(f"\n{INSTALL_HINT}")
+        return 1
+    except BrowserNotFound as exc:
+        _print(f"\n{exc}")
+        return 1
+    except CaptureTimeout as exc:
+        _print(f"\n{exc}")
+        return 1
+
+    _print("\nChecking the captured cookie against rtings.com...")
+    outcome = await validate_cookie(config, cookie)
+    if outcome not in ("member", "free"):
+        _print(
+            f"That session did not read as signed in ({outcome}); nothing was stored. "
+            "Try again, or use the paste path: `rtings-mcp auth`."
+        )
+        return 1
+    path = store_credential(config, cookie)
+    _print(f"Stored (0600) at {path}. session: {outcome}")
+    return 0
+
+
 async def _cmd_auth(args: argparse.Namespace) -> int:
     config = load_config()
 
@@ -86,9 +135,14 @@ async def _cmd_auth(args: argparse.Namespace) -> int:
         await _probe(ctx)
         return 0
 
+    if args.browser:
+        return await _auth_browser(config)
+
     _print(
         f"{SESSION_COOKIE_NAME} is HttpOnly, so document.cookie cannot read it and "
-        '"Copy as cURL" is the only way to capture it.\n'
+        '"Copy as cURL" is the only way to capture it BY HAND. (`--browser` opens a window '
+        "and reads the cookie from its jar instead, which needs no gesture from you beyond "
+        "signing in.)\n"
         "\n"
         "  1. Open rtings.com in your browser, logged in\n"
         "  2. DevTools -> Network -> right-click any request -> Copy -> Copy as cURL\n"
@@ -246,6 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
 
     auth = sub.add_parser("auth", help="store and validate your RTINGS session cookie")
+    auth.add_argument(
+        "--browser",
+        action="store_true",
+        help="open a browser window and capture the cookie instead of pasting one",
+    )
     auth.add_argument("--status", action="store_true", help="show the current session only")
     auth.add_argument("--clear", action="store_true", help="delete the stored credential")
 

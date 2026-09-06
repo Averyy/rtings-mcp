@@ -458,3 +458,49 @@ class RecommendationsData(Permissive):
 
 class RecommendationsEnvelope(BaseEnvelopeOut):
     data: RecommendationsData | None = None
+
+
+# -- the sign-in tools --------------------------------------------------------------
+#
+# These carry their OWN lean envelope rather than `BaseEnvelopeOut`. That envelope's
+# `data_tier` / `scores_available` / `test_benches` describe served measurement rows, and a
+# sign-in serves none: filling them in would be inventing a claim about data nobody fetched.
+# `session` is the one shared field that means the same thing here.
+
+
+class SignInData(Permissive):
+    #: `waiting` (a window is open) / `verifying` (checking a stored cookie first) /
+    #: `in_progress` / `active` (stored) / `refused` / `failed`.
+    status: str
+    reason: str | None = None
+    instructions: str
+    browser: str | None = None
+    expires_in_s: int | None = None
+    session: SessionState = "unknown"
+
+
+class SignInEnvelope(Permissive):
+    session: SessionState = "unknown"
+    warnings: list[str] = Field(default_factory=list)
+    error: ErrorOut | None = None
+    data: SignInData | None = None
+
+
+class AuthStatusData(Permissive):
+    session: SessionState = "unknown"
+    stored: bool = False
+    #: `file` (stored by a sign-in or `rtings-mcp auth`) or `env` (RTINGS_SESSION_COOKIE).
+    source: str | None = None
+    stored_at: str | None = None
+    sign_in: str = "idle"
+    reason: str | None = None
+    browser: str | None = None
+    previews_remaining: int | None = None
+    cookie_name: str | None = None
+
+
+class AuthStatusEnvelope(Permissive):
+    session: SessionState = "unknown"
+    warnings: list[str] = Field(default_factory=list)
+    error: ErrorOut | None = None
+    data: AuthStatusData | None = None

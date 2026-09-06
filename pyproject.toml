@@ -25,6 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The in-conversation sign-in (`rt_sign_in`) opens a real browser window and reads the
+# session cookie out of its jar. Optional because the paste path (`rtings-mcp auth`) covers
+# a machine with no browser, and because nothing else in the server needs it.
+browser = ["playwright>=1.40"]
 dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
@@ -56,6 +60,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Importing a pytest fixture and then naming it as a test parameter is the documented way to
+# share one, and it reads as a redefinition to ruff every single time. The alternative is a
+# second copy of the stub-transport Context, which would drift from the one it copies.
+"tests/test_auth_tools.py" = ["F811"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

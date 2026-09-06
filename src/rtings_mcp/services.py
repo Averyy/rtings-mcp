@@ -38,7 +38,11 @@ from .normalize import (
     normalize_table_row,
     strip_html,
 )
-from .observations import ObservationStore
+from .observations import (
+    PROVENANCE_ANONYMOUS,
+    PROVENANCE_LOGGED_IN,
+    ObservationStore,
+)
 from .schema import SiloSchema, TestDef
 
 
@@ -56,6 +60,18 @@ def collects_warnings(fn):
             return await fn(ctx, *args, **kwargs)
 
     return wrapper
+
+
+def _observation_provenance(ctx: Context, probe: Any) -> str:
+    """Whether the session that produced this call's rows could have unblurred them.
+
+    ``data_completeness`` describes what *anonymous* gets, so an observation made on a
+    session that may have unblurred rows (a member, a free account, an unknown probe) is
+    tagged and never becomes ``full`` — see :mod:`.observations`.
+    """
+    return (
+        PROVENANCE_LOGGED_IN if ctx.auth.session_may_unblur(probe) else PROVENANCE_ANONYMOUS
+    )
 
 
 #: 25 products x 11 usages is ~15K tokens of mostly identical rows on a gated silo, and
@@ -141,6 +157,9 @@ async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
                 "insider_unblurred_ratio": observation.insider_ratio,
                 "observed_at": iso(observation.observed_at),
                 "fresh": observation.is_fresh,
+                # `logged_in` explains an `unknown` beside a 1.0 ratio: the fetch happened on
+                # a session that may have unblurred it, so it says nothing about anonymous.
+                "provenance": observation.provenance,
             }
         out.append(entry)
 
@@ -149,8 +168,10 @@ async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
             "silos": out,
             "notice": (
                 "data_completeness is derived from what actually came back unblurred on "
-                "this machine's last fetch of each silo; 'unknown' means nothing has been "
-                "fetched yet. has_paywall is true for all 28 and carries no information."
+                "this machine's last SIGNED-OUT fetch of each silo; 'unknown' means nothing "
+                "has been fetched yet, or only while signed in (observed.provenance: "
+                "logged_in), which cannot say what anonymous gets. has_paywall is true for "
+                "all 28 and carries no information."
             ),
         },
         session=probe.session if probe else "unknown",
@@ -494,8 +515,9 @@ async def rt_ratings(
 
     if usage_ids or test_ids:
         store = ObservationStore(ctx.cache)
+        provenance = _observation_provenance(ctx, probe)
         for bench_id, bench_scores in per_bench_scores.items():
-            store.record(silo, bench_id, bench_scores)
+            store.record(silo, bench_id, bench_scores, provenance=provenance)
 
     # Filtering and sorting operate on the SERVED rows, never on the silo: a silo-level rule
     # would either block legitimate sorting on the open 16 or permit silent null-sorting on
@@ -1587,7 +1609,9 @@ async def rt_product(
 
     if bench_id:
         # Recorded after the verdict block, so a call that observed the usage surface counts.
-        ObservationStore(ctx.cache).record(ref.silo, bench_id, scores)
+        ObservationStore(ctx.cache).record(
+            ref.silo, bench_id, scores, provenance=_observation_provenance(ctx, probe)
+        )
 
     warnings = list(repo.warnings)
     if stale:

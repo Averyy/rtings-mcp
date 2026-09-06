@@ -46,6 +46,13 @@ log = logging.getLogger(__name__)
 DATA_TIER_UNBLURRED = "unblurred"
 DATA_TIER_UNPROVEN = "unproven"
 
+#: Why an ``anonymous``-labelled write was refused (:meth:`AuthManager.anonymous_write_refusal`).
+#: An Early Access row that came through unblurred is member-only data on EVERY silo;
+#: an unblurred ``insider_only`` row is member-only data only where the silo enforces, and
+#: "unproven" is the honest word for a silo no signed-out fetch has yet shown to be open.
+REFUSAL_EARLY_ACCESS = "early_access_unblurred"
+REFUSAL_UNPROVEN_OPEN = "silo_not_proven_open"
+
 #: Pinned to a NON-review page. The review path is the metered one, so probing there would
 #: spend a free account's preview every time the server checks whether it is logged in —
 #: and ``rt_product`` re-probes after every call.
@@ -482,12 +489,16 @@ class AuthManager:
         """The ``cache_tier`` a probe justifies. ``expired``/``unknown`` demand ``anonymous``
         — a configured-but-expired cookie must not demand a tier that can never arrive.
 
-        **Pinned to ``anonymous`` while member mode is off** (the default). Whether a
-        membership cookie flips ``unblurred`` on the API is the project's one blocking
-        unknown; until a bought membership settles it, no tier above ``anonymous`` may be
-        demanded or written, because the server would be keying its cache on an entitlement
-        it has never observed. The whole mechanism still runs — it simply resolves to
-        ``anonymous`` — so turning it on is a config flag, not a migration.
+        **Pinned to ``anonymous`` while member mode is off.** That was the Phase-0 gate:
+        until a bought membership showed a cookie flipping ``unblurred`` on the API, no tier
+        above ``anonymous`` could be demanded or written, because the server would have been
+        keying its cache on an entitlement it had never observed. **Measured 2026-09-06
+        (RECON §13.1) — 588/588 unblurred against 0/588 anonymous — so the default is now
+        on**, and the pin is an opt-out rather than a gate.
+
+        Turning it off is still supported and still resolves every tier to ``anonymous``.
+        Note what that costs a signed-in user: the write guard then refuses to cache rows it
+        cannot honestly label, so they are served and re-fetched on every call.
         """
         if not self.config.member_mode:
             return ANONYMOUS
@@ -586,6 +597,106 @@ class AuthManager:
             if row.get("unblurred"):
                 return False
         return saw_insider_tested
+
+    # -- the anonymous-label guard (member mode OFF) ---------------------------------
+
+    def session_may_unblur(self, probe: SessionProbe | None = None) -> bool:
+        """Could the configured credential have unblurred what the API just served?
+
+        This is the switch that keeps the whole guard **inert for the ordinary anonymous
+        user**: with no credential configured nothing was sent, so nothing could have been
+        unblurred *for us* — an inference from our own configuration, never from the data,
+        and it costs no probe.
+
+        With a credential configured the answer comes from the probe. ``member``, ``free``
+        and ``unknown`` may have (a free account's metered preview unblurs a review, and an
+        unknown probe proves nothing either way). ``expired``/``anonymous`` did not — a dead
+        session cannot resurrect, so what came back is what anonymous gets — **unless the
+        probe page was a CloudFront cache hit**, in which case the logged-out reading may be
+        the CDN's anonymous copy answered to a live member cookie (the same hazard
+        :meth:`should_demote` refuses to demote on, read in the other direction).
+        """
+        if not self.transport.credential.present:
+            return False
+        probe = probe or self.cached_probe()
+        if probe is None:
+            return True
+        if probe.session in (MEMBER, FREE, "unknown"):
+            return True
+        return bool(probe.x_cache and "hit" in probe.x_cache.lower())
+
+    def anonymous_write_refusal(
+        self,
+        *,
+        surface: str,
+        rows: list[dict[str, Any]],
+        insider_ids: set[str],
+        unpublished_product_ids: set[str],
+        probe: SessionProbe | None,
+        anonymous_serves: bool,
+    ) -> str | None:
+        """Why a response about to be labelled ``anonymous`` must NOT be, or ``None``.
+
+        With ``RTINGS_MEMBER_MODE`` off every write is stamped ``anonymous`` — a label that
+        promises "a signed-out session would have received these bytes". A member's fetch
+        of an enforcing silo breaks that promise (tv: 588/588 ``insider_only`` rows
+        unblurred for a member, 0/588 anonymously), and a cache hit on that file later
+        serves member-only measurements to a signed-out user under an ``anonymous`` label.
+
+        **The naive predicate — "logged in and unblurred insider rows" — over-fires on 16
+        of 28 silos.** On mattress, air-purifier, vpn and the rest anonymous receives
+        ``insider_only`` rows ``unblurred:true`` as ordinary behaviour, so a member's bytes
+        there ARE what anonymous gets and the label is true. The two cases are
+        indistinguishable from one response (both are 100% unblurred), so the tie-break is
+        **an anonymous observation of the same (silo, bench)**: ``anonymous_serves`` is
+        true when a signed-out fetch of this surface came back fully unblurred there
+        (:meth:`ObservationStore.anonymous_serves`), and only then is "unblurred because
+        the silo is open" the proven explanation.
+
+        Two things are refused regardless of that proof:
+
+        * an unblurred ``status:"tested"`` row for a ``published:false`` product — Early
+          Access is blurred for anonymous on every silo, open ones included, and a
+          membership is exactly what lifts it (``RECON.md`` §12.10), so such a row is
+          member-only data wherever it appears;
+        * nothing else: an unblurred ``na`` row is NOT evidence (47% of ``na`` rows are
+          ``unblurred:true`` anonymously, ``RECON.md`` §11.4), and an unblurred **public**
+          row proves nothing (public tests ship their value anonymously), so both stay
+          vacuous — a guard that fired on them would refuse public-only slices forever.
+
+        Usage rows (``ratings``, and verdict scores, which are usage ratings by another
+        name) carry no ``status`` and no ``insider_only``; every unblurred one is
+        gate-relevant, and the proof is the anonymous observation of the *usage* surface.
+
+        Returns :data:`REFUSAL_EARLY_ACCESS`, :data:`REFUSAL_UNPROVEN_OPEN`, or ``None``
+        when the ``anonymous`` label is honest. **Never** returns a refusal when
+        :meth:`session_may_unblur` is false: an anonymous session cannot have unblurred
+        anything, so its writes are honest by construction and this method is a no-op for
+        it — no probe, no observation read, no warning.
+        """
+        if not self.session_may_unblur(probe):
+            return None
+        saw_gateable_unblurred = False
+        for row in rows:
+            if not row.get("unblurred"):
+                continue
+            product = row.get("product_id")
+            unpublished = product is not None and str(product) in unpublished_product_ids
+            if surface == RATINGS_SURFACE:
+                if unpublished:
+                    return REFUSAL_EARLY_ACCESS
+                saw_gateable_unblurred = True
+                continue
+            if row.get("status") != "tested":
+                continue
+            if unpublished:
+                return REFUSAL_EARLY_ACCESS
+            original_id = row.get("original_id")
+            if original_id is not None and str(original_id) in insider_ids:
+                saw_gateable_unblurred = True
+        if saw_gateable_unblurred and not anonymous_serves:
+            return REFUSAL_UNPROVEN_OPEN
+        return None
 
     # -- preview budget -------------------------------------------------------------
 
