@@ -2554,10 +2554,6 @@ async def test_a_group_with_no_scored_test_says_where_its_content_lives(ctx):
     top = await services.rt_schema(ctx, "tv")
     assert NO_LEAF_NOTE in top["data"]["notice"]
 
-    # And a `group=` drilldown that finds no scored test says the same thing.
-    out = await services.rt_schema(ctx, "tv", group="13907")
-    assert out["data"]["tests"] == []
-    assert out["data"]["notice"] == NO_LEAF_NOTE
 
 
 async def test_rt_silos_tells_a_member_the_completeness_column_is_not_about_them(ctx):
@@ -3193,3 +3189,22 @@ async def test_a_word_filter_that_matches_nothing_lists_the_values_seen(ctx):
     assert out["data"]["total_matched"] == 0
     hint = next(w for w in out["warnings"] if w.startswith("filter_matched_nothing"))
     assert "4k" in hint and "1080p" in hint
+
+
+async def test_a_digit_string_against_a_word_test_is_a_substring(ctx):
+    """`{"Native Resolution": "1440"}` parsed 1440 as a number and matched nothing; the
+    docstring promised a substring match on word tests."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], usages=[], filters={"208": "4"})
+    assert [p["product_id"] for g in out["data"]["groups"] for p in g["products"]] == ["1"]
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["208"], usages=[], filters={"Resolution": "!=4k"}
+    )
+    assert "1" not in [p["product_id"] for g in out["data"]["groups"] for p in g["products"]]
+
+
+async def test_rt_schema_says_when_a_group_id_is_really_a_test(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_schema(ctx, "tv", group="208")
+    assert excinfo.value.code == "unknown_test"
+    assert "is the test 'Resolution', not a group" in str(excinfo.value)
+    assert "group=900" in str(excinfo.value)

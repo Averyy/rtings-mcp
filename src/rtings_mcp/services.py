@@ -438,6 +438,16 @@ async def rt_schema(
         definition = schema.test(group_id)
         if definition is None:
             raise RtingsError(errors.UNKNOWN_TEST, f"no test/group with original_id {group_id}")
+        if not definition.is_structure:
+            # A test id here read as "this group has no scored test" — a plausible answer
+            # to the wrong question.
+            chain = schema.ancestry(group_id)
+            parent = schema.parent_of(definition)
+            raise RtingsError(
+                errors.UNKNOWN_TEST,
+                f"{group_id} is the test {definition.name!r}, not a group; its group is "
+                f"{'/'.join(chain) or 'unknown'}" + (f" (group={parent})" if parent else ""),
+            )
         members = [t for t in tests if group_id in _ancestor_ids(schema, t)]
         data = {
             "silo": silo,
@@ -1813,7 +1823,10 @@ def _apply_filters(
                 "matches'."
             )
             continue
-        clauses = _parse_clauses(expression)
+        definition = schema.test(field_id) if kind == "test" else None
+        # A word test compares text: "1440" against "2560 x 1440" is a substring, not the
+        # number 1440 against a string that will not coerce (which matched nothing).
+        clauses = _parse_clauses(expression, textual=bool(definition and definition.kind == "word"))
         before = out
         out = [
             r
@@ -1846,12 +1859,20 @@ _RANGE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(?:\.\.|\bto\b)\s*(-?\d+(?:\.\d
 _CLAUSE_SPLIT_RE = re.compile(r"\s*,\s*|\s+(?=[<>!=])")
 
 
-def _parse_clauses(expression: Any) -> list[tuple[str, Any]]:
+def _parse_clauses(expression: Any, *, textual: bool = False) -> list[tuple[str, Any]]:
     """One field, several conditions: `"13..14"`, `"13 to 14"`, `">=13 <=14"`, `">=13,<=14"`.
 
     A 13-to-14-inch laptop took two passes and a hand filter with one comparator per
-    field. Every clause must hold.
+    field. Every clause must hold. ``textual`` keeps the operand a string (a word test),
+    so only `=`/`!=` apply and a digit string stays a substring.
     """
+    if textual:
+        text = str(expression).strip()
+        if text.startswith("!="):
+            return [("!=", text[2:].strip())]
+        if text.startswith("="):
+            return [("=", text[1:].strip())]
+        return [("=", text)]
     if isinstance(expression, (int, float)) and not isinstance(expression, bool):
         return [_parse_expression(expression)]
     text = str(expression)
