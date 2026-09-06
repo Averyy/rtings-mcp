@@ -666,6 +666,14 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   same predicate by id matched 46 — "0 results" reading as "no such monitor", the failure the
   whole project exists to prevent. `_apply_filters` and `_fields_to_fetch` both defer to
   `_field_lookup(schema, "size")` before treating the word as the alias.
+- **A test name may CONTAIN a slash, so the whole string is tried as a name before the
+  `Group/Name` split (2026-09-06).** Monitor "Rotate Portrait/Landscape", copied from
+  rt_schema's own output, was rejected as a filter key.
+- **A field is never blamed on the bench once an earlier filter emptied the set.** The
+  "populated / gated / absent" census over zero rows read as "no row carries it — call
+  rt_schema", a false diagnosis for a field the bench defines; the warning now says which
+  filter left 0 products. A word filter that matches nothing quotes the values the rows do
+  carry (`filter_matched_nothing`): "3840x2160" against RTINGS' "3840 x 2160".
 - **A filter takes several clauses on one field** (`"13..14"`, `"13 to 14"`, `">=13 <=14"`,
   `">=13,<=14"`; added 2026-09-06): a 13-to-14-inch laptop took two passes and a hand filter
   with one comparator per field.

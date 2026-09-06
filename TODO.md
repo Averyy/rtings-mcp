@@ -105,9 +105,16 @@ the failing categories with new questions.
 | 4 | microwave, running-shoes, blender | FAIL (calls) | "countertop" three schema calls deep; zero-row response claimed `unblurred`; "2-4 benches" wrong (10 on running-shoes); `product_id` not documented as the join key |
 | 4 | camera, air-fryer, toaster, router, mattress (couple), vpn | PASS | unscored specs carried `score: 0.0`; several `find` terms per call |
 
+**Verification round (fresh questions on the categories that had failed):** tv 8 calls PASS,
+toaster-oven 6 PASS, humidifier 7 PASS (was 18), headphones 7 PASS, projector 6 PASS (was 12),
+microwave 8 PASS (was 14), blender 12 PASS, running-shoes 8 PASS (was 18), laptop 5 PASS (was
+20, after a re-run), monitor: two more defects found and fixed — a numeric "Size" test hijacked
+by the tested-variant alias, and slash-containing test names colliding with the `Group/Name`
+syntax — with the fixes verified live (`5b7cb92` and the commit after it).
+
 Correctness of the final answer scored 4-5/5 on every scenario; every cross-check between two
-tools agreed. What changed is in `CLAUDE.md` (rules dated 2026-09-06) and the two commits
-`055707d` and `b922ab3`.
+tools agreed. What changed is in `CLAUDE.md` (rules dated 2026-09-06) and the commits from
+`055707d` onward.
 
 **How to run another round.** `scratchpad/rtcli.py` in the session scratchpad is the harness
 (`describe` / `call <tool> '<json>'`); it is not part of the repo. Give an agent a real

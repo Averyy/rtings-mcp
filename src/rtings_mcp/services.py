@@ -93,7 +93,10 @@ GRAPH_MAX_CELLS = 1_600
 GRAPH_MIN_POINTS = 40
 
 #: rt_schema(find=...) lists at most this many matching tests and usages each.
-MAX_FIND_HITS = 40
+MAX_FIND_HITS = 60
+
+#: Distinct values quoted when a word filter matches nothing.
+MAX_VALUES_LISTED = 12
 
 #: Featured-result kinds with no scalar to report on a best-of page.
 MEDIA_KINDS = frozenset({"picture", "graph", "video", "audio", "3d_model", "download"})
@@ -1590,6 +1593,16 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
             )
         return None
     lowered = text.lower()
+    # A test's own name may contain a slash ("Rotate Portrait/Landscape"), which is also
+    # the qualifier syntax below. The whole string as a name wins over any split of it.
+    if "/" in lowered:
+        whole = [
+            t
+            for t in schema.tests.values()
+            if t.name.lower() == lowered and not t.is_structure and forced != "usage"
+        ]
+        if len(whole) == 1:
+            return "test", whole[0].original_id
     # "Group/Name" (or "Category/Group/Name") addresses a leaf whose bare name repeats:
     # headphones has three leaves called "RMS Deviation From Target", one per band.
     path = [part.strip().lower() for part in lowered.split("/") if part.strip()]
@@ -1760,6 +1773,14 @@ def _apply_filters(
             warnings.append(f"filter_unavailable: no test or usage named {key!r}")
             continue
         kind, field_id = resolved
+        if not out:
+            # With no rows left, the census below would read "no row carries it" and
+            # blame the bench — a false diagnosis for a field the bench does define.
+            warnings.append(
+                f"filter_unavailable: {key!r} was not evaluated because an earlier filter "
+                "left 0 products; fix that one first"
+            )
+            continue
         populated = 0
         gated = 0
         present = 0
@@ -1793,6 +1814,7 @@ def _apply_filters(
             )
             continue
         clauses = _parse_clauses(expression)
+        before = out
         out = [
             r
             for r in out
@@ -1801,6 +1823,22 @@ def _apply_filters(
                 for comparator, operand in clauses
             )
         ]
+        if before and not out and all(not isinstance(op, float) for _, op in clauses):
+            # A word value that matches nothing is usually a spelling of RTINGS' value:
+            # "3840x2160" against a stored "3840 x 2160". Say what the rows carry.
+            seen = sorted(
+                {
+                    str(_comparable(_values_for(r, kind, field_id), kind))
+                    for r in before
+                    if _comparable(_values_for(r, kind, field_id), kind) is not None
+                }
+            )
+            warnings.append(
+                f"filter_matched_nothing: {key!r} = {expression!r} matched none of "
+                f"{len(before)} products. Values on these rows: "
+                + ", ".join(seen[:MAX_VALUES_LISTED])
+                + (" …" if len(seen) > MAX_VALUES_LISTED else "")
+            )
     return out, warnings
 
 
@@ -1913,6 +1951,8 @@ def _apply_sort(
         )
 
     kind, field_id = resolved
+    if not rows:
+        return rows, {"field": field_name, "gated": False, "direction": direction}, warnings
     populated = [r for r in rows if _comparable(_values_for(r, kind, field_id), kind) is not None]
     if not populated:
         # Same three-way split as the filter path: a field absent from every row is a

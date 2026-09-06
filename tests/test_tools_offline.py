@@ -3154,3 +3154,42 @@ async def test_a_test_named_size_is_not_hijacked_by_the_variant_alias(ctx):
     schema.tests["11"] = replace(schema.test("11"), name="Native Contrast")
     out = await services.rt_ratings(ctx, "tv", filters={"size": "55"}, usages=[])
     assert [p["product_id"] for g in out["data"]["groups"] for p in g["products"]] == ["2"]
+
+
+async def test_a_test_name_containing_a_slash_resolves_whole(ctx):
+    """Monitor "Rotate Portrait/Landscape" — copied from rt_schema's own output — was
+    rejected as a filter key because "/" is also the Group/Name qualifier."""
+    from dataclasses import replace
+
+    from rtings_mcp.services import _field_lookup
+
+    schema = await ctx.repo.schema("tv")
+    schema.tests["11"] = replace(schema.test("11"), name="Rotate Portrait/Landscape")
+    assert _field_lookup(schema, "Rotate Portrait/Landscape") == ("test", "11")
+    assert _field_lookup(schema, "Picture Quality/Peak Brightness") == ("test", "12000")
+
+
+async def test_a_later_field_is_not_blamed_on_the_bench_when_the_set_is_empty(ctx):
+    """With zero rows left after one filter, the next field's census read "no row carries
+    it" and pointed at the bench — a false diagnosis for a field the bench defines."""
+    out = await services.rt_ratings(
+        ctx,
+        "tv",
+        tests=["11"],
+        usages=[],
+        filters={"brand": "Nobody", "11": ">1"},
+        sort="-11",
+    )
+    assert out["data"]["total_matched"] == 0
+    assert any("earlier filter left 0 products" in w for w in out["warnings"]), out["warnings"]
+    assert not any("not on the bench" in w for w in out["warnings"]), out["warnings"]
+    assert out["sorted_by"].get("fallback_reason") is None
+
+
+async def test_a_word_filter_that_matches_nothing_lists_the_values_seen(ctx):
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["208"], usages=[], filters={"Resolution": "3840x2160"}
+    )
+    assert out["data"]["total_matched"] == 0
+    hint = next(w for w in out["warnings"] if w.startswith("filter_matched_nothing"))
+    assert "4k" in hint and "1080p" in hint
