@@ -14,6 +14,7 @@ from typing import Any
 # Lookup / input
 UNKNOWN_SILO = "unknown_silo"
 UNKNOWN_PRODUCT = "unknown_product"
+UNKNOWN_LIST = "unknown_list"
 UNKNOWN_TEST = "unknown_test"
 INVALID_BENCH = "invalid_bench"
 

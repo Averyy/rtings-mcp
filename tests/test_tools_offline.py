@@ -248,6 +248,8 @@ class StubTransport(Transport):
         _count_request()
         if "/reviews/best/static-template" in path:
             html = REC_STATIC_HTML
+        elif "/reviews/best/made-up" in path:
+            html = "<html><head><title>Not found</title></head><body></body></html>"
         elif "/reviews/best/" in path:
             html = getattr(self, "rec_html", None) or REC_HTML
         elif self.session_page == "member":
@@ -818,10 +820,12 @@ async def test_rt_recommendations_lists_then_ranks(ctx):
     assert pick["usage_scores"][0]["status"] == "tested_gated"
 
 
-async def test_an_undiscovered_list_is_refused(ctx):
+async def test_an_undiscovered_list_is_fetched_and_only_a_missing_page_is_refused(ctx):
+    """The index is not exhaustive (a review links to a list it omits), so a slug outside
+    it is fetched; a page that matches neither template is `unknown_list`."""
     with pytest.raises(RtingsError) as excinfo:
         await services.rt_recommendations(ctx, "tv", list="made-up")
-    assert excinfo.value.code == "unknown_product"
+    assert excinfo.value.code == "unknown_list"
 
 
 # -- the preview budget --------------------------------------------------------------
@@ -3208,3 +3212,27 @@ async def test_rt_schema_says_when_a_group_id_is_really_a_test(ctx):
     assert excinfo.value.code == "unknown_test"
     assert "is the test 'Resolution', not a group" in str(excinfo.value)
     assert "group=900" in str(excinfo.value)
+
+
+async def test_a_best_of_slug_outside_the_index_is_fetched_not_refused(ctx):
+    """A review's prose links to a list the landing page's index omits; the slug was
+    refused as `unknown_product` before any fetch."""
+    out = await services.rt_recommendations(ctx, "tv", list="off-index")
+    assert out["error"] is None and out["data"]["picks"]
+    assert any(w.startswith("list_not_in_index") for w in out["warnings"])
+
+
+async def test_rt_product_lists_the_size_lineup(ctx):
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", include_results=False)
+    assert out["data"]["product"]["variants"] or out["data"]["product"]["variants"] is None
+    assert "recommended_sku" not in json.dumps(
+        await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    )
+
+
+async def test_a_multi_word_find_term_is_matched_only_when_all_its_words_hit(ctx):
+    out = await services.rt_schema(ctx, "tv", find="wind contrast, brightness")
+    contrast = next(t for t in out["data"]["tests"] if t["name"] == "Native Contrast")
+    assert contrast.get("matched_terms") == []
+    assert contrast["partially_matched_terms"] == ["wind contrast"]
+    assert out["data"]["terms_with_no_matches"] == []

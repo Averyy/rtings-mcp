@@ -338,7 +338,9 @@ async def rt_product(
     response). **On a category that withholds measurements this is the substantive answer** —
     the verdicts are served even when every number comes back null, so use it whenever
     `rt_silos` says a category is `gated`. `include_results=false` drops the measurement
-    rows when you only want the words (a full review is ~240 rows).
+    rows when you only want the words (a full review is ~240 rows). `include_prose` without
+    `group` returns the commentary for EVERY group of the review (~30 K characters); pass
+    `group` to get one section's.
 
     Numbers on this path are parsed from RTINGS' display strings and are display-rounded
     (each is labelled `value_source: "rendered"`); where the display shows the stored unit
@@ -420,8 +422,8 @@ async def rt_recommendations(
     `list` values to get that ranking: ordered picks, each with RTINGS' own explanation of
     why it is there (`reasoning`, HTML), its `product_id` — the join key: pass the picks'
     ids to `rt_ratings(filters={"product_ids": [...]})` for one comparison table instead of
-    one call per pick — the SKU the list recommends (`recommended_sku`),
-    and two blocks of numbers RTINGS chose to feature for that list: `featured_results`
+    one call per pick — and two blocks of numbers RTINGS chose to feature for that list:
+    `featured_results`
     (tests AND group scores — on this surface a group carries a 0-10 score, unlike
     rt_ratings) and `usage_scores`. Both follow the same `status`/`gated` rules as
     everywhere else; `gated: null` means there was no value to gate, and a spec flag's

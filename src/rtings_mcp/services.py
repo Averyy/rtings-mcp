@@ -325,9 +325,20 @@ async def rt_schema(
             if score:
                 entry = _test_json(schema, test)
                 if len(terms) > 1:
+                    # A term is "matched" only when every word of it hit (or the phrase):
+                    # "wind noise" was echoed as matched on "Street Noise Attenuation".
                     entry["matched_terms"] = [
-                        t for t in terms if hits_by_term.get(t) or value_hits.get(t)
+                        t
+                        for t, (words, _) in zip(terms, queries, strict=True)
+                        if max(hits_by_term.get(t, 0), value_hits.get(t, 0)) >= len(words)
                     ]
+                    partial = [
+                        t for t in terms
+                        if (hits_by_term.get(t) or value_hits.get(t))
+                        and t not in entry["matched_terms"]
+                    ]
+                    if partial:
+                        entry["partially_matched_terms"] = partial
                 matched_values = [
                     w
                     for w in test.words
@@ -1149,7 +1160,11 @@ def _unmatched_terms(
 ) -> list[str]:
     out: list[str] = []
     for term, (words, phrase) in zip(terms, queries, strict=True):
-        if any(term in (h.get("matched_terms") or [term]) for h in hits):
+        if any(
+            term in (h.get("matched_terms") or [term])
+            or term in (h.get("partially_matched_terms") or [])
+            for h in hits
+        ):
             continue
         usage_paths = (
             " ".join(filter(None, [u.parent_usage_name, u.name])).lower() for u in usages
@@ -2283,7 +2298,10 @@ async def rt_product(
             "silo": ref.silo,
             "test_bench": {"id": bench_id, "display_name": bench.get("display_name")},
             "published": not is_unpublished,
-            "variants": product_obj.get("variants_rendered_list"),
+            # `variants_rendered_list` is null on the review body; the size lineup is in
+            # `variant_skus[].variation`, which the tested-variant lookup already reads.
+            "variants": _variants_from_review(product_obj)
+            or product_obj.get("variants_rendered_list"),
             "tested_variant": _tested_variant_from_review(product_obj),
         },
         "value_source_notice": (
@@ -2396,6 +2414,20 @@ def _strip_response_constants(entry: dict[str, Any]) -> dict[str, Any]:
     entry.pop("product_id", None)
     entry.pop("as_of", None)
     return entry
+
+
+def _variants_from_review(product_obj: dict[str, Any]) -> list[str] | None:
+    """Every variation the review body lists, in its order, de-duplicated."""
+    out: list[str] = []
+    for key in ("variant_skus", "skus"):
+        for sku in product_obj.get(key) or []:
+            if isinstance(sku, dict) and sku.get("variation"):
+                variation = str(sku["variation"]).strip()
+                if variation and variation not in out:
+                    out.append(variation)
+        if out:
+            return out
+    return None
 
 
 def _tested_variant_from_review(product_obj: dict[str, Any]) -> str | None:
@@ -2870,14 +2902,26 @@ async def rt_recommendations(
 
     index = await repo.recommendation_lists(silo)
     known = {entry.get("list") for entry in (index.payload or {}).get("lists", [])}
-    if list not in known:
+    # The landing page's index is not exhaustive: a review's prose links to
+    # "by-usage/bluetooth-headset-for-phone-calls", which the index omits. A slug outside
+    # the index is fetched anyway; only a page that does not exist is an error.
+    try:
+        envelope = await repo.recommendation(silo, list, refresh=refresh)
+    except RtingsError as exc:
+        if list in known:
+            raise
         raise RtingsError(
-            errors.UNKNOWN_PRODUCT,
-            f"{list!r} is not one of {silo}'s discovered best-of lists",
+            errors.UNKNOWN_LIST,
+            f"{list!r} is not one of {silo}'s discovered best-of lists and "
+            f"/{silo}/reviews/best/{list} could not be fetched ({exc.code})",
             details={"available": sorted(k for k in known if k)},
+        ) from exc
+    warnings_extra: list[str] = []
+    if list not in known:
+        warnings_extra.append(
+            f"list_not_in_index: {list!r} is not in {silo}'s discovered index but the page "
+            "exists and was fetched"
         )
-
-    envelope = await repo.recommendation(silo, list, refresh=refresh)
     payload = envelope.payload or {}
     schema = await repo.schema(silo)
     picks = []
@@ -2904,10 +2948,9 @@ async def rt_recommendations(
                 "url": page.get("url"),
                 "overall_score": product.get("preferred_scoreset_score"),
                 "variants": product.get("variants_rendered_list"),
-                # The SKU the list actually recommends ("Samsung QN65S95HAFXZA" on the
-                # 65-inch list). The review's tested size can differ — a "Best 65-inch"
-                # pick was reviewed at 77" — and only rt_product says which.
-                "recommended_sku": _sku_name(pick),
+                # No `recommended_sku`: the page's sku block was wrong on 2 of 3 picks of
+                # the 43-inch list (a Samsung model number on the Vizio pick, a C4 SKU on
+                # the C6 review). The review's own size table is the source for that.
                 "featured_results": _featured_results(
                     pick.get("featured_test_results"), schema
                 ),
@@ -2979,7 +3022,7 @@ async def rt_recommendations(
         stale=envelope.is_stale(TTL_RECS),
         source_url=envelope.source_url,
         previews_remaining=probe.previews_remaining if probe else None,
-        warnings=list_warnings(repo),
+        warnings=list_warnings(repo) + warnings_extra,
     ).to_json()
 
 
@@ -3087,14 +3130,6 @@ def _strip_wrappers(html: Any) -> Any:
     if not isinstance(html, str):
         return html
     return _WRAPPER_TAG_RE.sub("", html).replace("&nbsp;", " ").strip()
-
-
-def _sku_name(pick: dict[str, Any]) -> str | None:
-    sku = pick.get("sku") if isinstance(pick.get("sku"), dict) else None
-    if sku is None:
-        skus = pick.get("skus") if isinstance(pick.get("skus"), list) else []
-        sku = next((s for s in skus if isinstance(s, dict)), None)
-    return _str_or_none(sku.get("fullname")) if sku else None
 
 
 def _graph_header(payload: dict[str, Any]) -> list[str]:

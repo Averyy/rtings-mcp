@@ -674,6 +674,16 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   rt_schema", a false diagnosis for a field the bench defines; the warning now says which
   filter left 0 products. A word filter that matches nothing quotes the values the rows do
   carry (`filter_matched_nothing`): "3840x2160" against RTINGS' "3840 x 2160".
+- **A word test's filter value is TEXT, whatever it looks like (2026-09-06).** `{"Native
+  Resolution": "1440"}` parsed 1440 as a number and matched nothing against "2560 x 1440";
+  the docstring promised a substring. `_parse_clauses(textual=True)` for `kind: word`.
+- **`recommended_sku` is GONE.** The best-of page's `sku` block was wrong on 2 of 3 picks of
+  the 43-inch TV list (a Samsung model number on the Vizio pick, a C4 SKU on the C6 review);
+  a field presented as "the SKU to buy" cannot be one RTINGS got wrong a third of the time.
+  The review's own size table (rt_product `variants`, now read from `variant_skus`) is the
+  source. **The landing page's list index is not exhaustive**: a review's prose links to
+  `by-usage/bluetooth-headset-for-phone-calls`, which the index omits, so a slug outside it
+  is fetched and only a page matching neither template is `unknown_list`.
 - **A filter takes several clauses on one field** (`"13..14"`, `"13 to 14"`, `">=13 <=14"`,
   `">=13,<=14"`; added 2026-09-06): a 13-to-14-inch laptop took two passes and a hand filter
   with one comparator per field.
