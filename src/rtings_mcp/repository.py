@@ -66,7 +66,13 @@ from .htmlprobe import (
 from .http import SingleFlight, Transport
 from .normalize import strip_html
 from .observations import ObservationStore
-from .schema import SiloSchema, parse_column_options, schema_from_cacheable, schema_to_cacheable
+from .schema import (
+    SiloSchema,
+    cacheable_is_current,
+    parse_column_options,
+    schema_from_cacheable,
+    schema_to_cacheable,
+)
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +114,38 @@ class Slice:
     @property
     def unpublished_ids(self) -> set[str]:
         return set(self.envelope.unpublished_product_ids or ())
+
+
+#: Stand-in `original_id` for a best-of page's featured rows, which carry an inline test
+#: stub with no `original_id` (verified 2026-09-03) but do carry `insider_only`.
+FEATURED_ID = "featured"
+
+
+def _recommendation_insider_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """The gate-relevant rows of a best-of page, in the shape the tier predicates read.
+
+    Each pick's ``featured_test_results`` has its own ``status``/``unblurred``; only the
+    ``insider_only`` ones say anything about the session.
+    """
+    rows: list[dict[str, Any]] = []
+    for pick in payload.get("product_recommendations") or []:
+        if not isinstance(pick, dict):
+            continue
+        for row in pick.get("featured_test_results") or []:
+            if not isinstance(row, dict):
+                continue
+            stub = row.get("test") if isinstance(row.get("test"), dict) else {}
+            if not stub.get("insider_only"):
+                continue
+            rows.append(
+                {
+                    "original_id": FEATURED_ID,
+                    "product_id": str(pick.get("product_id") or ""),
+                    "status": row.get("status"),
+                    "unblurred": bool(row.get("unblurred")),
+                }
+            )
+    return rows
 
 
 @dataclass(slots=True, frozen=True)
@@ -510,12 +548,18 @@ class Repository:
         if not refresh and key in self._schema_memo:
             return self._schema_memo[key]
         cached = self.cache.get("schema", f"{key}.json")
+        # An older cacheable form is a miss, whatever its age: it lacks fields the
+        # normalizer now reads, and serving it mislabels units for the rest of the TTL.
+        if cached is not None and not cacheable_is_current(cached.payload):
+            cached = None
         if cached is not None and not refresh and not cached.is_stale(TTL_SCHEMA):
             return self._remember_schema(key, cached, schema_from_cacheable(cached.payload or {}))
 
         async def do_fetch() -> SiloSchema:
             async with file_lock(self.cache.root / "locks" / f"schema-{key}.lock"):
                 again = self.cache.get("schema", f"{key}.json")
+                if again is not None and not cacheable_is_current(again.payload):
+                    again = None
                 if again is not None and not refresh and not again.is_stale(TTL_SCHEMA):
                     return self._remember_schema(
                         key, again, schema_from_cacheable(again.payload or {})
@@ -963,11 +1007,14 @@ class Repository:
                 orphans = {
                     str(r.get("product_id")) for rows_ in unassigned.values() for r in rows_
                 }
-                self.warn(
-                    f"{len(orphans)} product(s) returned {directory} rows but appear in no "
-                    f"{silo} catalog generation for the requested benches; their values are "
-                    "real and ARE returned, in a separate `coverage: uncatalogued` group "
-                    "without a name, brand or bench"
+                # Not a warning: the response's `coverage: uncatalogued` group already says
+                # this, scoped to what survived the caller's filters. As a warning it fired
+                # on a 3-product `product_ids` request about 19 products it did not return.
+                log.debug(
+                    "%d %s product(s) returned %s rows but are absent from the listing",
+                    len(orphans),
+                    silo,
+                    directory,
                 )
                 for original_id, rows_for_id in unassigned.items():
                     # Same response, same tier, same demotion rule as the catalogued
@@ -1142,9 +1189,12 @@ class Repository:
 
         Measured 2026-09-04: this is not a rare edge. ``products_list`` returns 69 mattresses
         while ``test_results`` returns 109, and all 40 extras are ``unblurred:true`` with real
-        values. Leaving them in the cache unreported means "compare Purple vs Nectar" can
-        silently lose one of them and read as "not tested" — the exact failure the project
-        exists to prevent, reached through the catalog rather than the paywall.
+        values. **Identified 2026-09-06** by resolving four of them through the compare tool:
+        they are RTINGS' internal copies and retests — "LG G5 OLED (Copy)", "Samsung QN90F
+        (Copy)", "Boring Mattress - TBF 1.0.1", "Sleep On Latex Pure Green Organic - TBF
+        1.0.1" — deliberately absent from the product listing, not products for sale. They
+        are reported as a summary of ids rather than dropped (a dropped row is a false
+        ``not_tested`` if the listing ever picks one up) and never ranked by default.
 
         Returns ``{product_id: {original_id: row}}``.
         """
@@ -1582,6 +1632,14 @@ class Repository:
             found = await self._product_from_id(text, silo)
             if found is not None:
                 return found
+            if silo:
+                # `test_results` carries products the catalog does not list (RECON §12.2:
+                # 9 on tv, 41 on mattress), and the uncatalogued group's notice sends the
+                # caller here to identify one. The compare tool answers by bare id and its
+                # `product` block carries the review URL, name, silo and bench.
+                found = await self._product_from_verdicts(text, silo)
+                if found is not None:
+                    return found
             raise RtingsError(
                 errors.UNKNOWN_PRODUCT,
                 (
@@ -1656,6 +1714,34 @@ class Repository:
                             published=entry.get("published"),
                         )
         return None
+
+    async def _product_from_verdicts(self, product_id: str, silo: str) -> ProductRef | None:
+        """Identify a product the catalog does not list through ``side_by_side__review``.
+
+        Its ``product`` block (measured 2026-09-06) carries ``fullname``,
+        ``product_page__url`` (the full review path, brand segment included),
+        ``silo__url_part`` and ``product_page__early_access``; ``test_bench.id`` is the
+        bench the row was tested on. None of that is inferred from the id.
+        """
+        try:
+            envelope, _stale = await self.side_by_side(silo, product_id)
+        except RtingsError:
+            return None
+        payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+        product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
+        url = product.get("product_page__url")
+        if not url:
+            return None
+        bench = payload.get("test_bench") if isinstance(payload.get("test_bench"), dict) else {}
+        early_access = product.get("product_page__early_access")
+        return ProductRef(
+            product_id=product_id,
+            url_path=str(url),
+            silo=str(product.get("silo__url_part") or silo),
+            name=product.get("fullname"),
+            bench_id=str(bench["id"]) if bench.get("id") is not None else None,
+            published=(not early_access) if isinstance(early_access, bool) else None,
+        )
 
     def _cached_product(self, silo: str, product_id: str) -> ProductRef | None:
         directory = self.cache.root / "catalog" / silo
@@ -1776,16 +1862,27 @@ class Repository:
         key = validate_silo(silo)
         slug = validate_slug(list_slug)
         file_key = slug_to_key(slug)
-        cached = self.cache.get("recs", key, f"{file_key}.json")
-        if cached is not None and not refresh and not cached.is_stale(TTL_RECS):
-            return cached
+        # Tier-keyed since 2026-09-06. The page was believed to carry no gated field, and
+        # it does: each pick's `featured_test_results` and `ratings` have their own
+        # `unblurred` bit. Untiered, a member was served a two-day-old anonymous copy —
+        # every featured score `tested_gated` — with nothing to say a refresh would help.
+        demand = self.auth.demand_tier("tests", self.auth.cached_probe())
+        variants = self.cache.read_variants("recs", key, key=file_key, min_tier=demand)
+        if variants and not refresh and not variants[0].is_stale(TTL_RECS):
+            return variants[0]
 
         async def do_fetch() -> Envelope:
             async with file_lock(self.cache.root / "locks" / f"rec-{key}-{file_key}.lock"):
-                again = self.cache.get("recs", key, f"{file_key}.json")
-                if again is not None and not refresh and not again.is_stale(TTL_RECS):
-                    return again
-                result = await self.transport.api_get_html(f"/{key}/reviews/best/{slug}")
+                again = self.cache.read_variants("recs", key, key=file_key, min_tier=demand)
+                if again and not refresh and not again[0].is_stale(TTL_RECS):
+                    return again[0]
+                try:
+                    result = await self.transport.api_get_html(f"/{key}/reviews/best/{slug}")
+                except RtingsError:
+                    if again:
+                        self.warn("refresh_failed: serving the cached best-of list")
+                        return again[0]
+                    raise
                 # Two templates are legitimate (see `_extract_recommendation_static`), so
                 # the alarm fires only when NEITHER matches — that, not "the props are
                 # missing", is the drift signal now.
@@ -1797,15 +1894,64 @@ class Repository:
                         errors.RECOMMENDATIONS_MISSING,
                         f"neither best-of template matched /{key}/reviews/best/{slug}",
                     )
+                rows = _recommendation_insider_rows(payload)
+                probe = self.auth.cached_probe()
+                tier = self.auth.write_tier("tests", probe)
+                demoted = False
+                if tier != ANONYMOUS:
+                    probe = await self.auth.session_probe(force=True)
+                    tier = self.auth.write_tier("tests", probe)
+                    demoted = self.auth.should_demote(
+                        tier=tier,
+                        surface="tests",
+                        rows=rows,
+                        insider_ids={FEATURED_ID},
+                        unpublished_product_ids=set(),
+                        probe=probe,
+                    )
+                    if demoted:
+                        tier = ANONYMOUS
+                reason: str | None = None
+                if tier == ANONYMOUS and self.auth.session_may_unblur(probe):
+                    # A best-of page is not bench-scoped, so "anonymous is proven to serve
+                    # this" is read off the silo's current bench — the one its picks are
+                    # ranked on.
+                    info = await self.bench_info(key)
+                    current = info.current_id(await self.schema(key))
+                    reason = self.auth.anonymous_write_refusal(
+                        surface="tests",
+                        rows=rows,
+                        insider_ids={FEATURED_ID},
+                        unpublished_product_ids=set(),
+                        probe=probe,
+                        anonymous_serves=bool(current)
+                        and ObservationStore(self.cache).anonymous_serves(
+                            key, current or "", surface="tests"
+                        ),
+                    )
                 envelope = Envelope(
                     fetched_at=time.time(),
                     source_url=result.url,
-                    cache_tier=ANONYMOUS,
+                    cache_tier=tier,
                     request={"page": f"/{key}/reviews/best/{slug}", "slug": slug},
                     payload=payload,
                     silo=key,
+                    notes={
+                        "has_unblurred_insider": any(r.get("unblurred") for r in rows),
+                    },
                 )
-                self.cache.put(envelope, "recs", key, f"{file_key}.json")
+                if reason is not None:
+                    self._refuse_uncached_warning(
+                        key,
+                        "recs",
+                        reason,
+                        1,
+                        cause=self._label_cause(demoted=demoted, probe=probe),
+                    )
+                    return envelope
+                self.cache.put_variant(envelope, "recs", key, key=file_key)
+                self.cache.prune_variants("recs", key, key=file_key)
+                self.cache.flush_lru()
                 return envelope
 
         return await self._flight.run(f"rec:{key}:{file_key}", do_fetch)

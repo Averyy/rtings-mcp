@@ -17,6 +17,7 @@ alone says "measured, buy a membership" about a test that never applied), *and* 
 from __future__ import annotations
 
 import html as html_module
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -60,6 +61,11 @@ def _iso(timestamp: float) -> str:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+#: RTINGS' spelling of an unbounded reading, as a whole value ("Inf") …
+_INFINITE_RE = re.compile(r"^([+-]?)(?:inf|infinity|∞)$", re.IGNORECASE)
+#: … and at the head of a display string ("Inf : 1").
+_INFINITE_PREFIX_RE = re.compile(r"^([+-]?)(?:inf|infinity|∞)(?![a-z])", re.IGNORECASE)
+
 _NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?")
 _WS_RE = re.compile(r"\s+")
 
@@ -84,6 +90,8 @@ class NormalizedValue:
     value: Any = None
     raw_value: Any = None
     unit: str | None = None
+    #: The unit RTINGS *displays* when it differs from ``unit`` (the unit of ``value``).
+    display_unit: str | None = None
     precision: int | None = None
     score: float | None = None
     #: ``null``, not ``false``, whenever there is no value to gate. ``{value:null,
@@ -104,15 +112,28 @@ class NormalizedValue:
     hierarchy: list[str] | None = None
 
     def to_json(self) -> dict[str, Any]:
+        value = self.value
+        infinite = isinstance(value, float) and math.isinf(value)
         out: dict[str, Any] = {
             "original_id": self.original_id,
             "name": self.name,
             "kind": self.kind,
             "status": self.status,
-            "value": self.value,
+            # JSON has no infinity. The wire says `null` + `is_infinite` rather than a
+            # token some parsers reject and others read as null without comment.
+            "value": None if infinite else value,
             "gated": self.gated,
             "insider_only": self.insider_only,
         }
+        if infinite:
+            out["is_infinite"] = True
+            if value < 0:
+                out["infinity_sign"] = -1
+            out["warning"] = (
+                self.warning
+                or "RTINGS reports this reading as infinite (see `display`); it ranks "
+                "above every finite value"
+            )
         if self.as_of is not None:
             # ISO like every other timestamp in the envelope; an epoch float here made two
             # time formats sit side by side in one object.
@@ -120,6 +141,7 @@ class NormalizedValue:
         for key in (
             "raw_value",
             "unit",
+            "display_unit",
             "precision",
             "score",
             "product_id",
@@ -150,6 +172,14 @@ def coerce_value(definition: TestDef, raw: Any) -> tuple[Any, str | None]:
         text = str(raw).strip()
         if not text:
             return None, None
+        infinite = _INFINITE_RE.match(text)
+        if infinite:
+            # RTINGS reports an OLED's contrast as `value: "Inf"`, `rendered_value: "Inf :
+            # 1"`. Python's float() accepts "Inf" quietly and the JSON layer then emitted
+            # null — so the two best contrast readings on the bench looked like empty rows.
+            # Carried as a real infinity so sorting and filtering rank it where it belongs;
+            # `to_json` says so explicitly rather than serialising a non-standard token.
+            return (-math.inf if infinite.group(1) == "-" else math.inf), None
         try:
             return float(text.replace(",", "")), None
         except ValueError:
@@ -174,6 +204,12 @@ def parse_rendered_number(definition: TestDef, rendered: Any) -> tuple[float | N
     text = strip_html(rendered)
     if not text:
         return None, None
+    infinite = _INFINITE_PREFIX_RE.match(text)
+    if infinite:
+        # "Inf : 1" parsed as 1.0 — the worst possible contrast — for the two OLEDs a
+        # dark-room shopper was comparing. The number regex must never see the unit text
+        # of an infinite reading.
+        return (-math.inf if infinite.group(1) == "-" else math.inf), None
     match = _NUMBER_RE.search(text)
     if not match:
         return None, (
@@ -197,8 +233,17 @@ def _base(
         status=UNKNOWN_ROW_STATUS,
         # Unit and precision are meaningful only on a `number` test, and they are never
         # inferred — they ship in the definition or they are absent.
-        unit=definition.number_display_unit if numeric else None,
-        precision=definition.number_display_precision if numeric else None,
+        # `unit` is the unit of `value`. RTINGS stores a converted test in its INPUT unit
+        # ("centimeters") and displays another ("inches"): Height Adjustment shipped
+        # `value: 10.7` labelled `inches` beside `display: 4.2" (10.7 cm)`. The display
+        # unit is reported separately whenever it differs.
+        unit=definition.value_unit if numeric else None,
+        display_unit=(
+            definition.number_display_unit
+            if numeric and definition.number_display_unit != definition.value_unit
+            else None
+        ),
+        precision=definition.value_precision if numeric else None,
         insider_only=definition.insider_only,
         product_id=product_id,
         hierarchy=schema.ancestry(definition.original_id) if schema else None,

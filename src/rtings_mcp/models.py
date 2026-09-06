@@ -128,14 +128,29 @@ class ValueOut(LeanRow):
     """
 
     original_id: str
-    name: str
-    kind: str
+    #: Absent on rt_ratings rows, where `data.tests[original_id]` carries the definition.
+    name: str | None = None
+    kind: str | None = None
     status: RowStatus
     value: Any = None
     gated: bool | None = None
-    insider_only: bool = False
+    insider_only: bool | None = None
     raw_value: Any = None
-    unit: str | None = None
+    unit: str | None = Field(
+        default=None, description="The unit of `value`. RTINGS may display another unit."
+    )
+    display_unit: str | None = Field(
+        default=None,
+        description="The unit RTINGS shows in `display` when it differs from `unit`.",
+    )
+    is_infinite: bool | None = Field(
+        default=None,
+        description=(
+            "True when RTINGS reports the reading as infinite (an OLED's contrast). `value` "
+            "is null because JSON has no infinity; it ranks above every finite value."
+        ),
+    )
+    infinity_sign: int | None = None
     precision: int | None = None
     score: float | None = None
     product_id: str | None = None
@@ -306,6 +321,18 @@ class RatingsData(Permissive):
     total_matched: int | None = None
     returned: int | None = None
     offset: int | None = None
+    tests: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Definition of every projected test, keyed by original_id: name, kind, unit "
+            "(of `value`), display_unit, precision, insider_only, hierarchy, and "
+            "`score_direction` (derived from RTINGS' own scores in this response: "
+            "higher_is_better / lower_is_better / mixed). Rows carry only the answer."
+        ),
+    )
+    usages: dict[str, dict[str, Any]] | None = Field(
+        default=None, description="Definition of every projected usage, keyed by original_id."
+    )
     groups: list[BenchGroupOut] = Field(default_factory=list)
     notice: str | None = None
 
@@ -382,7 +409,17 @@ class ProductEnvelope(BaseEnvelopeOut):
 class GraphData(Permissive):
     product: dict[str, Any] | None = None
     test: dict[str, Any] | None = None
-    header: list[Any] = Field(default_factory=list)
+    header: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "One label per column of each point: the x axis first, then each series. "
+            "Empty only when RTINGS shipped no labels."
+        ),
+    )
+    axes: dict[str, Any] | None = Field(
+        default=None,
+        description="Axis titles (which carry the unit) and scales as RTINGS declared them.",
+    )
     n_points: int | None = None
     n_points_shipped: int | None = None
     resampled: bool | None = None

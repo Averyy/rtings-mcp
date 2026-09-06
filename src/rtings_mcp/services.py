@@ -7,6 +7,8 @@ Each function returns a finished envelope dict; ``server.py`` only wires them to
 from __future__ import annotations
 
 import functools
+import json
+import math
 import re
 import time
 from typing import Any
@@ -81,6 +83,35 @@ def _observation_provenance(ctx: Context, probe: Any) -> str:
 #: Per-row honesty is NOT traded for size: every served row still says why it has its value.
 #: What changed is how many rows are served by default.
 DEFAULT_RATINGS_LIMIT = 10
+
+#: `word` vocabularies listed in full on rt_schema before the rest is summarised as a count.
+MAX_SCHEMA_WORDS = 24
+
+#: A decimated curve keeps at most this many numbers by default (rows x columns), and never
+#: fewer rows than the minimum. `max_points` and `full` override it.
+GRAPH_MAX_CELLS = 1_600
+GRAPH_MIN_POINTS = 40
+
+#: rt_schema(find=...) lists at most this many matching tests and usages each.
+MAX_FIND_HITS = 40
+
+#: Featured-result kinds with no scalar to report on a best-of page.
+MEDIA_KINDS = frozenset({"picture", "graph", "video", "audio", "3d_model", "download"})
+
+#: Requested `product_ids` that went unmatched are explained one lookup each, up to this.
+MAX_MISSING_ID_LOOKUPS = 5
+
+#: Ids listed for the uncatalogued group; the count is always exact.
+MAX_UNCATALOGUED_IDS = 60
+
+PRODUCT_ID_FILTER_KEYS = frozenset({"product_ids", "product_id", "ids"})
+
+NO_LEAF_NOTE = (
+    "This group has no scored test on this bench. RTINGS covers it either as a 0-10 usage "
+    "score (see `usages` — e.g. a 'Pet Hair Pickup' group is scored as the 'Debris Pickup: "
+    "Pet Hair' usage) or only in review prose, which rt_product(url, group=<this id>, "
+    "include_prose=true) returns."
+)
 MAX_RATINGS_LIMIT = 200
 MAX_PROJECTION_TESTS = 40
 
@@ -88,6 +119,9 @@ MAX_PROJECTION_TESTS = 40
 #: Kept beside :func:`_apply_filters`, which must recognise exactly this set.
 _CATALOG_FILTER_KEYS = frozenset(
     {
+        "product_ids",
+        "product_id",
+        "ids",
         "brand",
         "brand_name",
         "name",
@@ -108,7 +142,9 @@ _COMPARATOR_RE = re.compile(r"^\s*(>=|<=|!=|>|<|=)?\s*(.+?)\s*$")
 
 
 @collects_warnings
-async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
+async def rt_silos(
+    ctx: Context, *, silos: list[str] | None = None, refresh: bool = False
+) -> dict[str, Any]:
     """The routing tool. It reports **observed** enforcement, never ``has_paywall``.
 
     ``has_paywall`` is ``true`` on all 28 silos and therefore carries no information. What
@@ -122,9 +158,12 @@ async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
     rows, envelope = await repo.silos(refresh=refresh)
     store = ObservationStore(ctx.cache)
 
+    wanted = {str(v).strip().lower() for v in (silos or []) if str(v).strip()}
     out = []
     for silo in rows:
         url_part = str(silo.get("url_part"))
+        if wanted and url_part.lower() not in wanted:
+            continue
         bench = silo.get("test_bench") if isinstance(silo.get("test_bench"), dict) else {}
         # The current bench is the one an agent will actually be routed to, so its
         # observation is the one that answers "are this silo's numbers answerable now".
@@ -163,17 +202,42 @@ async def rt_silos(ctx: Context, *, refresh: bool = False) -> dict[str, Any]:
             }
         out.append(entry)
 
-    return Envelope(
-        data={
-            "silos": out,
-            "notice": (
-                "data_completeness is derived from what actually came back unblurred on "
-                "this machine's last SIGNED-OUT fetch of each silo; 'unknown' means nothing "
-                "has been fetched yet, or only while signed in (observed.provenance: "
-                "logged_in), which cannot say what anonymous gets. has_paywall is true for "
-                "all 28 and carries no information."
+    notice = (
+        "data_completeness is derived from what actually came back unblurred on "
+        "this machine's last SIGNED-OUT fetch of each silo; 'unknown' means nothing "
+        "has been fetched yet, or only while signed in (observed.provenance: "
+        "logged_in), which cannot say what anonymous gets. has_paywall is true for "
+        "all 28 and carries no information."
+    )
+    if probe is not None and probe.session == "member":
+        # Every evaluator on a signed-in machine read a column of `unknown`s and concluded
+        # the routing tool had nothing to say. It does: the column describes a session this
+        # one is not.
+        notice += (
+            " THIS SESSION IS SIGNED IN AS AN INSIDER: RTINGS serves insider_only "
+            "measurements and scores to Insiders on every category, so data_completeness "
+            "does not limit this session — treat every category as 'full' and use "
+            "rt_ratings directly."
+        )
+
+    data: dict[str, Any] = {"silos": out, "notice": notice}
+    if wanted and not out:
+        data["notice"] = (
+            f"none of {sorted(wanted)} is an RTINGS category url_part; call rt_silos() with "
+            "no filter for the list. " + notice
+        )
+    if probe is not None and probe.session == "member":
+        # A field, not only prose: the per-row column is about a session this one is not.
+        data["this_session"] = {
+            "session": "member",
+            "access": "full",
+            "meaning": (
+                "signed in as an Insider; insider_only measurements and scores are served "
+                "to this session on every category regardless of data_completeness"
             ),
-        },
+        }
+    return Envelope(
+        data=data,
         session=probe.session if probe else "unknown",
         fetched_at=iso(envelope.fetched_at),
         from_cache=requests_made() == 0,
@@ -196,6 +260,7 @@ async def rt_schema(
     *,
     bench: str | None = None,
     group: str | None = None,
+    find: str | None = None,
     refresh: bool = False,
 ) -> dict[str, Any]:
     """Test/usage definitions, **bounded**.
@@ -222,7 +287,64 @@ async def rt_schema(
     tests = schema.tests_for_bench(bench_id)
     usages = schema.usages_for_bench(bench_id)
 
-    if group is None:
+    if find:
+        # Every shopper agent resolved one leaf id by tree-then-group round trips, three
+        # to six calls for "where is Low-Frequency Extension". One substring search over
+        # the bench's tests and usages replaces that.
+        # Word-wise over the FULL path (category/group/name), ranked by how many words hit:
+        # "print speed" must find the "Printing Speed" group's tests, which are named
+        # "Black Only Text Document", and "cost per page" must land on "Cost-Per-Print".
+        words = _find_words(find)
+        ranked: list[tuple[int, int, dict[str, Any]]] = []
+        for index, test in enumerate(tests):
+            if not (test.is_leaf_value or test.has_graph):
+                continue
+            path = " ".join([*schema.ancestry(test.original_id), test.name]).lower()
+            score = sum(1 for w in words if w in path)
+            if score:
+                ranked.append((-score, index, _test_json(schema, test)))
+        ranked.sort(key=lambda item: item[:2])
+        hits = [entry for _, _, entry in ranked]
+        usage_ranked: list[tuple[int, int, dict[str, Any]]] = []
+        for index, u in enumerate(usages):
+            path = " ".join(filter(None, [u.parent_usage_name, u.name])).lower()
+            score = sum(1 for w in words if w in path)
+            if score:
+                usage_ranked.append(
+                    (
+                        -score,
+                        index,
+                        {
+                            "original_id": u.original_id,
+                            "name": u.name,
+                            "kind": "usage",
+                            "is_sub_usage": u.is_sub_usage,
+                            "parent_usage_name": u.parent_usage_name,
+                        },
+                    )
+                )
+        usage_ranked.sort(key=lambda item: item[:2])
+        usage_hits = [entry for _, _, entry in usage_ranked]
+        data: dict[str, Any] = {
+            "silo": silo,
+            "bench": _bench_json(schema, bench_id),
+            "find": find,
+            "tests": hits[:MAX_FIND_HITS],
+            "usages": usage_hits[:MAX_FIND_HITS],
+            "test_matches": len(hits),
+            "usage_matches": len(usage_hits),
+            "notice": (
+                "Word match over each test's full path (category/group/name) and each "
+                "usage's name, best matches first. `hierarchy` tells same-named tests "
+                "apart; address one by original_id or as 'Group/Name'."
+                if hits or usage_hits
+                else f"no test or usage on this bench has the words of {find!r} in its "
+                "name or group. That is a NAMING miss, not 'RTINGS does not measure it': "
+                "try a synonym (noise -> loudness, lag -> latency), browse rt_schema(silo) "
+                "for the group, or check rt_product prose."
+            ),
+        }
+    elif group is None:
         tree = _schema_tree(schema, tests)
         data: dict[str, Any] = {
             "silo": silo,
@@ -268,6 +390,8 @@ async def rt_schema(
                 if t.is_structure
             ],
         }
+        if not data["tests"]:
+            data["notice"] = NO_LEAF_NOTE
 
     schema_fetched_at, schema_stale = repo.schema_meta(silo)
     return Envelope(
@@ -297,16 +421,20 @@ def _schema_tree(schema: SiloSchema, tests: list[TestDef]) -> list[dict[str, Any
                 continue
             children = build(test.original_id, depth + 1)
             leaves = [t for t in by_parent.get(test.original_id, ()) if t.is_leaf_value]
-            out.append(
-                {
-                    "original_id": test.original_id,
-                    "name": test.name,
-                    "kind": test.kind,
-                    "leaf_test_count": len(leaves),
-                    "insider_only_leaf_count": sum(1 for t in leaves if t.insider_only),
-                    "children": children,
-                }
-            )
+            node: dict[str, Any] = {
+                "original_id": test.original_id,
+                "name": test.name,
+                "kind": test.kind,
+                "leaf_test_count": len(leaves),
+                "insider_only_leaf_count": sum(1 for t in leaves if t.insider_only),
+                "children": children,
+            }
+            if test.kind == "group" and not leaves and not children:
+                # Monitor "Text Clarity" and robot-vacuum "Pet Hair Pickup" are groups with
+                # no scored test at all. Left unmarked, every evaluator drilled into them
+                # (an empty `tests: []`) and then guessed where the content lived.
+                node["note"] = NO_LEAF_NOTE
+            out.append(node)
         return out
 
     return build(None, 0)
@@ -335,10 +463,21 @@ def _test_json(schema: SiloSchema, test: TestDef) -> dict[str, Any]:
         "hierarchy": schema.ancestry(test.original_id),
     }
     if test.kind == "number":
-        out["unit"] = test.number_display_unit
-        out["precision"] = test.number_display_precision
+        # `unit` is the unit of the value rt_ratings/rt_product serve; RTINGS may display
+        # another one (centimeters stored, inches shown).
+        out["unit"] = test.value_unit
+        out["precision"] = test.value_precision
+        if test.number_display_unit and test.number_display_unit != test.value_unit:
+            out["display_unit"] = test.number_display_unit
     if test.words:
-        out["words"] = list(test.words)
+        # A `word` test's vocabulary can be a display string per product — mattress
+        # "Firmness Level" carries ~100 distinct "Medium (46 Pa/mm)" entries — and dumping
+        # all of them made one group's schema mostly enum. The first few show the shape;
+        # the count says how many there really are.
+        words = list(test.words)
+        out["words"] = words[:MAX_SCHEMA_WORDS]
+        if len(words) > MAX_SCHEMA_WORDS:
+            out["words_total"] = len(words)
     return out
 
 
@@ -373,6 +512,7 @@ async def rt_ratings(
     sort: str | None = None,
     limit: int = DEFAULT_RATINGS_LIMIT,
     offset: int = 0,
+    include_uncatalogued: bool = False,
     refresh: bool = False,
 ) -> dict[str, Any]:
     """The catalog plus 0-10 usage scores, with an optional scalar-test projection."""
@@ -510,6 +650,8 @@ async def rt_ratings(
                     )
                     for test_id in test_ids
                 ]
+            _drop_nested_product_id(entry)
+            _slim_value_rows(entry)
             rows_out.append(entry)
         products_by_bench[bench_id] = rows_out
 
@@ -526,6 +668,7 @@ async def rt_ratings(
     warnings = list(repo.warnings)
     filtered, filter_warnings = _apply_filters(flat, filters, schema)
     warnings.extend(filter_warnings)
+    warnings.extend(await _explain_missing_product_ids(repo, silo, filters, flat))
     ordered, sorted_by, sort_warnings = _apply_sort(filtered, sort, schema)
     warnings.extend(sort_warnings)
 
@@ -550,26 +693,45 @@ async def rt_ratings(
             for product_id in generation.product_ids
         }
         orphan_group = _uncatalogued_group(
-            repo, schema, test_ids, catalogued, limit, offset
+            repo,
+            schema,
+            test_ids,
+            catalogued,
+            limit,
+            offset,
+            filters=filters,
+            sort=sort,
+            include_rows=include_uncatalogued or _names_product_ids(filters),
         )
         if orphan_group is not None:
             groups.append(orphan_group)
+
+    data: dict[str, Any] = {
+        "silo": silo,
+        "total_matched": len(ordered),
+        "returned": 0,
+        "offset": offset,
+        "limit_is_per_group": len(groups) > 1,
+        # What every row's `original_id` refers to, ONCE. A value row used to repeat its
+        # test's name, kind, unit, hierarchy and flags — 3 tests x 83 switches fitted 11
+        # products in the budget. Rows now carry the answer; this carries the definition.
+        "tests": _lift_uniform_as_of(_test_legend(schema, test_ids, flat), flat),
+        "usages": _usage_legend(schema, usage_ids),
+        "groups": groups,
+    }
+    # Three of five evaluators lost their first ranking call to the client's tool-result
+    # cap — 70-80 K characters from 15 products and a handful of fields, with no partial
+    # result and nothing to say which knob to turn. The budget is measured on the dict,
+    # which is an upper bound on the wire (the output model drops nulls).
+    warnings.extend(_fit_response_budget(data, groups, ctx.config.max_response_chars))
     window = [row for group in groups for row in group["products"]]
+    data["returned"] = len(window)
     statuses = [
         value.get("status")
         for row in window
         for value in (row.get("tests") or []) + (row.get("usage_scores") or [])
         if value.get("status")
     ]
-
-    data: dict[str, Any] = {
-        "silo": silo,
-        "total_matched": len(ordered),
-        "returned": len(window),
-        "offset": offset,
-        "limit_is_per_group": len(groups) > 1,
-        "groups": groups,
-    }
     notice = gated_notice(statuses)
     if notice:
         data["notice"] = notice
@@ -768,7 +930,8 @@ def _product_json(
         "name": product.get("fullname"),
         "brand": product.get("brand_name"),
         "url": page.get("url"),
-        "released_at": product.get("approximate_released_at"),
+        # "2026-07-01 00:00:00 -0400" is a date; the clock part was 15 bytes per product.
+        "released_at": _date_only(product.get("approximate_released_at")),
         #: The variant RTINGS tested. Results describe THIS one; other sizes in the family
         #: often differ (panel type, brightness), which is why RTINGS names it.
         "tested_variant": tested_variant,
@@ -777,8 +940,15 @@ def _product_json(
         # it to Insiders. Different from the paywall, and a membership lifts it.
         "published": product.get("published"),
         "test_bench": _bench_json(schema, bench_id),
-        "image": product.get("image"),
+        # No image URL: ~100 bytes per product that no comparison reads; rt_product's
+        # `include_media` is where pictures live.
     }
+
+
+def _date_only(value: Any) -> Any:
+    if isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        return value[:10]
+    return value
 
 
 def _usage_json(
@@ -870,6 +1040,264 @@ def _test_value_json(
     return out
 
 
+_FIND_STOPWORDS = frozenset({"per", "of", "the", "a", "an", "and", "or", "in", "for", "to"})
+
+
+def _find_words(text: str) -> list[str]:
+    """Search words: lowercase, stripped of punctuation and connective words, with a light
+    stem so "printing" and "print" meet ("print speed" -> "Printing Speed")."""
+    out: list[str] = []
+    for raw in re.split(r"[^a-z0-9]+", str(text).lower()):
+        if not raw or raw in _FIND_STOPWORDS:
+            continue
+        stem = raw
+        for suffix in ("ing", "es", "s"):
+            if len(stem) > len(suffix) + 2 and stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        out.append(stem)
+    return out or [str(text).strip().lower()]
+
+
+#: Per-test facts that are identical on every product's row and live in the legend instead.
+LEGEND_ROW_KEYS = (
+    "name",
+    "kind",
+    "unit",
+    "display_unit",
+    "precision",
+    "insider_only",
+    "hierarchy",
+    "value_source",
+    "raw_value",
+)
+
+
+def _slim_value_rows(entry: dict[str, Any]) -> None:
+    """Strip a product's test rows down to the answer; `data.tests` carries the rest.
+
+    `raw_value` goes too: `display` is RTINGS' own rendering and `value` the machine
+    number, and the raw string was a third copy.
+    """
+    for row in entry.get("tests") or []:
+        for key in LEGEND_ROW_KEYS:
+            row.pop(key, None)
+
+
+def _test_legend(
+    schema: SiloSchema, test_ids: list[str], rows: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    legend: dict[str, dict[str, Any]] = {}
+    for test_id in test_ids:
+        definition = schema.test(test_id)
+        if definition is None:
+            continue
+        entry = _test_json(schema, definition)
+        entry.pop("words", None)
+        entry.pop("words_total", None)
+        direction = _score_direction(rows, test_id)
+        if direction is not None:
+            entry["score_direction"] = direction
+        legend[test_id] = entry
+    return legend
+
+
+def _lift_uniform_as_of(
+    legend: dict[str, dict[str, Any]], rows: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """When every row of a test came from one slice, say its `as_of` once in the legend.
+
+    A row keeps its own `as_of` only when it differs — a widened query mixing benches, or a
+    row served from an older variant — so the age of an answer is never less visible.
+    """
+    for test_id, entry in legend.items():
+        stamps = {
+            value.get("as_of")
+            for row in rows
+            for value in (row.get("tests") or [])
+            if value.get("original_id") == test_id and value.get("as_of") is not None
+        }
+        if len(stamps) != 1:
+            continue
+        entry["as_of"] = next(iter(stamps))
+        for row in rows:
+            for value in row.get("tests") or []:
+                if value.get("original_id") == test_id:
+                    value.pop("as_of", None)
+    return legend
+
+
+def _usage_legend(schema: SiloSchema, usage_ids: list[str]) -> dict[str, dict[str, Any]]:
+    legend: dict[str, dict[str, Any]] = {}
+    for usage_id in usage_ids:
+        definition = schema.usage(usage_id)
+        if definition is None:
+            continue
+        legend[usage_id] = {
+            "name": definition.name,
+            "is_sub_usage": definition.is_sub_usage,
+            "parent_usage_name": definition.parent_usage_name,
+            "is_unscored": definition.is_unscored,
+        }
+    return legend
+
+
+def _score_direction(rows: list[dict[str, Any]], test_id: str) -> str | None:
+    """Which way is better, read off RTINGS' OWN scores in this response.
+
+    Nothing in the schema says whether a lower "Low-Frequency Extension" (Hz) or a lower
+    "Scratchy Factor" is better; every shopper agent inferred it by eyeballing value
+    against score. This does that arithmetic explicitly and labels it as derived: with at
+    least three rows carrying both a finite value and a score, the sign of their
+    concordance. Ties and mixed signals are `unknown`, never a guess.
+    """
+    pairs: list[tuple[float, float]] = []
+    for row in rows:
+        for entry in row.get("tests") or []:
+            if entry.get("original_id") != test_id or entry.get("status") != TESTED_VISIBLE:
+                continue
+            value, score = entry.get("value"), entry.get("score")
+            if isinstance(value, (int, float)) and isinstance(score, (int, float)):
+                pairs.append((float(value), float(score)))
+    if len(pairs) < 3:
+        return None
+    concordant = discordant = 0
+    for i in range(len(pairs)):
+        for j in range(i + 1, len(pairs)):
+            dv = pairs[i][0] - pairs[j][0]
+            ds = pairs[i][1] - pairs[j][1]
+            if dv == 0 or ds == 0:
+                continue
+            if (dv > 0) == (ds > 0):
+                concordant += 1
+            else:
+                discordant += 1
+    total = concordant + discordant
+    if total == 0:
+        return None
+    if concordant / total >= 0.9:
+        return "higher_is_better"
+    if discordant / total >= 0.9:
+        return "lower_is_better"
+    return "mixed"
+
+
+def _drop_nested_product_id(entry: dict[str, Any]) -> None:
+    """A product's rows all belong to that product; repeating its id on each is bytes.
+
+    Kept per row in the flat surfaces where it varies; here the parent dict carries it.
+    """
+    for row in (entry.get("usage_scores") or []) + (entry.get("tests") or []):
+        row.pop("product_id", None)
+
+
+def _names_product_ids(filters: dict[str, Any] | None) -> bool:
+    return any(str(k).lower() in PRODUCT_ID_FILTER_KEYS for k in (filters or {}))
+
+
+def _requested_product_ids(filters: dict[str, Any] | None) -> set[str]:
+    out: set[str] = set()
+    for key, expression in (filters or {}).items():
+        if str(key).lower() not in PRODUCT_ID_FILTER_KEYS:
+            continue
+        raw = (
+            expression
+            if isinstance(expression, (list, tuple, set))
+            else str(expression).split(",")
+        )
+        out.update(str(v).strip() for v in raw if str(v).strip())
+    return out
+
+
+async def _explain_missing_product_ids(
+    repo: Any, silo: str, filters: dict[str, Any] | None, served: list[dict[str, Any]]
+) -> list[str]:
+    """Say WHY a requested product id is not in the response.
+
+    A three-id `product_ids` request came back with two rows and no explanation; the third
+    was tested on a bench outside the recent set. `matched` shrinking silently reads as
+    "RTINGS never tested it". One resolution per missing id, capped, through the same path
+    rt_product uses.
+    """
+    wanted = _requested_product_ids(filters)
+    if not wanted:
+        return []
+    present = {str(row.get("product_id")) for row in served}
+    warnings: list[str] = []
+    for product_id in sorted(wanted - present)[:MAX_MISSING_ID_LOOKUPS]:
+        try:
+            ref = await repo.resolve_product(product_id, silo)
+        except RtingsError:
+            warnings.append(
+                f"product_ids: no RTINGS {silo} product has id {product_id!r}; it is "
+                "excluded, not unmatched"
+            )
+            continue
+        bench = f"bench {ref.bench_id}" if ref.bench_id else "a bench"
+        warnings.append(
+            f"product_ids: {product_id} ({ref.name or 'unnamed'}) was tested on {bench}, "
+            "outside the benches this call covered, so it has no row here. Pass "
+            f"bench=[{ref.bench_id!r}] to compare within that bench, or "
+            f'rt_product("{product_id}", silo={silo!r}) for its own results.'
+            if ref.bench_id
+            else f"product_ids: {product_id} ({ref.name or 'unnamed'}) is not on the benches "
+            "this call covered; rt_product has its own results."
+        )
+    return warnings
+
+
+#: What the envelope adds around `data` on the wire, generously.
+ENVELOPE_MARGIN_CHARS = 2_000
+
+
+def _wire_size(data: dict[str, Any]) -> int:
+    """The size the CLIENT sees. The SDK renders a tool result as indented JSON (the text
+    content block), not compact JSON — measured 2026-09-06: 41 K compact became 75 K on
+    the wire, and it is the text form the client's cap counts."""
+    return ENVELOPE_MARGIN_CHARS + len(
+        json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    )
+
+
+def _fit_response_budget(
+    data: dict[str, Any], groups: list[dict[str, Any]], budget: int
+) -> list[str]:
+    """Shrink every group's window until the response fits ``budget`` characters.
+
+    Rows are cut from the tail, so the head of each ranking survives intact and paging with
+    ``offset`` continues from exactly where this response stopped. Never below one product
+    per group: a response that is over budget with one product needs fewer fields, not
+    fewer rows, and the warning says so.
+    """
+    size = _wire_size(data)
+    if size <= budget:
+        return []
+    full_size = size
+    widest = max((len(g["products"]) for g in groups), default=0)
+    requested = widest
+    for _ in range(12):
+        if size <= budget or widest <= 1:
+            break
+        keep = min(widest - 1, max(1, int(widest * budget / size * 0.9)))
+        for group in groups:
+            group["products"] = group["products"][:keep]
+        widest = max((len(g["products"]) for g in groups), default=0)
+        size = _wire_size(data)
+    data["truncated_to"] = widest
+    return [
+        f"response_truncated: the full window would have been ~{full_size} characters "
+        f"against a {budget}-character budget (RTINGS_MAX_RESPONSE_CHARS), so "
+        f"each group shows {widest} of the {requested} product(s) it matched. Page with "
+        f"offset={data.get('offset', 0) + widest}, or narrow tests/usages/bench to fit more "
+        "products per call."
+        + (
+            " Even one product exceeds the budget here: request fewer tests or usages."
+            if size > budget
+            else ""
+        )
+    ]
+
+
 def _uncatalogued_group(
     repo: Any,
     schema: SiloSchema,
@@ -877,12 +1305,19 @@ def _uncatalogued_group(
     catalogued: set[str],
     limit: int,
     offset: int,
+    *,
+    filters: dict[str, Any] | None = None,
+    sort: str | None = None,
+    include_rows: bool = False,
 ) -> dict[str, Any] | None:
     """Products with results but no catalog row, reported rather than dropped.
 
     They carry no name, brand, release date or bench — the catalog is where those live — so
     they are a separate group that says so, not silently mixed in with products that have
-    them. Without this a third of the mattress silo is unreachable and reads as untested.
+    them. Resolving four by id (2026-09-06) showed what they are: RTINGS' internal copies
+    and retests ("LG G5 OLED (Copy)", "Boring Mattress - TBF 1.0.1"), kept out of the
+    listing on purpose. So the group is a summary of ids by default — a shopper must not be
+    handed a "(Copy)" as a recommendation — and rows only on request.
 
     It takes ``offset`` for the same reason it takes ``limit``: the window is per group, and
     a group that honours ``limit`` but ignores ``offset`` re-serves its first page forever
@@ -904,29 +1339,50 @@ def _uncatalogued_group(
                 normalize_table_row(row, definition, schema=schema).to_json()
             )
         if values:
-            products.append(
-                {
-                    "product_id": product_id,
-                    "name": None,
-                    "test_bench": None,
-                    "tests": values,
-                    "usage_scores": [],
-                }
-            )
+            entry = {
+                "product_id": product_id,
+                "name": None,
+                "test_bench": None,
+                "tests": values,
+                "usage_scores": [],
+            }
+            _drop_nested_product_id(entry)
+            _slim_value_rows(entry)
+            products.append(entry)
+    # The caller's predicates apply here too. A catalog filter (brand, name, variant) can
+    # match nothing — these rows have none of those — which is the right answer; a value
+    # filter or a `product_ids` filter can match, which is the whole point of serving them.
+    # Their warnings are dropped: the catalogued group already reported the same field.
+    products, _ = _apply_filters(products, filters, schema)
+    products, _, _ = _apply_sort(products, sort, schema)
     if not products:
         return None
-    return {
+    ids = [str(p["product_id"]) for p in products]
+    group: dict[str, Any] = {
         "test_benches": [],
         "is_recent_set": False,
         "coverage": "uncatalogued",
         "matched": len(products),
-        "products": products[offset : offset + limit],
-        "notice": (
-            f"{len(products)} product(s) returned measurements but appear in no RTINGS "
-            "catalog listing, so their name, brand and bench are unknown here. Their values "
-            "are real. Use rt_search or rt_product with the product_id to identify them."
-        ),
+        "product_ids": ids[:MAX_UNCATALOGUED_IDS],
+        # Every evaluator found nameless rows unusable for a recommendation and paid for
+        # them on every call — 41 of mattress's 110, 23 of headphones'. The ids alone say
+        # "these exist and were measured"; the rows come on request.
+        "products": products[offset : offset + limit] if include_rows else [],
     }
+    group["notice"] = (
+        f"{len(products)} product(s) returned measurements but are absent from RTINGS' "
+        "product listing, so their name, brand and bench are unknown here (ids in "
+        "`product_ids`). Sampled across categories, these are RTINGS' internal copies and "
+        "retests (names ending in '(Copy)' or 'TBF <bench version>'), not products for "
+        "sale, so do not recommend one. rt_product(<id>, silo=...) identifies any of them. "
+        + (
+            "Their rows are included because you asked for them."
+            if include_rows
+            else "Pass include_uncatalogued=true, or filters={'product_ids': [...]}, to "
+            "rank their values here."
+        )
+    )
+    return group
 
 
 def _build_groups(
@@ -1003,6 +1459,18 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
             return "usage", text
         return None
     lowered = text.lower()
+    # "Group/Name" (or "Category/Group/Name") addresses a leaf whose bare name repeats:
+    # headphones has three leaves called "RMS Deviation From Target", one per band.
+    path = [part.strip().lower() for part in lowered.split("/") if part.strip()]
+    leaf_name = path[-1] if path else lowered
+    qualifiers = path[:-1]
+
+    def qualified(test: TestDef) -> bool:
+        if not qualifiers:
+            return True
+        chain = [name.lower() for name in schema.ancestry(test.original_id)]
+        return len(chain) >= len(qualifiers) and chain[-len(qualifiers) :] == qualifiers
+
     # A LEAF wins a name tie with a section. headphones publishes both a `Sound Profile`
     # group and a `Sound Profile` graph test, and plain dict order decided which one a
     # caller got — so `rt_graph(test="Sound Profile")` failed with "kind='group'; only
@@ -1010,12 +1478,32 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
     # `filters` and `sort` hit the same tie. (`_group_name_or_id` prefers the other way
     # round, deliberately: `group=` addresses a section.)
     for want_structure in (False, True):
-        for test in schema.tests.values():
-            if test.name.lower() == lowered and test.is_structure is want_structure:
-                return "test", test.original_id
-    for usage in schema.usages.values():
-        if usage.name.lower() == lowered:
-            return "usage", usage.original_id
+        matches = [
+            test
+            for test in schema.tests.values()
+            if test.name.lower() == leaf_name
+            and test.is_structure is want_structure
+            and qualified(test)
+        ]
+        if len(matches) == 1:
+            return "test", matches[0].original_id
+        if len(matches) > 1:
+            # Silently taking the first one ranked "the bass band" for a caller who asked
+            # for the treble band. Say which there are, in the form that disambiguates.
+            options = sorted(
+                "/".join([*schema.ancestry(t.original_id), t.name]) + f" ({t.original_id})"
+                for t in matches
+            )
+            raise RtingsError(
+                errors.UNKNOWN_TEST,
+                f"{text!r} names {len(matches)} tests on this bench; pass the original_id "
+                "or qualify it as 'Group/Name'",
+                details={"matches": options},
+            )
+    if not qualifiers:
+        for usage in schema.usages.values():
+            if usage.name.lower() == lowered:
+                return "usage", usage.original_id
     return None
 
 
@@ -1041,6 +1529,11 @@ def _comparable(entry: dict[str, Any] | None, kind: str) -> Any:
         return None
     if kind == "usage":
         return entry.get("score")
+    if entry.get("is_infinite"):
+        # The wire carries `value: null` for an infinite reading (JSON has no infinity);
+        # the comparison must not read that as "unknown", or "-Contrast" puts the OLEDs
+        # last and ">10000" excludes them.
+        return -math.inf if entry.get("infinity_sign") == -1 else math.inf
     return entry.get("value")
 
 
@@ -1060,6 +1553,17 @@ def _apply_filters(
     out = rows
     for key, expression in filters.items():
         lowered = str(key).lower()
+        if lowered in PRODUCT_ID_FILTER_KEYS:
+            # "Compare exactly these two" had no direct path: callers guessed a
+            # `name_contains` substring after an rt_search. Ids are identity.
+            raw = (
+                expression
+                if isinstance(expression, (list, tuple, set))
+                else str(expression).split(",")
+            )
+            wanted_ids = {str(v).strip() for v in raw if str(v).strip()}
+            out = [r for r in out if str(r.get("product_id")) in wanted_ids]
+            continue
         if lowered in {"brand", "brand_name"}:
             wanted = str(expression).lower()
             out = [r for r in out if str(r.get("brand") or "").lower() == wanted]
@@ -1324,6 +1828,8 @@ async def rt_product(
     include_prose: bool = False,
     include_media: bool = False,
     include_verdicts: bool = False,
+    include_scoring: bool = False,
+    include_results: bool = True,
     consume_preview: bool = False,
     refresh: bool = False,
 ) -> dict[str, Any]:
@@ -1363,7 +1869,9 @@ async def rt_product(
         # of failing outright.
         if not (include_verdicts and exc.code == errors.PREVIEW_EXHAUSTED):
             raise
-        return await _verdicts_only(ctx, ref, exc, refresh=refresh)
+        return await _verdicts_only(
+            ctx, ref, exc, refresh=refresh, include_scoring=include_scoring
+        )
     # Read the probe AFTER the fetch, not before: `repo.review` re-probes when it spent a
     # preview, and `previews_remaining` in the envelope must reflect the spend it just made.
     probe = ctx.auth.cached_probe()
@@ -1547,8 +2055,11 @@ async def rt_product(
             "Numbers on this path are parsed from RTINGS' own display strings and are "
             "therefore display-rounded; rt_ratings returns the unrounded machine values."
         ),
-        "results": values,
-        "result_count": len(values),
+        # `include_results=false` is for the caller who wants the words (verdicts, prose)
+        # without the 243-row table: one such call was 129 K characters, 75 K of them
+        # rows the caller already had from rt_ratings.
+        "results": values if include_results else [],
+        "result_count": len(values) if include_results else 0,
     }
     if include_prose:
         data["summary"] = {
@@ -1589,7 +2100,10 @@ async def rt_product(
                 ref.silo, ref.product_id, refresh=refresh
             )
             shaped = _verdicts_from(
-                verdict_env.payload or {}, schema, unpublished=is_unpublished
+                verdict_env.payload or {},
+                schema,
+                unpublished=is_unpublished,
+                include_scoring=include_scoring,
             )
             data.update(shaped)
             # These scores are usage ratings by another name, so they answer the question
@@ -1663,7 +2177,11 @@ def _tested_variant_from_review(product_obj: dict[str, Any]) -> str | None:
 
 
 def _verdicts_from(
-    review: dict[str, Any], schema: SiloSchema, *, unpublished: bool = False
+    review: dict[str, Any],
+    schema: SiloSchema,
+    *,
+    unpublished: bool = False,
+    include_scoring: bool = False,
 ) -> dict[str, Any]:
     """RTINGS' words about a product: per-usage verdicts, pros/cons, and the score recipe.
 
@@ -1797,7 +2315,9 @@ def _verdicts_from(
     return {
         "verdicts": verdicts,
         "highlights": highlights,
-        "scoring": scoring,
+        # The score recipe was a third of every verdicts response (9 K of 25 K on the X90L:
+        # 11 usages x up to 8 weighted components) and no shopper question needed it.
+        "scoring": scoring if include_scoring else None,
         # **Its own key, never `notice`.** `data["notice"]` already carries the reason the
         # measurements are null — including "this review is Early Access", which must never
         # be replaced by paywall framing. `dict.update` would have overwritten it.
@@ -1807,12 +2327,18 @@ def _verdicts_from(
             "numbers are null."
             if not has_access
             else "RTINGS' own words, alongside the measurements."
-        ),
+        )
+        + ("" if include_scoring else " Pass include_scoring=true for each score's recipe."),
     }
 
 
 async def _verdicts_only(
-    ctx: Context, ref: Any, cause: RtingsError, *, refresh: bool
+    ctx: Context,
+    ref: Any,
+    cause: RtingsError,
+    *,
+    refresh: bool,
+    include_scoring: bool = False,
 ) -> dict[str, Any]:
     """Serve RTINGS' words when the measurements could not be bought.
 
@@ -1847,7 +2373,10 @@ async def _verdicts_only(
     # unknown; treating that as "published" is the existing behaviour everywhere else.
     data.update(
         _verdicts_from(
-            verdict_env.payload or {}, schema, unpublished=ref.published is False
+            verdict_env.payload or {},
+            schema,
+            unpublished=ref.published is False,
+            include_scoring=include_scoring,
         )
     )
     repo.warn(f"measurements unavailable ({cause.code}); serving verdicts only")
@@ -1944,9 +2473,16 @@ async def rt_graph(
             "curve coverage is per-(product, bench), not schema-wide",
         )
 
-    header = envelope.payload.get("header") or []
+    header = _graph_header(envelope.payload)
     points = envelope.payload.get("data") or []
     target = max_points or ctx.config.graph_max_points
+    # A curve is `max_points` ROWS, and a row can be 13 columns wide (headphones' sound
+    # profile carries left/right, five re-seats and five targets): 200 x 13 was 60 K
+    # characters on the wire. Bound the cells, not just the rows, unless the caller named
+    # a point count or asked for the raw series.
+    width = max((len(row) for row in points if isinstance(row, list)), default=2)
+    if max_points is None and not full:
+        target = max(GRAPH_MIN_POINTS, min(target, GRAPH_MAX_CELLS // max(width, 2)))
     served, decimated = (points, False) if full else _decimate(points, target)
 
     data = {
@@ -1957,6 +2493,7 @@ async def rt_graph(
             "kind": definition.kind,
         },
         "header": header,
+        "axes": _graph_axes(envelope.payload),
         "n_points": len(served),
         "n_points_shipped": len(points),
         "resampled": decimated,
@@ -2062,7 +2599,13 @@ async def rt_search(ctx: Context, query: str, *, count: int = 10) -> dict[str, A
 
 @collects_warnings
 async def rt_recommendations(
-    ctx: Context, silo: str, *, list: str | None = None, refresh: bool = False
+    ctx: Context,
+    silo: str,
+    *,
+    list: str | None = None,
+    limit: int | None = None,
+    include_reasoning: bool = True,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """The silo's best-of lists, or one ranked list with its reasoning.
 
@@ -2102,9 +2645,12 @@ async def rt_recommendations(
     envelope = await repo.recommendation(silo, list, refresh=refresh)
     payload = envelope.payload or {}
     picks = []
+    cap = max(1, int(limit)) if limit is not None else None
     for rank, pick in enumerate(payload.get("product_recommendations") or [], start=1):
         if not isinstance(pick, dict):
             continue
+        if cap is not None and len(picks) >= cap:
+            break
         product = pick.get("product") if isinstance(pick.get("product"), dict) else {}
         page = product.get("page") if isinstance(product.get("page"), dict) else {}
         picks.append(
@@ -2112,12 +2658,20 @@ async def rt_recommendations(
                 "rank": rank,
                 "title": pick.get("title"),
                 "subtitle": pick.get("subtitle"),
-                "reasoning": pick.get("description"),
+                # Nine tenths of a list's bytes are this prose; a caller re-reading the
+                # numbers, or scanning candidates, can leave it out.
+                "reasoning": _strip_wrappers(pick.get("description"))
+                if include_reasoning
+                else None,
                 "product_id": _str_or_none(pick.get("product_id") or product.get("id")),
                 "name": product.get("fullname"),
                 "url": page.get("url"),
                 "overall_score": product.get("preferred_scoreset_score"),
                 "variants": product.get("variants_rendered_list"),
+                # The SKU the list actually recommends ("Samsung QN65S95HAFXZA" on the
+                # 65-inch list). The review's tested size can differ — a "Best 65-inch"
+                # pick was reviewed at 77" — and only rt_product says which.
+                "recommended_sku": _sku_name(pick),
                 "featured_results": _featured_results(pick.get("featured_test_results")),
                 "usage_scores": _featured_ratings(pick.get("ratings")),
             }
@@ -2143,8 +2697,11 @@ async def rt_recommendations(
             "title": payload.get("title"),
             "url": payload.get("url"),
             "updated_at": payload.get("updated_at"),
-            "introduction": payload.get("introduction"),
+            "introduction": payload.get("introduction") if include_reasoning else None,
             "picks": picks,
+            "pick_count": sum(
+                1 for p in (payload.get("product_recommendations") or []) if isinstance(p, dict)
+            ),
             "notice": (
                 "Ranking and reasoning are RTINGS' editorial picks, served anonymously. The "
                 "featured numbers beside each pick follow the same blur rules as everywhere "
@@ -2175,6 +2732,10 @@ def _featured_results(rows: Any) -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         stub = row.get("test") if isinstance(row.get("test"), dict) else {}
+        if stub.get("kind") in MEDIA_KINDS:
+            # A featured picture or graph carries no value here — 5 of 11 rows per pick
+            # on the PS5 list were all-null media stubs.
+            continue
         status = row.get("status")
         unblurred = bool(row.get("unblurred"))
         if status == "na":
@@ -2224,3 +2785,70 @@ def _featured_ratings(rows: Any) -> list[dict[str, Any]]:
 
 def _strip(value: Any) -> str | None:
     return strip_html(value)
+
+
+_WRAPPER_TAG_RE = re.compile(r"</?div\b[^>]*>", re.IGNORECASE)
+
+
+def _strip_wrappers(html: Any) -> Any:
+    """Drop presentational `<div>` wrappers from a pick's reasoning.
+
+    One pick's prose arrived inside eight nested attribute-less divs, a leftover of the
+    page component; the paragraphs and links inside are kept as RTINGS wrote them.
+    """
+    if not isinstance(html, str):
+        return html
+    return _WRAPPER_TAG_RE.sub("", html).strip()
+
+
+def _sku_name(pick: dict[str, Any]) -> str | None:
+    sku = pick.get("sku") if isinstance(pick.get("sku"), dict) else None
+    if sku is None:
+        skus = pick.get("skus") if isinstance(pick.get("skus"), list) else []
+        sku = next((s for s in skus if isinstance(s, dict)), None)
+    return _str_or_none(sku.get("fullname")) if sku else None
+
+
+def _graph_header(payload: dict[str, Any]) -> list[str]:
+    """Column labels for the served points, from whichever shape the CDN sent.
+
+    Two shapes ship (measured 2026-09-06). The older Google-Charts one carries a literal
+    ``header`` list. The newer one has **no** ``header`` key: the series labels live at
+    ``options.series[].label`` ("Left", "Right", "Target: Rtings.com", …) and the x column
+    is ``options.x.title``. Reading only the first left every headphones and monitor curve
+    with ``header: []`` — 13 unlabelled columns that no caller could interpret.
+    """
+    header = payload.get("header")
+    if isinstance(header, list) and header:
+        return [str(h) for h in header]
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    series = options.get("series") if isinstance(options.get("series"), list) else []
+    labels = [
+        str(entry.get("label"))
+        for entry in series
+        if isinstance(entry, dict) and entry.get("label") not in (None, "")
+    ]
+    # The Google-Charts shape also has a `series` list, indexed "0", "1", … — those are
+    # styling slots, not names, and its real header was handled above.
+    if not labels or all(label.isdigit() for label in labels):
+        return []
+    x_axis = options.get("x") if isinstance(options.get("x"), dict) else {}
+    return [str(x_axis.get("title") or "x"), *labels]
+
+
+def _graph_axes(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Axis titles and scales as RTINGS declared them. Titles carry the unit."""
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+
+    def axis(*keys: str) -> dict[str, Any] | None:
+        for key in keys:
+            value = options.get(key)
+            if isinstance(value, dict) and (value.get("title") or value.get("scale")):
+                return {"title": value.get("title"), "scale": value.get("scale")}
+        return None
+
+    x_axis = axis("x", "hAxis")
+    y_axis = axis("y", "vAxis")
+    if x_axis is None and y_axis is None:
+        return None
+    return {"x": x_axis, "y": y_axis}

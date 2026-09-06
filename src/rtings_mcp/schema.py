@@ -38,6 +38,11 @@ class TestDef:
     number_display_precision: int | None
     number_prefix: str | None
     words: tuple[str, ...]
+    #: The unit of the machine `value`, when RTINGS converts for display (measured
+    #: 2026-09-06 on monitor: input "centimeters", display "inches"; input "kilograms",
+    #: display "pounds"). `None` means the value is already in the display unit.
+    number_input_unit: str | None = None
+    number_input_precision: int | None = None
     #: The category a top-level ``group`` belongs to, recovered from **list position**.
     #:
     #: Measured 2026-09-04: every one of TV's 69 ``category``/``group`` rows carries
@@ -54,6 +59,17 @@ class TestDef:
     @property
     def is_leaf_value(self) -> bool:
         return self.kind in LEAF_VALUE_KINDS
+
+    @property
+    def value_unit(self) -> str | None:
+        """The unit of the machine ``value``: the input unit when RTINGS converts."""
+        return self.number_input_unit or self.number_display_unit
+
+    @property
+    def value_precision(self) -> int | None:
+        if self.number_input_unit and self.number_input_precision is not None:
+            return self.number_input_precision
+        return self.number_display_precision
 
     @property
     def is_structure(self) -> bool:
@@ -208,7 +224,8 @@ def _parse_test(raw: dict[str, Any]) -> TestDef | None:
         words = tuple(collected)
     return TestDef(
         original_id=original_id,
-        name=str(raw.get("name") or ""),
+        # One keyboard-switch test ships as "Keystroke Data Used For Smoothness\t".
+        name=str(raw.get("name") or "").strip(),
         kind=str(raw.get("kind") or ""),
         has_score=_as_bool(raw.get("has_score")),
         # Absent means "not gate-able", which is the safe reading: the flag marks a test
@@ -223,6 +240,8 @@ def _parse_test(raw: dict[str, Any]) -> TestDef | None:
         number_prefix=_as_opt_str(raw.get("number_prefix")),
         words=words,
         derived_category_id=_as_opt_str(raw.get("derived_category_id")),
+        number_input_unit=_as_opt_str(raw.get("number_input_unit")),
+        number_input_precision=_as_opt_int(raw.get("number_input_precision")),
     )
 
 
@@ -341,10 +360,22 @@ def parse_column_options(silo: str, payload: dict[str, Any]) -> SiloSchema:
     )
 
 
+#: Version 2 (2026-09-06) added `number_input_unit`/`number_input_precision`: without them
+#: a converted test's value is labelled with the DISPLAY unit (10.7 "inches" for 10.7 cm).
+CACHEABLE_VERSION = 2
+
+
+def cacheable_is_current(raw: Any) -> bool:
+    return isinstance(raw, dict) and raw.get("cacheable_version") == CACHEABLE_VERSION
+
+
 def schema_to_cacheable(schema: SiloSchema) -> dict[str, Any]:
     """A compact serialization of the parsed schema. Storing the parse (not the 357 KB raw
     body) keeps ``rt_schema`` cheap; the raw body is not needed again once parsed."""
     return {
+        # Bumped when the cacheable form gains a field the normalizer depends on: a cached
+        # copy without it must be refetched, not served for the rest of its 30-day TTL.
+        "cacheable_version": CACHEABLE_VERSION,
         "silo": schema.silo,
         "silo_id": schema.silo_id,
         "tested_products_count": schema.tested_products_count,
@@ -363,6 +394,8 @@ def schema_to_cacheable(schema: SiloSchema) -> dict[str, Any]:
                 "number_display_unit": t.number_display_unit,
                 "number_display_precision": t.number_display_precision,
                 "number_prefix": t.number_prefix,
+                "number_input_unit": t.number_input_unit,
+                "number_input_precision": t.number_input_precision,
                 "words": list(t.words),
                 "derived_category_id": t.derived_category_id,
             }

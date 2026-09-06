@@ -73,17 +73,36 @@ mcp = MCPServer(
         "Comparisons are scoped to a test bench, RTINGS' methodology version. Results are "
         "nested by bench and never flattened into one cross-bench ranking.\n\n"
         "HOW TO ANSWER A QUESTION:\n"
-        "1. rt_silos() -> is this category 'full' or 'gated'?\n"
-        "2. Need a test's id? rt_schema(silo) gives the category tree; "
-        "rt_schema(silo, group=<id>) gives that category's tests with their original_ids.\n"
-        "3. FULL category: rt_ratings(silo, tests=[ids], sort=<id or name>, filters=...) "
-        "ranks and compares directly.\n"
-        "4. GATED category: the numbers are withheld, so use rt_product(url, "
+        "1. rt_silos() -> is this category 'full' or 'gated'? If any envelope says "
+        "session: 'member', the user is a signed-in Insider and EVERY category is full for "
+        "them — skip the gated branch entirely.\n"
+        "2. rt_recommendations(silo) FIRST for a shopping question: RTINGS publishes "
+        "best-of lists by use, size and budget (pet-hair, by-size/65-inch, side-sleepers, "
+        "budget…) with their reasoning — usually the ranking you were about to derive by "
+        "hand. A list answers ONE angle: for a multi-attribute ask (quiet AND wireless AND "
+        "low-profile) take candidates from the lists and confirm every attribute with "
+        "rt_ratings, since a list's #1 can fail the attribute the list is not about.\n"
+        "3. Need a test's id? rt_schema(silo) gives the category tree; "
+        "rt_schema(silo, group=<id>) gives that group's tests with their original_ids. A "
+        "group with leaf_test_count 0 is scored as a usage or described only in prose.\n"
+        "4. FULL category: rt_ratings(silo, tests=[ids], sort=<id or name>, filters=...) "
+        "ranks and compares. Keep it small: pass bench=[current bench id] (the default "
+        "spans 2-4 benches), a few tests, limit<=10. Responses over ~40K characters are "
+        "trimmed per group with a `response_truncated` warning — page with offset. To "
+        "compare specific products use filters={'product_ids': [...]}.\n"
+        "5. GATED category, not signed in: the numbers are withheld, so use rt_product(url, "
         "include_verdicts=true) for RTINGS' written verdict, pros and cons on one product, "
         "rt_recommendations(silo) for their ranking with reasoning, and rt_graph for the "
         "curves that are published anyway.\n"
-        "5. filters and sort accept a test's original_id OR its name; `variant` filters by "
-        "the size RTINGS tested.\n\n"
+        "6. filters and sort accept a test's original_id OR its name; `variant` filters by "
+        "the size RTINGS tested. Each sort ranks ONE field; blend two by calling twice.\n"
+        "7. RTINGS publishes no prices. Nothing here can answer 'cheapest' or 'under $X'; "
+        "say so rather than guess. Spec-sheet facts RTINGS does not measure (IP/water "
+        "rating, OLED burn-in/longevity, warranty) are not tests either: they appear only "
+        "in verdict/recommendation prose, if at all.\n"
+        "8. RTINGS tests ONE size per model: `tested_variant` on every product row is the "
+        "SKU the numbers describe. A 'Best 65-inch' pick may have been measured at 77 "
+        "inches; say so when it matters.\n\n"
         "SIGNING IN: rt_auth_status() reports what credential is stored and whether it is "
         "live. If the user ASKS to sign in or connect their membership, call rt_sign_in() and "
         "then rt_auth_status(wait_s=45), repeating while sign_in is 'waiting' — a human takes "
@@ -139,16 +158,19 @@ async def _run(model: Any, coro: Any) -> Any:
 
 
 @mcp.tool()
-async def rt_silos(refresh: bool = False) -> SilosEnvelope:
+async def rt_silos(silos: list[str] | None = None, refresh: bool = False) -> SilosEnvelope:
     """List RTINGS' categories and, per category, whether its numbers are answerable now.
 
     Call this first. `data_completeness` is derived from what actually came back unblurred
-    on this machine's last fetch of that category: `full` (values and scores served),
-    `gated` (withheld without a membership), `partial`, or `unknown` (nothing fetched yet,
-    or only fetched while signed in, which cannot say what anonymous gets).
-    `has_paywall` is true for all 28 and tells you nothing.
+    on this machine's last SIGNED-OUT fetch of that category: `full` (values and scores
+    served), `gated` (withheld without a membership), `partial`, or `unknown` (nothing
+    fetched yet, or only fetched while signed in, which cannot say what anonymous gets).
+    When the session is a signed-in Insider, `data.this_session.access` is `full` and the
+    column does not apply. `has_paywall` is true for all 28 and tells you nothing.
+
+    `silos=["tv"]` returns just those rows.
     """
-    return await _run(SilosEnvelope, services.rt_silos(_ctx(), refresh=refresh))
+    return await _run(SilosEnvelope, services.rt_silos(_ctx(), silos=silos, refresh=refresh))
 
 
 @mcp.tool()
@@ -156,20 +178,27 @@ async def rt_schema(
     silo: SiloParam,
     bench: str | None = None,
     group: str | None = None,
+    find: str | None = None,
     refresh: bool = False,
 ) -> SchemaEnvelope:
     """What RTINGS measures in a category: test definitions, units, hierarchy, usages.
 
     With no `group`, returns the group/category tree with per-group counts. Pass a group's
-    `original_id` as `group` to get that group's leaf tests with their units and precision.
-    `original_id` is the stable key everywhere in this server — names repeat across groups.
+    `original_id` (or name) as `group` to get that group's leaf tests with their units and
+    precision. **`find="input lag"` searches every test and usage on the bench by name** in
+    one call — use it instead of walking the tree when you know roughly what the test is
+    called. `original_id` is the stable key everywhere in this server — names repeat across
+    groups (headphones has three "RMS Deviation From Target"); a repeated name must be
+    passed as its id or qualified as "Group/Name".
 
     `insider_only: true` marks a test *gate-able*, not gated. Whether it is actually served
     depends on the category; `rt_ratings` reports what came back.
     """
     return await _run(
         SchemaEnvelope,
-        services.rt_schema(_ctx(), silo, bench=bench, group=group, refresh=refresh),
+        services.rt_schema(
+            _ctx(), silo, bench=bench, group=group, find=find, refresh=refresh
+        ),
     )
 
 
@@ -183,9 +212,32 @@ async def rt_ratings(
     sort: str | None = None,
     limit: int = 10,
     offset: int = 0,
+    include_uncatalogued: bool = False,
     refresh: bool = False,
 ) -> RatingsEnvelope:
     """Rank and compare products in a category: catalog, 0-10 usage scores, and measurements.
+
+    **Size.** Responses are trimmed to a character budget per call: when a window would
+    exceed it, each group keeps the head of its ranking and the envelope carries a
+    `response_truncated` warning with the offset to continue from. To fit more products per
+    call, pass `bench=[<current bench id>]` (the default spans every recent bench), fewer
+    `tests`/`usages`, or `limit<=10`.
+
+    **Shape.** Each product's `tests` rows carry only the answer (`original_id`, `status`,
+    `value`, `gated`, `score`, `display`, `as_of`); `data.tests[original_id]` holds the
+    definition once — name, kind, `unit` (of `value`), `display_unit`, hierarchy — plus
+    `score_direction`, derived from RTINGS' own scores in this response (`lower_is_better`
+    for input lag or a scratchy factor). `sort` on a test ranks by its value, never its
+    score.
+
+    **Specific products.** `filters={"product_ids": ["39008", "63313"]}` compares exactly
+    those (ids from rt_search); `name_contains` is a substring match and can catch siblings.
+
+    **Uncatalogued products.** Some products return measurements but are absent from
+    RTINGS' product listing, so they have no name or brand here. They are summarised as a
+    `coverage: "uncatalogued"` group carrying only `product_ids`; pass
+    `include_uncatalogued=true` (or filter by their ids) to rank their values, and
+    `rt_product(<id>, silo=...)` to identify one.
 
     `tests` takes test `original_id`s (from `rt_schema`) and projects those measurements
     onto every product. `usages` likewise for the 0-10 usage scores, defaulting to the
@@ -208,7 +260,8 @@ async def rt_ratings(
     `name_contains`, `published`, and `variant` — the size RTINGS tested, e.g.
     `{"variant": "65"}` for 65-inch TVs. Most categories have no "Size" test, so `variant`
     is the only way to ask that. `sort` takes a test/usage id or name (prefix `-` for
-    descending, `+` for ascending); it defaults to release date.
+    descending, `+` for ascending; **no prefix means descending**, so prefix `+` for
+    lower-is-better metrics like input lag or dE); it defaults to release date.
 
     **A field you filter or sort on is fetched for you** — you do not also have to list it in
     `tests=`. Names and ids are interchangeable everywhere: `tests=["Thickness"]` and
@@ -232,6 +285,7 @@ async def rt_ratings(
             sort=sort,
             limit=limit,
             offset=offset,
+            include_uncatalogued=include_uncatalogued,
             refresh=refresh,
         ),
     )
@@ -245,20 +299,28 @@ async def rt_product(
     include_prose: bool = False,
     include_media: bool = False,
     include_verdicts: bool = False,
+    include_scoring: bool = False,
+    include_results: bool = True,
     consume_preview: bool = False,
     refresh: bool = False,
 ) -> ProductEnvelope:
     """Every test result for one product, each row carrying its place in RTINGS' hierarchy.
 
     `product` takes a review URL, a numeric RTINGS product id, or a model name to search
-    for. Pass `group` (a group `original_id`) to bound the response; `include_prose` adds
-    RTINGS' per-test commentary and `include_media` adds image/video URLs.
+    for. Pass `group` (a group `original_id`) to bound the response: it scopes `results`
+    and the per-group `commentary`, while the review-level `summary`, `verdicts` and
+    `scoring` are whole-review by nature. `include_prose` adds RTINGS' commentary (HTML,
+    with site-relative links) and `include_media` adds image/video URLs. A group with no
+    scored tests (rt_schema `leaf_test_count: 0`, e.g. monitor "Text Clarity") returns
+    `results: []` by design — its content is the prose.
 
     `include_verdicts=true` (one extra request) adds RTINGS' per-usage written verdicts
-    ("good for mixed usage because..."), their pros and cons, and how each usage score is
-    composed. **On a category that withholds measurements this is the substantive answer** —
+    ("good for mixed usage because...") and their pros and cons; `include_scoring=true` adds
+    how each usage score is composed (weights per component — rarely needed, a third of the
+    response). **On a category that withholds measurements this is the substantive answer** —
     the verdicts are served even when every number comes back null, so use it whenever
-    `rt_silos` says a category is `gated`.
+    `rt_silos` says a category is `gated`. `include_results=false` drops the measurement
+    rows when you only want the words (a full review is ~240 rows).
 
     Numbers on this path are parsed from RTINGS' display strings and are display-rounded
     (each is labelled `value_source: "rendered"`). When you need the unrounded value, use
@@ -278,6 +340,8 @@ async def rt_product(
             include_prose=include_prose,
             include_media=include_media,
             include_verdicts=include_verdicts,
+            include_scoring=include_scoring,
+            include_results=include_results,
             consume_preview=consume_preview,
             refresh=refresh,
         ),
@@ -301,6 +365,9 @@ async def rt_graph(
     Curves are resampled by SELECTING points RTINGS shipped — never interpolated, averaged
     or smoothed. `full=true` returns the raw series. No headline number is derived from the
     curve.
+
+    Each point is `[x, series1, series2, ...]`; `header` names the columns in that order and
+    `axes` carries the axis titles (with units) and scales as RTINGS declared them.
     """
     return await _run(
         GraphEnvelope,
@@ -320,17 +387,36 @@ async def rt_search(query: str, count: int = 10) -> SearchEnvelope:
 
 @mcp.tool(name="rt_recommendations")
 async def rt_recommendations(
-    silo: SiloParam, list: str | None = None, refresh: bool = False
+    silo: SiloParam,
+    list: str | None = None,
+    limit: int | None = None,
+    include_reasoning: bool = True,
+    refresh: bool = False,
 ) -> RecommendationsEnvelope:
     """RTINGS' editorial best-of rankings for a category, with their reasoning.
 
     With no `list`, returns the category's discovered best-of lists. Pass one of those
     `list` values to get that ranking: ordered picks, each with RTINGS' own explanation of
-    why it is there. The ranking and prose are served regardless of membership.
+    why it is there (`reasoning`, HTML), the SKU the list recommends (`recommended_sku`),
+    and two blocks of numbers RTINGS chose to feature for that list: `featured_results`
+    (tests AND group scores — on this surface a group carries a 0-10 score, unlike
+    rt_ratings) and `usage_scores`. Both follow the same `status`/`gated` rules as
+    everywhere else; `gated: null` means there was no value to gate, and a spec flag's
+    `score` is RTINGS' 0-10 score for that spec. `limit` caps the picks (`pick_count` is
+    the full length); `include_reasoning=false` drops the prose (most of the bytes) when
+    you only want the picks and their numbers. The ranking and prose are served regardless
+    of membership; the featured numbers are blurred like everything else.
     """
     return await _run(
         RecommendationsEnvelope,
-        services.rt_recommendations(_ctx(), silo, list=list, refresh=refresh),
+        services.rt_recommendations(
+            _ctx(),
+            silo,
+            list=list,
+            limit=limit,
+            include_reasoning=include_reasoning,
+            refresh=refresh,
+        ),
     )
 
 

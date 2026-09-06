@@ -957,8 +957,12 @@ it goes to `tests/_unassigned/{original_id}.json` (bench-less by construction) w
 **never silently dropped** — a dropped row becomes a false `not_tested` later. **An unassigned row is
 a structural property of the API, NOT evidence the catalog is behind** (corrected 2026-09-03,
 `RECON.md` §12.2: 9 TV product ids returned rows while appearing in no catalog across all 18 benches,
-every row blurred), so it must not mark that silo's catalog stale. The rows are served in their own
-`coverage: uncatalogued` group, carrying real values but no name, brand or bench. A `coverage_stale`
+every row blurred), so it must not mark that silo's catalog stale. The rows are summarised as a
+`coverage: uncatalogued` group of ids — rows only on `include_uncatalogued=true` or a `product_ids`
+filter — because resolving four of them by id (2026-09-06) showed they are RTINGS' internal copies
+and retests ("LG G5 OLED (Copy)", "Boring Mattress - TBF 1.0.1"), kept out of the listing on
+purpose and never something to recommend. `rt_product(<id>, silo=…)` identifies one through the
+compare tool's `product` block (`product_page__url`, `fullname`, `test_bench`). A `coverage_stale`
 miss refreshes the **catalog first**, or the refetched slice is filed against the same stale
 generation and the miss repeats forever.
 

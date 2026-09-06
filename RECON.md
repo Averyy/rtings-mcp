@@ -1124,8 +1124,27 @@ benches, and every one of their rows is blurred.
 **This is structural, not staleness.** A row for a product the catalog does not carry is
 therefore *not* evidence the catalog is behind — an earlier draft of the warning said it was.
 Such rows are filed under `tests/_unassigned/` rather than dropped (a dropped row becomes a
-false `not_tested` if the catalog later catches up) and are not reported as results, because
-there is no catalog row to attach them to.
+false `not_tested` if the catalog later catches up) and are summarised as a `coverage:
+uncatalogued` group of ids, never ranked by default.
+
+**Identified 2026-09-06 (member session), by resolving four of them through
+`app/side_by_side__review`, which answers by bare id and whose `product` block carries
+`product_page__url`, `fullname`, `silo__url_part` and `product_page__early_access`:**
+
+| id | silo | `fullname` | `product_page__url` | bench |
+|---|---|---|---|---|
+| 108448 | tv | LG G5 OLED (Copy) | `/tv/reviews/lg/g5-oled-copy` | 197 |
+| 125243 | tv | Samsung QN90F (Copy) | `/tv/reviews/samsung/qn90f-copy` | 210 |
+| 138806 | mattress | Boring Hybrid (Spring Layer Firmness Baseline) | `/mattress/reviews/boring/hybrid-copy` | 236 |
+| 113724 | mattress | Boring Mattress - TBF 1.0.1 | `/mattress/reviews/boring/mattress-copy` | 49 |
+| 113606 | mattress | Sleep On Latex Pure Green Organic - TBF 1.0.1 | `/mattress/reviews/sleep-on-latex/pure-green-organic-tbf-1-0-1` | 202 |
+
+They are RTINGS' **internal copies, baselines and retests** ("(Copy)", "TBF 1.0.1"), kept
+out of `products_list` on purpose, not for-sale products. The counts per silo are large —
+41 of mattress's 110, 23 of headphones', 9 of tv's — so ranking them beside real products
+handed a shopper "LG G5 OLED (Copy)" as a pick. The §12.10 guess below that the 9 TV ids
+are early-access reviews is therefore **wrong**: a member's `products_list` for
+`[227,210,197]` returned 119 (118 + the one Early Access LG B6E), not 127.
 
 ### 12.3 `table_tool__ratings` rows carry NO `status` field
 
@@ -1252,10 +1271,9 @@ So the state means **"the data exists and is published for Insiders, but was wit
   `tested_gated` rows and no warning.
 
 `silo.reviews_in_progress_count` is **9** for TV while only **2** early-access products appear
-in the recent-bench catalog — which matches the 9 orphan ids of §12.2 exactly. Those are very
-likely early-access reviews the catalog omits entirely. **Phase 0 should check whether a
-member's `products_list` returns 127 rather than 118**; if it does, `catalog/` becomes
-tier-dependent and is currently untiered.
+in the recent-bench catalog — which matches the 9 orphan ids of §12.2 numerically, and that
+is a coincidence: **resolved 2026-09-06, the 9 are internal "(Copy)" retests (§12.2), and a
+member's `products_list` returned 119, not 127.** `catalog/` stays untiered.
 
 ### 12.11 `products_list` omits a third of the mattress silo, and those products are UNBLURRED
 

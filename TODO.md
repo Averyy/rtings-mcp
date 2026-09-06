@@ -27,7 +27,8 @@ account — see below.
   what the anonymous-label guard exists for.
 - **Committed 2026-09-06 as v0.2.0** — the sign-in, the guards and the docs are on `main`.
   The project still forbids committing unasked.
-- **The real cache contains no member data** (verified: no `.member.`/`.free.` files). Everything in
+- **The real cache now holds member data** — `tests/*/141.member.*` for tv, written 2026-09-06
+  by a signed-in `rt_ratings` through this session's own MCP connection. Everything else in
   `~/.cache/rtings-mcp` is anonymous slices from 2026-09-04/05.
 - **Any MCP server process you find running is STALE** — they predate today's code. Restart the
   client before testing through MCP, or you will be testing the old build.
@@ -40,30 +41,52 @@ guard with a real cookie on disk (12/16, zero drift); the write guard live on tv
 both flag states; member-tier writes and cache hits; **382 offline + 9 live tests**, the offline
 suite hermetic even under a hostile environment.
 
-### What has NOT been tested — in priority order
+### Verified 2026-09-06 over the MCP wire (a fresh stdio server per run, scratch cache)
 
-1. **The MCP tool layer with a member session.** Everything today ran through `services.*`
-   in-process. `server.py`'s wrappers and the Pydantic output models have **never serialized an
-   unblurred member response**. The null-dropping / `ALWAYS_PRESENT` rules are exactly the kind of
-   thing that behaves differently when `value` is suddenly non-null. Restart MCP, then call
-   `rt_ratings("tv", tests=[...])` and check the wire shape.
-2. **`rt_silos()` after a member fetch — the highest-value regression check.** This is the bug
-   fixed today: a member's fetch of a gated silo used to make `rt_silos` report it `full`
-   permanently. Fetch tv signed in, then call `rt_silos()`; **tv must still report gated**. If it
-   says `full`, observation provenance has regressed.
-3. **`rt_product` as a member on a gated silo.** Untested. It should return unblurred values, and
-   the metered-preview path should no-op (a member has no meter: `access_limit: null`), so it must
-   not demand `consume_preview`.
-4. **`rt_graph` / `rt_recommendations` / `rt_search` / `rt_schema` signed in.** None has ever run
-   with a cookie attached. Curves are known byte-identical (§13.6), so `rt_graph` is low risk.
-5. **Expired-session behaviour — never observed in any state.** What happens when the cookie dies:
-   does the probe classify `expired`, does write-time demotion fire, does `rt_sign_in` offer
-   renewal *without* `force`? Simulable by storing a garbage cookie; do it in a scratch config dir.
-6. **q2 and capture (o) — need a FREE account.** A membership cannot answer them; see below.
-7. **q16 — does enforcement hold on legacy benches and the review path for a member?** All member
-   measurement so far is the current bench (227) on the table path.
-8. **Two MCP clients sharing one cache dir** with member data — the cross-process lock and the
-   preview budget have never been exercised concurrently against real member responses.
+Driven with a stdio `ClientSession` against `.venv/bin/rtings-mcp`, so `server.py`'s wrappers
+and the Pydantic output models serialized every response. Then repeated once through this
+session's own installed MCP connection.
+
+1. **Member wire shape** — `rt_ratings("tv", tests=["141","461"])`: `value: 5658.0, gated:
+   false, insider_only: true, score: 9.7, unit, display, as_of` all present; `data_tier:
+   unblurred`; `scores_available.insider_tests: available`. Usage scores on the ratings surface
+   come back `tested_visible` with a real score, including on an Early Access product, which is
+   correct for a member. Files land as `tests/<bench>/<test>.member.<ts>.json`.
+2. **`rt_silos()` after a member fetch** — tv reports `unknown`, `observed/tv.json` carries
+   `provenance: logged_in` on every bench. After an anonymous-provenance observation (the
+   expired-cookie run below) tv reports `gated`. Provenance has not regressed.
+3. **`rt_product` as a member** — X90L, LG C5, TCL QM8K: 14/14 rows `tested_visible` with
+   values, `previews_remaining: null`, no `consume_preview` demanded, `reviews/<id>.member.*`
+   written. An Early Access review (`/early-access/tv/reviews/lg/b6e-oled`) serves values with
+   the Early Access notice saying 14 came through; the same call on a dead cookie serves
+   `review_unpublished, gated: null`, never `tested_gated`.
+4. **`rt_graph`, `rt_recommendations`, `rt_search`, `rt_schema` signed in** — all fine; graphs
+   134/22 points unresampled, the 65-inch best-of list gives 6 picks with reasoning.
+5. **Expired session** (garbage cookie in a scratch `RTINGS_CONFIG_DIR`) — probe classifies
+   `expired`; `rt_auth_status` says so; every write is labelled `anonymous`; the garbage cookie
+   is left on disk untouched (no anonymous re-mint written back); `rt_product` serves the gated
+   shape with no preview demand. `rt_sign_in`'s guard (read, not run — it opens a window)
+   refuses only when the cached probe says `logged_in`, so a rejected cookie renews without
+   `force`.
+6. **`RTINGS_MEMBER_MODE=0` with the live cookie** — rows served unblurred, nothing written,
+   two `not_cached` warnings naming the real cause, `rt_silos` tv stays `unknown`.
+7. **Legacy bench / review path for a member (q16, partial)** — `rt_ratings("tv",
+   bench=["197"], tests=["141"])` serves bench-197 values unblurred; every review-path product
+   tried is on 227, so the review path on a legacy bench is still unobserved.
+8. **Two clients, one cache dir** — two stdio servers issuing the same uncached `rt_ratings` +
+   `rt_product` simultaneously: both succeed, exactly one file per key, the second served
+   `from_cache: true`. The `uncatalogued` warning fires only on the fetching call; the group
+   itself is in both responses.
+
+Also confirmed: the credential rotates on disk with every run (`stored_at` advances), and the
+`rt_auth_status` `session: unknown` on a fresh process is by design (no probe yet) — the first
+data tool fills it in.
+
+### Still NOT tested
+
+1. **q2 and capture (o) — need a FREE account.** A membership cannot answer them; see below.
+2. **The review path on a legacy bench for a member** (the other half of q16).
+3. **`rt_sign_in` end to end on an expired cookie** — the guard was read, not run.
 
 ### Cautions
 

@@ -1129,11 +1129,21 @@ async def test_products_with_results_but_no_catalog_row_are_surfaced(ctx):
     orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
     assert orphan, "a product with results and no catalog row must not vanish"
     assert orphan[0]["matched"] == 1
+    # Compact by default (2026-09-06): every evaluator found nameless rows unusable for a
+    # recommendation and paid for them on every call. The ids say "these exist and were
+    # measured"; the rows come on request.
+    assert orphan[0]["product_ids"] == ["99"]
+    assert orphan[0]["products"] == []
+    assert "include_uncatalogued=true" in orphan[0]["notice"]
+    assert "rt_product(<id>, silo=...)" in orphan[0]["notice"]
+
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], include_uncatalogued=True)
+    orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
     row = orphan[0]["products"][0]
     assert row["product_id"] == "99"
     assert row["name"] is None  # the catalog is where names live
     assert row["tests"][0]["value"] == "8k"
-    assert "no RTINGS catalog listing" in orphan[0]["notice"]
+    assert "product_id" not in row["tests"][0], "the parent dict carries it"
 
 
 async def test_the_uncatalogued_group_pages_like_every_other_group(ctx):
@@ -1156,8 +1166,12 @@ async def test_the_uncatalogued_group_pages_like_every_other_group(ctx):
         assert group["matched"] == 3, "the count must keep describing the whole population"
         return [p["product_id"] for p in group["products"]]
 
-    first = await services.rt_ratings(ctx, "tv", tests=["208"], limit=1, offset=0)
-    second = await services.rt_ratings(ctx, "tv", tests=["208"], limit=1, offset=1)
+    first = await services.rt_ratings(
+        ctx, "tv", tests=["208"], limit=1, offset=0, include_uncatalogued=True
+    )
+    second = await services.rt_ratings(
+        ctx, "tv", tests=["208"], limit=1, offset=1, include_uncatalogued=True
+    )
     assert orphan(first) == ["97"]
     assert orphan(second) == ["98"], "offset must advance this group's window too"
 
@@ -1691,7 +1705,7 @@ async def test_pros_and_cons_are_separated_by_priority(ctx):
 async def test_the_scoring_recipe_is_reported(ctx):
     ctx.transport.payloads["app/side_by_side__review"] = SBS_PAYLOAD
     out = await services.rt_product(
-        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True, include_scoring=True
     )
     mixed = next(s for s in out["data"]["scoring"] if s["name"] == "Mixed Usage")
     assert mixed["components"][0]["weight_pct"] == 40.0
@@ -1705,7 +1719,7 @@ async def test_a_sub_usage_scoring_component_resolves_to_a_name(ctx):
     mapping is in `product_score_sets` and the name is in the schema."""
     ctx.transport.payloads["app/side_by_side__review"] = SBS_PAYLOAD
     out = await services.rt_product(
-        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True, include_scoring=True
     )
     mixed = next(s for s in out["data"]["scoring"] if s["name"] == "Mixed Usage")
     sub = mixed["components"][1]
@@ -1837,7 +1851,7 @@ async def test_a_scoring_component_that_is_a_raw_test_resolves_to_a_name(ctx):
     ctx.transport.payloads["app/side_by_side__review"] = payload
 
     out = await services.rt_product(
-        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True
+        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True, include_scoring=True
     )
     mixed = next(s for s in out["data"]["scoring"] if s["name"] == "Mixed Usage")
     component = mixed["components"][0]
@@ -2185,7 +2199,7 @@ async def test_uncatalogued_rows_get_the_same_guard(flag_off_ctx):
     ctx = flag_off_ctx
     member_probe(ctx)
     ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "99")
-    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[], include_uncatalogued=True)
     orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
     assert orphan and orphan[0]["products"][0]["product_id"] == "99"
     assert orphan[0]["products"][0]["tests"][0]["value"] == 5000.0
@@ -2208,7 +2222,7 @@ async def test_uncatalogued_rows_are_written_at_the_response_tier_with_member_mo
     written `member` beside the catalogued ones, with no warning, and the next call hits."""
     member_probe(ctx)
     ctx.transport.payloads["table_tool__test_results"] = unblurred_insider_payload("1", "99")
-    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[], include_uncatalogued=True)
     orphan = [g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued"]
     assert orphan and orphan[0]["products"][0]["tests"][0]["value"] == 5000.0
     assert not any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
@@ -2216,7 +2230,9 @@ async def test_uncatalogued_rows_are_written_at_the_response_tier_with_member_mo
     assert tiers_of(ctx, "tests", "_unassigned", "11") == {"member"}, "same tier as the rest"
 
     before = ctx.transport.calls.count("table_tool__test_results")
-    again = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[])
+    again = await services.rt_ratings(
+        ctx, "tv", tests=["11"], usages=[], include_uncatalogued=True
+    )
     assert ctx.transport.calls.count("table_tool__test_results") == before, "a real hit"
     assert not any(w.startswith("not_cached:") for w in again["warnings"]), again["warnings"]
     orphan = [g for g in again["data"]["groups"] if g.get("coverage") == "uncatalogued"]
@@ -2304,3 +2320,563 @@ async def test_the_tier_is_labelled_from_a_re_probe_taken_after_the_fetch(ctx):
     assert ctx.auth.cached_probe().session == "expired"
     assert "member" not in tiers_of(ctx, "tests", "227", "11")
     assert "member" not in tiers_of(ctx, "tests", "_unassigned", "11")
+
+
+# -- the shopper round (2026-09-06) -----------------------------------------------------
+# Five agents answered real shopping questions through the MCP wire. Each test below is one
+# thing they tripped over.
+
+
+async def test_product_ids_filter_selects_exactly_those_products(ctx):
+    """"Compare exactly these two" had no path: agents guessed a `name_contains` substring
+    after an rt_search, which matched siblings. Ids are identity, catalogued or not."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"product_ids": ["2"]})
+    assert out["data"]["total_matched"] == 1
+    assert values(out, "2")["name"] == "Alpha Two"
+    assert not any("filter_unavailable" in w for w in out["warnings"]), out["warnings"]
+
+    # An uncatalogued id asked for by name gets its rows without a second flag.
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["208"], filters={"product_ids": "99"}
+    )
+    orphan = next(g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued")
+    assert [p["product_id"] for p in orphan["products"]] == ["99"]
+    assert out["data"]["total_matched"] == 0, "the catalogued group matched nothing"
+
+
+async def test_nested_rows_do_not_repeat_the_product_id(ctx):
+    """Rows under a product all belong to it; repeating the id per row was bytes."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"])
+    row = values(out, "1")
+    assert row["product_id"] == "1"
+    assert all("product_id" not in t for t in row["tests"])
+    assert all("product_id" not in u for u in row["usage_scores"])
+
+
+async def test_an_oversized_window_is_trimmed_with_a_warning_not_dropped(ctx):
+    """Three of five agents lost their first ranking call to the client's tool-result cap:
+    no partial result, nothing saying which knob to turn. The server trims per group from
+    the tail and says where to page from."""
+    ctx.transport.payloads["table_tool__products_list"] = {
+        "data": {"products": [product(str(i), f"Alpha {i}") for i in range(1, 40)]}
+    }
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row(str(i), "208", unblurred=True, value="4k", score=9.0)
+                for i in range(1, 40)
+            ]
+        }
+    }
+    ctx.config.max_response_chars = 6_000
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], limit=30)
+    assert out["error"] is None
+    group = out["data"]["groups"][0]
+    assert group["matched"] == 39, "the count still describes the whole population"
+    served = len(group["products"])
+    assert 1 <= served < 30
+    assert out["data"]["truncated_to"] == served
+    assert out["data"]["returned"] == served
+    warning = next(w for w in out["warnings"] if w.startswith("response_truncated"))
+    assert f"offset={served}" in warning
+    assert "RTINGS_MAX_RESPONSE_CHARS" in warning
+    # The head of the ranking survives: the default sort is release date desc, which the
+    # fixture ties, so the first served row is the first row of the untrimmed window.
+    ctx.config.max_response_chars = 400_000
+    full = await services.rt_ratings(ctx, "tv", tests=["208"], limit=30)
+    assert [p["product_id"] for p in group["products"]] == [
+        p["product_id"] for p in full["data"]["groups"][0]["products"][:served]
+    ]
+    assert "truncated_to" not in full["data"]
+
+
+async def test_graph_header_and_axes_come_from_the_series_labels_when_there_is_no_header(ctx):
+    """Headphones and monitor curves ship with no `header` key: 13 unlabelled columns that
+    two agents could not interpret. The labels are at options.series[].label."""
+
+    async def new_shape(path):
+        return {
+            "data": [[20, 9.8, 10.7], [40, 9.2, 10.1]],
+            "options": {
+                "series": [{"label": "Left"}, {"label": "Right"}],
+                "x": {"title": "Frequency (Hz)", "scale": "log"},
+                "y": {"title": "Amplitude (dBr)", "scale": "linear"},
+            },
+        }
+
+    ctx.transport.cdn_get_json = new_shape
+    out = await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "13907")
+    assert out["error"] is None, out["error"]
+    assert out["data"]["header"] == ["Frequency (Hz)", "Left", "Right"]
+    assert out["data"]["axes"] == {
+        "x": {"title": "Frequency (Hz)", "scale": "log"},
+        "y": {"title": "Amplitude (dBr)", "scale": "linear"},
+    }
+
+
+async def test_the_google_charts_graph_shape_keeps_its_own_header(ctx):
+    """The older shape has a literal header AND a `series` list indexed "0", "1", … —
+    styling slots, not names. They must not replace the header."""
+
+    async def old_shape(path):
+        return {
+            "header": ["Input Stimulus", "PQ EOTF Target"],
+            "data": [[0, 0], [1, 1]],
+            "options": {
+                "series": [{"label": "0"}, {"label": "1"}],
+                "hAxis": {"title": "Signal Input Stimulus"},
+            },
+        }
+
+    ctx.transport.cdn_get_json = old_shape
+    out = await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "13907")
+    assert out["data"]["header"] == ["Input Stimulus", "PQ EOTF Target"]
+    assert out["data"]["axes"]["x"] == {"title": "Signal Input Stimulus", "scale": None}
+
+
+async def test_a_word_vocabulary_is_capped_with_its_true_count():
+    """Mattress "Firmness Level" carries ~100 distinct display strings; dumping them all made
+    the group's schema mostly enum."""
+    from dataclasses import replace
+
+    from rtings_mcp.schema import parse_column_options
+    from rtings_mcp.services import MAX_SCHEMA_WORDS, _test_json
+
+    schema = parse_column_options(
+        "tv", json.loads((FIXTURES / "column_options_min.json").read_text())
+    )
+    test = schema.test("208")
+    many = replace(test, words=tuple(f"Word {i}" for i in range(MAX_SCHEMA_WORDS + 10)))
+    out = _test_json(schema, many)
+    assert len(out["words"]) == MAX_SCHEMA_WORDS
+    assert out["words_total"] == MAX_SCHEMA_WORDS + 10
+    assert "words_total" not in _test_json(schema, test)
+
+
+async def test_rt_product_identifies_an_uncatalogued_id_through_the_compare_tool(ctx):
+    """The uncatalogued group's notice sent callers to rt_product by id, and rt_product
+    answered `unknown_product` — a dead end the server itself recommended. The compare tool
+    resolves a bare id and its `product` block carries the review URL."""
+    payload = json.loads(json.dumps(SBS_PAYLOAD))
+    payload["data"]["review"]["product"] = {
+        "id": "99",
+        "fullname": "Alpha Ninety-Nine",
+        "product_page__url": "/tv/reviews/alpha/alpha-ninety-nine",
+        "silo__url_part": "tv",
+        "product_page__early_access": False,
+    }
+    ctx.transport.payloads["app/side_by_side__review"] = payload
+    ref = await ctx.repo.resolve_product("99", silo="tv")
+    assert ref.name == "Alpha Ninety-Nine"
+    assert ref.url_path == "/tv/reviews/alpha/alpha-ninety-nine"
+    assert ref.bench_id == "227"
+    assert ref.published is True
+    assert "app/side_by_side__review" in ctx.transport.calls
+    # And the tool itself no longer dead-ends on the id its own notice recommended.
+    out = await services.rt_product(ctx, "99", silo="tv")
+    assert out["error"] is None, out["error"]
+
+    # A catalogued id never takes the detour.
+    calls_before = ctx.transport.calls.count("app/side_by_side__review")
+    assert (await ctx.repo.resolve_product("1", silo="tv")).name == "Alpha One"
+    assert ctx.transport.calls.count("app/side_by_side__review") == calls_before
+
+
+async def test_recommendation_lists_are_tier_keyed(ctx, tmp_path):
+    """A best-of page carries each pick's `unblurred` bits, so it is session-dependent. It
+    was cached untiered, and a member was served a two-day-old anonymous copy — every
+    featured score `tested_gated` — with nothing saying a refresh would help."""
+    anon = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert anon["data"]["picks"][0]["featured_results"][0]["status"] == "tested_gated"
+    files = sorted(p.name for p in (ctx.config.cache_dir / "recs" / "tv").iterdir())
+    assert any(".anonymous." in f for f in files), files
+
+    # Now a member. The anonymous file no longer satisfies the demand tier, so the page is
+    # fetched again — and, unblurred this time, written under `member`.
+    member_probe(ctx)
+    ctx.transport.rec_html = REC_HTML.replace(
+        _props_fragment('"unblurred": false'), _props_fragment('"unblurred": true')
+    ).replace(
+        _props_fragment('"rendered_value": null'),
+        _props_fragment('"rendered_value": "5000:1"'),
+    )
+    assert ctx.transport.rec_html != REC_HTML, "the fixture fragment must have matched"
+    calls_before = len(ctx.transport.calls)
+    member = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert len(ctx.transport.calls) > calls_before, "a member must not be served the anon copy"
+    assert member["data"]["picks"][0]["featured_results"][0]["status"] == "tested_visible"
+    files = sorted(p.name for p in (ctx.config.cache_dir / "recs" / "tv").iterdir())
+    assert any(".member." in f for f in files), files
+
+    # And the member copy is a hit for the member.
+    calls_before = len(ctx.transport.calls)
+    again = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert len(ctx.transport.calls) == calls_before
+    assert again["from_cache"] is True
+
+
+def _props_fragment(json_text: str) -> str:
+    """The HTML-escaped form of a JSON fragment inside a `data-props` attribute."""
+    return html_module.escape(json_text, quote=True)
+
+
+async def test_a_blurred_best_of_page_under_a_member_probe_is_demoted(ctx):
+    """The probe and the fetch race here too: a member probe with a page that came back
+    blurred must not be stamped `member`, or the nulls are served for the full TTL."""
+    member_probe(ctx)
+    out = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market")
+    assert out["data"]["picks"][0]["featured_results"][0]["status"] == "tested_gated"
+    files = sorted(p.name for p in (ctx.config.cache_dir / "recs" / "tv").iterdir())
+    assert all(".member." not in f for f in files), files
+
+
+async def test_a_group_with_no_scored_test_says_where_its_content_lives(ctx):
+    """Monitor "Text Clarity" and robot-vacuum "Pet Hair Pickup" are groups with no leaf
+    test. Left unmarked, agents drilled into them and then guessed."""
+    from dataclasses import replace
+
+    from rtings_mcp.services import NO_LEAF_NOTE, _schema_tree
+
+    schema = await ctx.repo.schema("tv")
+    tests = schema.tests_for_bench("227")
+    empty = replace(
+        schema.test("900"),
+        original_id="901",
+        name="Text Clarity",
+        parent_original_id=None,
+        derived_category_id=None,
+    )
+    tree = _schema_tree(schema, [*tests, empty])
+    by_name = {node["name"]: node for node in tree}
+    assert by_name["Text Clarity"]["leaf_test_count"] == 0
+    assert by_name["Text Clarity"]["note"] == NO_LEAF_NOTE
+    assert all("note" not in node for node in tree if node["name"] != "Text Clarity")
+
+    # And a `group=` drilldown that finds no scored test says the same thing.
+    out = await services.rt_schema(ctx, "tv", group="13907")
+    assert out["data"]["tests"] == []
+    assert out["data"]["notice"] == NO_LEAF_NOTE
+
+
+async def test_rt_silos_tells_a_member_the_completeness_column_is_not_about_them(ctx):
+    member_probe(ctx)
+    out = await services.rt_silos(ctx)
+    assert "SIGNED IN AS AN INSIDER" in out["data"]["notice"]
+    anon_ctx_notice = (await services.rt_silos(ctx))["data"]["notice"]
+    assert anon_ctx_notice.startswith("data_completeness is derived")
+
+
+async def test_the_scoring_recipe_is_opt_in(ctx):
+    """A third of every verdicts response was the weight recipe, and no shopper question
+    used it. The notice says how to get it."""
+    ctx.transport.payloads["app/side_by_side__review"] = SBS_PAYLOAD
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True)
+    assert out["data"]["scoring"] is None
+    assert "include_scoring=true" in out["data"]["verdicts_notice"]
+    assert out["data"]["verdicts"], "the verdicts themselves are unaffected"
+
+
+# -- the shopper round, batch 1 (2026-09-06) --------------------------------------------
+
+
+async def test_an_infinite_reading_is_carried_honestly_on_both_paths(ctx):
+    """RTINGS reports an OLED's contrast as `value: "Inf"`, `rendered_value: "Inf : 1"`.
+    The table path turned that into a null that read as an empty row; the review path
+    parsed the "1" out of the unit text and served 1.0 — the worst possible contrast — for
+    the two best TVs a dark-room shopper was comparing."""
+    from rtings_mcp.normalize import parse_rendered_number
+
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                {**make_test_row("1", "11", unblurred=True, value="Inf", score=10.0),
+                 "rendered_value": "Inf : 1"},
+                make_test_row("2", "11", unblurred=True, value="5000", score=8.0),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=[], sort="-11")
+    rows = [p for g in out["data"]["groups"] for p in g["products"] if p.get("name")]
+    first = rows[0]["tests"][0]
+    assert rows[0]["product_id"] == "1", "infinite ranks above every finite value"
+    assert first["status"] == "tested_visible"
+    assert first["value"] is None and first["is_infinite"] is True
+    assert first["display"] == "Inf : 1"
+    assert first["gated"] is False
+    assert "infinite" in first["warning"]
+    assert "Infinity" not in json.dumps(out), "JSON has no infinity; the wire must not carry one"
+
+    matched = await services.rt_ratings(
+        ctx, "tv", tests=["11"], usages=[], filters={"11": ">10000"}
+    )
+    assert [p["product_id"] for g in matched["data"]["groups"] for p in g["products"]] == ["1"]
+
+    schema = await ctx.repo.schema("tv")
+    value, warning = parse_rendered_number(schema.test("11"), "Inf : 1")
+    assert value == float("inf") and warning is None
+    value, _ = parse_rendered_number(schema.test("11"), "-Inf")
+    assert value == float("-inf")
+    value, _ = parse_rendered_number(schema.test("11"), "49,776 : 1")
+    assert value == 49776.0
+
+
+async def test_a_converted_test_reports_the_unit_of_its_value(ctx):
+    """Monitor Height Adjustment: `value: 10.7` labelled "inches" beside `display: 4.2"
+    (10.7 cm)`. The machine value is in `number_input_unit`; the display unit is another."""
+    from dataclasses import replace
+
+    from rtings_mcp.normalize import normalize_table_row
+    from rtings_mcp.schema import (
+        cacheable_is_current,
+        schema_from_cacheable,
+        schema_to_cacheable,
+    )
+    from rtings_mcp.services import _test_json
+
+    schema = await ctx.repo.schema("tv")
+    converted = replace(
+        schema.test("11"),
+        number_input_unit="centimeters",
+        number_input_precision=1,
+        number_display_unit="inches",
+        number_display_precision=1,
+    )
+    row = normalize_table_row(
+        make_test_row("1", "11", unblurred=True, value="10.7"), converted, schema=schema
+    ).to_json()
+    assert row["value"] == 10.7
+    assert row["unit"] == "centimeters"
+    assert row["display_unit"] == "inches"
+
+    definition = _test_json(schema, converted)
+    assert definition["unit"] == "centimeters" and definition["display_unit"] == "inches"
+    plain = _test_json(schema, schema.test("11"))
+    assert "display_unit" not in plain
+
+    # The cacheable form round-trips the input unit, and an older form is not current.
+    schema.tests["11"] = converted
+    cacheable = schema_to_cacheable(schema)
+    assert cacheable_is_current(cacheable)
+    back = schema_from_cacheable(cacheable)
+    assert back.test("11").value_unit == "centimeters"
+    cacheable.pop("cacheable_version")
+    assert not cacheable_is_current(cacheable)
+
+
+async def test_an_old_cacheable_schema_is_refetched_not_served(ctx):
+    """A cached parse from before the unit fields were stored would mislabel every
+    converted value for the rest of its 30-day TTL."""
+    await ctx.repo.schema("tv")
+    calls = ctx.transport.calls.count("table_tool__column_options")
+    path = ctx.config.cache_dir / "schema" / "tv.json"
+    stored = json.loads(path.read_text())
+    stored["payload"].pop("cacheable_version")
+    path.write_text(json.dumps(stored))
+    ctx.repo._schema_memo.clear()
+    await ctx.repo.schema("tv")
+    assert ctx.transport.calls.count("table_tool__column_options") == calls + 1
+
+
+async def test_a_requested_product_id_that_is_absent_is_explained(ctx):
+    """Three ids in, two rows out and no word about the third — which was tested on a
+    bench outside the recent set. `matched` shrinking silently reads as "never tested"."""
+    payload = json.loads(json.dumps(SBS_PAYLOAD))
+    payload["data"]["review"]["test_bench"] = {"id": "2", "name": "1.0", "tests": []}
+    payload["data"]["review"]["product"] = {
+        "id": "99",
+        "fullname": "Alpha Legacy",
+        "product_page__url": "/tv/reviews/alpha/alpha-legacy",
+        "silo__url_part": "tv",
+        "product_page__early_access": False,
+    }
+    ctx.transport.payloads["app/side_by_side__review"] = payload
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["208"], filters={"product_ids": ["1", "99"]}
+    )
+    assert out["data"]["total_matched"] == 1
+    explained = [w for w in out["warnings"] if w.startswith("product_ids: 99")]
+    assert explained and "Alpha Legacy" in explained[0] and "bench=['2']" in explained[0]
+    assert "rt_product(" in explained[0]
+
+    # An id nobody has: excluded, not unmatched.
+    ctx.transport.payloads.pop("app/side_by_side__review")
+    out = await services.rt_ratings(
+        ctx, "tv", tests=["208"], filters={"product_ids": ["1", "424242"]}
+    )
+    assert any("no RTINGS tv product has id '424242'" in w for w in out["warnings"])
+
+
+async def test_rt_product_can_serve_the_words_without_the_rows(ctx):
+    """One verdicts-and-prose call was 129 K characters, 75 K of them rows the caller
+    already had from rt_ratings."""
+    ctx.transport.payloads["app/side_by_side__review"] = SBS_PAYLOAD
+    out = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", include_verdicts=True, include_results=False
+    )
+    assert out["error"] is None
+    assert out["data"]["results"] == [] and out["data"]["result_count"] == 0
+    assert out["data"]["verdicts"]
+
+
+async def test_featured_media_rows_are_not_reported_as_results(ctx):
+    """Five of eleven featured rows per PS5-list pick were pictures and graphs with every
+    field null."""
+    from rtings_mcp.services import _featured_results
+
+    rows = [
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "5000 : 1",
+            "score": 9.0,
+            "test": {"name": "Native Contrast", "kind": "number", "insider_only": True},
+        },
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": None,
+            "score": None,
+            "test": {"name": "Pre Color Picture", "kind": "picture", "insider_only": True},
+        },
+        {
+            "status": "tested",
+            "unblurred": False,
+            "rendered_value": None,
+            "score": None,
+            "test": {"name": "PQ EOTF Graph", "kind": "graph", "insider_only": True},
+        },
+    ]
+    out = _featured_results(rows)
+    assert [r["name"] for r in out] == ["Native Contrast"]
+    assert out[0]["display"] == "5000 : 1"
+
+
+async def test_the_uncatalogued_notice_names_no_other_category(ctx):
+    """The notice quoted a TV and a mattress as examples on a headphones response, which
+    read as cross-category leakage."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"])
+    orphan = next(g for g in out["data"]["groups"] if g.get("coverage") == "uncatalogued")
+    assert "LG G5" not in orphan["notice"] and "Boring" not in orphan["notice"]
+    assert "(Copy)" in orphan["notice"]
+    assert not any("LG G5" in w for w in out["warnings"])
+
+
+async def test_a_repeated_test_name_must_be_qualified(ctx):
+    """headphones has three leaves called "RMS Deviation From Target"; a bare name silently
+    took the first, ranking the bass band for a caller who asked for treble."""
+    from dataclasses import replace
+
+    from rtings_mcp.services import _field_lookup
+
+    schema = await ctx.repo.schema("tv")
+    twin = replace(schema.test("12000"), original_id="12001", parent_original_id="31615")
+    schema.tests["12001"] = twin
+    with pytest.raises(RtingsError) as excinfo:
+        _field_lookup(schema, "Peak Brightness")
+    assert excinfo.value.code == "unknown_test"
+    assert len(excinfo.value.details["matches"]) == 2
+    assert _field_lookup(schema, "Picture/Peak Brightness") == ("test", "12001")
+    assert _field_lookup(schema, "Native Contrast") == ("test", "11"), "unique names still resolve"
+
+
+async def test_rt_schema_find_searches_the_bench_by_name(ctx):
+    out = await services.rt_schema(ctx, "tv", find="contrast")
+    names = [t["name"] for t in out["data"]["tests"]]
+    assert "Native Contrast" in names
+    assert out["data"]["test_matches"] == len(names)
+    assert all("hierarchy" in t for t in out["data"]["tests"])
+    empty = await services.rt_schema(ctx, "tv", find="no such thing")
+    assert empty["data"]["tests"] == [] and "NAMING miss" in empty["data"]["notice"]
+
+
+async def test_rt_silos_can_return_one_row(ctx):
+    out = await services.rt_silos(ctx, silos=["tv"])
+    assert [s["silo"] for s in out["data"]["silos"]] == ["tv"]
+    none = await services.rt_silos(ctx, silos=["not-a-silo"])
+    assert none["data"]["silos"] == [] and none["data"]["notice"].startswith("none of")
+
+
+async def test_recommendation_picks_can_be_capped(ctx):
+    out = await services.rt_recommendations(ctx, "tv", list="tvs-on-the-market", limit=1)
+    assert len(out["data"]["picks"]) == 1
+    assert out["data"]["pick_count"] >= 1
+
+
+async def test_find_matches_group_names_and_word_stems(ctx):
+    """"print speed" found only "Scan Speed": the Printing Speed group's tests are named
+    "Black Only Text Document". Words are matched over the whole path and ranked."""
+    from rtings_mcp.services import _find_words
+
+    assert _find_words("cost per page") == ["cost", "page"]
+    assert _find_words("Printing Speed") == ["print", "speed"]
+    out = await services.rt_schema(ctx, "tv", find="picture quality brightness")
+    names = [t["name"] for t in out["data"]["tests"]]
+    assert "Peak Brightness" in names, names
+    assert names[0] == "Peak Brightness", "the test matching the most words ranks first"
+
+
+def test_reasoning_wrapper_divs_are_stripped():
+    from rtings_mcp.services import _strip_wrappers
+
+    assert (
+        _strip_wrappers('<div><div class="x"><p>Keep <a href="/tv">this</a>.</p></div></div>')
+        == '<p>Keep <a href="/tv">this</a>.</p>'
+    )
+    assert _strip_wrappers(None) is None
+
+
+async def test_recommendation_prose_can_be_left_out(ctx):
+    out = await services.rt_recommendations(
+        ctx, "tv", list="tvs-on-the-market", include_reasoning=False
+    )
+    pick = out["data"]["picks"][0]
+    assert "reasoning" not in pick or pick["reasoning"] is None
+    assert pick["name"] == "Alpha One" and pick["featured_results"]
+
+
+async def test_ratings_rows_carry_the_answer_and_the_legend_carries_the_definition(ctx):
+    """3 tests x 83 switches fitted 11 products in the budget because every row repeated
+    its test's name, unit, hierarchy and flags. Those live once in `data.tests` now."""
+    # The uncatalogued rows follow the same shape (checked first, on the stock payload).
+    orphans = await services.rt_ratings(
+        ctx, "tv", tests=["208"], include_uncatalogued=True
+    )
+    orphan = next(g for g in orphans["data"]["groups"] if g.get("coverage") == "uncatalogued")
+    assert "hierarchy" not in orphan["products"][0]["tests"][0]
+
+    ctx.transport.payloads["table_tool__test_results"] = {
+        "data": {
+            "test_results": [
+                make_test_row("1", "11", unblurred=True, value="7000", score=9.0),
+                make_test_row("2", "11", unblurred=True, value="5000", score=7.0),
+                make_test_row("3", "11", unblurred=True, value="1000", score=3.0),
+            ]
+        }
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=["11"], usages=["1"], refresh=True)
+    row = values(out, "1")["tests"][0]
+    assert set(row) <= {
+        "original_id", "status", "value", "gated", "score", "display", "as_of",
+        "warning", "is_infinite", "infinity_sign", "superseded_at", "value_kind",
+    }, sorted(row)
+    legend = out["data"]["tests"]["11"]
+    assert legend["name"] == "Native Contrast" and legend["kind"] == "number"
+    assert legend["unit"] == ": 1" and legend["insider_only"] is True
+    assert legend["hierarchy"]
+    assert legend["score_direction"] == "higher_is_better"
+    assert out["data"]["usages"]["1"]["name"]
+
+
+def test_score_direction_reads_lower_is_better_off_the_scores():
+    from rtings_mcp.services import _score_direction
+
+    def row(value, score):
+        return {
+            "tests": [
+                {"original_id": "x", "status": "tested_visible", "value": value, "score": score}
+            ]
+        }
+
+    assert _score_direction([row(20, 9.0), row(40, 6.0), row(80, 2.0)], "x") == "lower_is_better"
+    assert _score_direction([row(20, 9.0), row(40, 6.0)], "x") is None, "too few to say"
+    assert _score_direction([row(1, 5.0), row(2, 9.0), row(3, 1.0), row(4, 7.0)], "x") == "mixed"

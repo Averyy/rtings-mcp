@@ -94,11 +94,12 @@ SESSION_OVERRIDES = frozenset({"member", "free", "anonymous"})
 def _session_override(env: Mapping[str, str], warnings: list[str]) -> str | None:
     """``RTINGS_SESSION_OVERRIDE`` — a user ASSERTION, never an inference.
 
-    Which field separates ``member`` from ``free`` in a logged-in ``GLOBALS.session`` has
-    never been measured, so the classifier guesses. If it guesses ``free`` for a real member,
-    that member is quietly crippled — served cached anonymous nulls for up to 7 days and
-    refused ``rt_product`` without ``consume_preview``. This is the escape hatch, and it does
-    not break "never infer auth from data": the user is telling us, not the bytes.
+    Member-vs-free is ``current_user.is_insider`` (measured 2026-09-06, ``RECON.md`` §13.2),
+    but a page can ship without it, and a logged-in session with no positive signal is called
+    ``free``. A real member classified ``free`` is quietly crippled — served cached anonymous
+    nulls for up to 7 days and refused ``rt_product`` without ``consume_preview``. This is the
+    escape hatch for that case, and it does not break "never infer auth from data": the user
+    is telling us, not the bytes.
     """
     raw = _get(env, "RTINGS_SESSION_OVERRIDE")
     if raw is None:
@@ -132,6 +133,10 @@ class Config:
     member_mode: bool
     session_override: str | None
     telemetry: bool
+    #: Character budget for one rt_ratings response, measured before serialization. MCP
+    #: clients cap a tool result (Claude Code drops the whole thing past ~50 K chars), so
+    #: the server trims the window and says so rather than let the client discard it.
+    max_response_chars: int = 40_000
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -194,6 +199,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         member_mode=_env_bool(src, "RTINGS_MEMBER_MODE", True),
         session_override=_session_override(src, warnings),
         telemetry=_env_bool(src, "RTINGS_TELEMETRY", True),
+        max_response_chars=_env_int(src, "RTINGS_MAX_RESPONSE_CHARS", 40_000, minimum=4_000),
         warnings=warnings,
     )
 

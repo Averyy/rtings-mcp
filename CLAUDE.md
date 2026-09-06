@@ -280,10 +280,16 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   long-polls. Desktop declares no elicitation capability to a local stdio server, so this shape is
   the only one available. The CLI (`rtings-mcp auth [--browser]`) stays as the path for a machine
   with no MCP client, and both front doors call one implementation.
-- **`cache_tier` keying is on the gated surfaces only.** `tests/`/`ratings/`/`reviews/` are
-  tier-keyed; `schema/`/`catalog/`/`graphs/`/`bench/`/`recs/` are **not** — they carry no gated
-  fields (`RECON.md` §3, §4), so tiering them would store two identical copies. Scored rows are never
-  overwritten by unscored ones; selection is on the **data** (`unblurred`), not the tier (ported).
+- **`cache_tier` keying is on the gated surfaces only.** `tests/`/`ratings/`/`reviews/`/
+  `verdicts/` and — **since 2026-09-06 — `recs/<silo>/<list>`** are tier-keyed;
+  `schema/`/`catalog/`/`graphs/`/`bench/` and `recs/<silo>/_lists.json` are **not** — they carry
+  no gated fields (`RECON.md` §3, §4), so tiering them would store two identical copies. **A
+  best-of page DOES carry gated fields**: each pick's `featured_test_results[]` and `ratings[]`
+  have their own `unblurred` bit, and untiered it served a member a two-day-old anonymous copy
+  with every featured score `tested_gated` and nothing suggesting a refresh (found by the
+  2026-09-06 shopper round). Its demotion and anonymous-label guard reuse the `tests` predicates
+  with the featured stub as the insider id. Scored rows are never overwritten by unscored ones;
+  selection is on the **data** (`unblurred`), not the tier (ported).
 - **A cache hit also requires `cache_tier ≥` the probe tier** (ported) — otherwise configuring a
   cookie serves 30 days of cached nulls honestly labelled `anonymous`. Both sides of that comparison
   come from the **probe**, never from the data (see the `cache_tier`/`data_tier` rule below).
@@ -516,7 +522,15 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   blurred (`RECON.md` §12.2). So a row for a product the catalog does not carry is
   **structural, not evidence the catalog is stale** — do not warn that it is. File those rows
   under `_unassigned` rather than dropping them (a dropped row becomes a false `not_tested`
-  if the catalog later catches up) and do not report them as results.
+  if the catalog later catches up) and serve them as a `coverage: uncatalogued` **summary
+  of ids** (`SPEC.md` §8), rows only with `include_uncatalogued=true` or a `product_ids`
+  filter. **They are RTINGS' internal copies and retests (identified 2026-09-06 by resolving
+  four by id: "LG G5 OLED (Copy)", "Samsung QN90F (Copy)", "Boring Mattress - TBF 1.0.1",
+  "…Pure Green Organic - TBF 1.0.1"), kept out of the listing on purpose** — 41 of
+  mattress's 110, 23 of headphones', 9 of tv's. Ranking them by default handed shoppers a
+  "(Copy)" as a pick and doubled every payload; the earlier "a third of mattress is
+  unreachable" reading was wrong. `rt_product(<id>, silo=…)` resolves one through the
+  compare tool's `product` block, which carries the review URL.
 - **Public tests are not all `word`** — `number` publics exist (laptop/monitor `Size`, mouse `Default
   Weight`, vpn `Data Limit`). And the `kind` domain is wider than TV's: also `audio`, `3d_model`,
   `download`.
@@ -542,7 +556,34 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 - **Coerce by declared `kind`, never by value shape** (ported). `word` tests hold `"Yes"`/`"No"` and
   numeric-looking strings; only `number` tests are numbers. Never coerce a `word` value. A value that
   will not coerce keeps `raw_value`, sets `value:null`, and warns.
-- **Never infer a unit** — `number_display_unit` / `number_display_precision` ship in the definition.
+- **Never infer a unit** — but read the RIGHT one (corrected 2026-09-06, shopper round). A
+  converted test ships **three** unit fields: `number_input_unit` (the unit of the machine
+  `value` — monitor Height Adjustment stores centimeters), `number_display_unit` (what the site
+  shows — inches) and `number_custom_unit` (" Hz" when `display_unit` is null). Labelling
+  `value: 10.7` with the display unit reported eleven inches of monitor travel, 3 of 3 tests
+  checked, plausible enough to ship. `unit` on every row is `TestDef.value_unit` (input unit,
+  else display, else custom) and `display_unit` is added only when it differs. The cacheable
+  schema carries a `cacheable_version`; a cached parse from before these fields is a MISS,
+  not a hit, or the mislabel survives its 30-day TTL.
+- **IMPORTANT: "Inf" is a VALUE RTINGS publishes, never a null and never a 1 (2026-09-06).**
+  An OLED's contrast is `value: "Inf"`, `rendered_value: "Inf : 1"`. `float("Inf")` is
+  accepted silently and then serialised as null, so the two best contrast readings on the
+  bench read as empty rows; and the review path's number regex found the "1" in the unit text
+  and served **1.0 — the worst possible contrast** — with no warning. Both parsers recognise
+  `inf`/`infinity`/`∞` explicitly and carry a real `math.inf`, so sorting and filtering rank it
+  above every finite value (`_comparable` maps it back); the wire says `value: null,
+  is_infinite: true` plus `display`, because JSON has no infinity token.
+- **A repeated test name is an ERROR, never "the first one" (2026-09-06).** headphones has three
+  leaves called "RMS Deviation From Target" (bass, mid, treble). `_field_lookup` used to return
+  whichever dict order offered, ranking the bass band for a caller who asked for treble. Now
+  it raises `unknown_test` listing the qualified forms and accepts `"Group/Name"` (a suffix of
+  the hierarchy) as well as the id. `rt_schema(find=…)` is the discovery path — one substring
+  search over the bench's tests and usages instead of the three-to-six tree-then-group calls
+  every shopper agent made.
+- **An unmatched `product_ids` entry is explained, one lookup each (2026-09-06).** Three ids in,
+  two rows out, no word about the third: it was tested on a legacy bench outside the recent set,
+  and a shrinking `matched` reads as "never tested". Each missing id (capped) is resolved
+  through `resolve_product` and the warning names its bench and the `bench=[…]` to pass.
 - **`app/side_by_side__review` is RTINGS' WORDS, and they survive the paywall.** Bare
   `{product_id}`. On a gated silo it returns, anonymously, per-usage verdict prose, pros/cons
   blurbs (`priority` below 0 is a con) and the score formula — the substantive answer where the
@@ -560,7 +601,31 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   so a spent preview budget degrades to verdicts-only rather than an error.
 - **Do not repeat a response-constant on every row.** `rt_product` carried `product_id` and
   `as_of` on all 243 rows: identical every time, already in `data.product` and the envelope,
-  and 13 KB of a 69 KB response. They stay per-row in `rt_ratings`, where they genuinely vary.
+  and 13 KB of a 69 KB response. In `rt_ratings`, `as_of` stays per-row (it varies per slice)
+  but `product_id` is dropped from the rows nested under a product — the parent carries it
+  (2026-09-06).
+- **IMPORTANT: the client's tool-result cap counts the INDENTED text form, and `rt_ratings`
+  budgets against it (added 2026-09-06).** The SDK renders a result as `indent=2` JSON in the
+  text block beside the structured copy: 41 K compact became 75 K on the wire, and three of
+  five shopper agents lost their first ranking call outright — no partial result, no hint
+  which knob to turn. `_fit_response_budget` measures `json.dumps(data, indent=2)` plus an
+  envelope margin against `RTINGS_MAX_RESPONSE_CHARS` (default 40,000), trims each group from
+  the tail (the head of the ranking survives, `offset` continues from where it stopped) and
+  warns `response_truncated` naming the offset; `matched` still describes the whole
+  population. Never below one product per group. Same axis for curves: a graph is bounded in
+  CELLS (`GRAPH_MAX_CELLS`, rows x columns), since headphones' sound profile is 13 columns
+  wide and 200 rows of it was 60 K characters.
+- **`rt_ratings` rows carry the ANSWER; `data.tests` carries the DEFINITION (2026-09-06).** A
+  value row repeated its test's name, kind, unit, precision, hierarchy, `insider_only`,
+  `value_source` and `raw_value` on every product, so 3 tests x 83 keyboard switches fitted 11
+  products in the budget. `_slim_value_rows` strips `LEGEND_ROW_KEYS`; `_test_legend` states
+  each projected test once, with `score_direction` derived from the concordance of value and
+  score in the served rows (`higher_is_better` / `lower_is_better` / `mixed`, only with three
+  or more pairs, labelled derived) — every shopper agent had inferred this by eye. `rt_product`
+  keeps its per-row `hierarchy`: it is one product, and the breadcrumb is the point.
+- **`filters={"product_ids": [...]}` is the head-to-head path.** Every agent comparing two
+  named products guessed a `name_contains` substring after an `rt_search`, which matches
+  siblings. Ids are identity; it applies to the uncatalogued group too.
 - **`rt_recommendations` is the one page-extraction path** (`RECON.md` §7) — isolate it: own parser,
   own `recommendations_missing` drift alarm, never on the table/graph code path.
 - **IMPORTANT: there are TWO best-of templates and BOTH are legitimate (added 2026-09-05,

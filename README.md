@@ -81,13 +81,13 @@ No configuration is needed to start. Anonymous is the default and never an error
 
 | Tool | Returns |
 |---|---|
-| `rt_silos()` | the 28 categories with **observed** paywall enforcement |
-| `rt_schema(silo, bench?, group?)` | test/usage definitions: name, kind, unit, hierarchy, `insider_only` |
-| `rt_ratings(silo, tests?, usages?, filters?, sort?, limit?)` | catalog + 0–10 usage scores, with an optional scalar projection |
-| `rt_product(product)` | one review: test results, plus RTINGS' verdicts and pros/cons with `include_verdicts` |
+| `rt_silos(silos?)` | the 28 categories with **observed** paywall enforcement |
+| `rt_schema(silo, bench?, group?, find?)` | test/usage definitions: name, kind, unit, hierarchy, `insider_only`; `find` searches the bench by name |
+| `rt_ratings(silo, tests?, usages?, filters?, sort?, limit?)` | catalog + 0–10 usage scores, with an optional scalar projection; `filters.product_ids` for a head-to-head |
+| `rt_product(product)` | one review: test results, plus RTINGS' verdicts and pros/cons with `include_verdicts` (`include_results=false` for the words alone) |
 | `rt_graph(product, test)` | one test's measurement curve, resampled by selecting shipped points |
 | `rt_search(query)` | model name/number → candidates across all categories |
-| `rt_recommendations(silo, list?)` | the category's best-of lists, or one ranked list with reasoning |
+| `rt_recommendations(silo, list?, limit?)` | the category's best-of lists, or one ranked list with reasoning |
 | `rt_sign_in(force?)` | opens a browser window on RTINGS' sign-in page and stores the resulting cookie |
 | `rt_auth_status(wait_s?)` | what credential is stored, and how a sign-in in progress is going |
 
