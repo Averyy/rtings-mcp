@@ -17,6 +17,8 @@ forced, and those marked **2026-09-05** come from a seven-lens review round that
 defects — several of them reachable anonymously, on silos where nothing is gated. Member mode
 is built and, since 2026-09-06, **on by default** (`RTINGS_MEMBER_MODE`). Signing in is `rt_sign_in` /
 `rt_auth_status` in a conversation, or `rtings-mcp auth [--browser]` in a terminal.
+**Published on PyPI since v0.2.1 (2026-09-07)** — users install with `uvx rtings-mcp`, so a
+fix reaches nobody until it is released (see Git > Publishing below).
 
 **Phase 0 was MEASURED 2026-09-06 — `RECON.md` §13 is the record.** A membership was bought and
 signed in, and **q1 is answered YES**: a member cookie returns 588/588 `insider_only` rows

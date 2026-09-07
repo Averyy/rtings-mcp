@@ -6,8 +6,10 @@ can consult RTINGS test data the way it consults any other data source.
 Status: **The anonymous server is built and working (2026-09-05).** All seven data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 382 offline tests and 9 live anonymous tests pass, and the release-gate
-re-scan reproduces the 12-enforcing / 16-open map exactly. **Member mode is ON by default**
+`rtings-mcp auth`). 436 offline tests and 9 live anonymous tests pass, and the release-gate
+re-scan reproduces the 12-enforcing / 16-open map exactly. **Published on PyPI as
+`rtings-mcp` 0.2.1 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
+`uvx rtings-mcp`. **Member mode is ON by default**
 (`RTINGS_MEMBER_MODE`) since Phase 0 settled q1 on 2026-09-06 (`RECON.md` §13.1). Facts the build
 measured are in `RECON.md` §12, the member session in §13; the corrections they forced are marked
 **(corrected)** below.
@@ -68,8 +70,8 @@ drops the structure. Meanwhile RTINGS' own front end fetches every category from
 
 ## 4. Prior art
 
-`RECON.md` §9. No RTINGS MCP server exists (GitHub + MCP registries + web checked; npm/PyPI not
-directly queried, do not claim otherwise). All prior art is headphone-FR curve extraction via
+`RECON.md` §9. No RTINGS MCP server existed when this was designed (GitHub + MCP registries +
+web checked); the PyPI name `rtings-mcp` was free on 2026-09-07 and now holds this project. All prior art is headphone-FR curve extraction via
 `graph_tool__product_graph_data_url` plus one Firefox extension using the search endpoint. **Nobody
 built the category-wide structured layer.** Greenfield.
 
@@ -1536,7 +1538,7 @@ a process holding a stale baseline would otherwise overwrite a rotation another 
 declines to overwrite a newer record, keeping its own value in memory instead. A user-driven paste
 passes no baseline and always wins: it is the newest fact by definition.
 
-**Tests — DONE (2026-09-06): 382 offline, 9 live.** `pytest` runs offline by default; live
+**Tests — DONE (2026-09-07): 436 offline, 9 live.** `pytest` runs offline by default; live
 tests are opt-in (`-m live`) and anonymous by construction. Fixtures are synthetic or from
 **anonymous fetches only, never containing unblurred member values** (CLAUDE.md), and the one
 `GLOBALS.session` fixture with a logged-in shape has every value replaced by a placeholder.
@@ -1589,7 +1591,8 @@ carry no `insider_only`. See CLAUDE.md > Release.
 
 ## 12. Decisions taken
 
-- **Name: `rtings-mcp`**, matching the directory. Confirm free on PyPI/npm before publish.
+- **Name: `rtings-mcp`**, matching the directory. Published on PyPI under that name as v0.2.1
+  (2026-09-07); there is no npm package and none is planned.
 - **Auth cookie-only in v1 (§6).** HttpOnly `_rtings_session` makes cURL the *only* capture gesture —
   no console fallback, unlike CR. Never a password/login/CAPTCHA.
 - **Auth is a two-source join (§6)** because the API carries no marker (`RECON.md` §1). New vs CR;

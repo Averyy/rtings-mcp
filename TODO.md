@@ -3,9 +3,10 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-06: built, working, and signed in.** Three review rounds (15 defects, then 10,
+**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.1 is on
+PyPI, released through `publish.yml` and verified from a fresh `uvx` install.** Three review rounds (15 defects, then 10,
 then 7 more found while testing the sign-in end to end — see Built, below). All seven data tools
-run against the live API, **382 offline + 9 live tests pass**, and the release-gate re-scan
+run against the live API, **436 offline + 9 live tests pass**, and the release-gate re-scan
 reproduces the 12-enforcing / 16-open map with zero drift — re-run today *with* a membership
 stored, which the scan ignores by construction. What the build measured is in `RECON.md` §12; what
 the membership measured is in §13.
@@ -26,7 +27,10 @@ account — see below.
 - **`RTINGS_MEMBER_MODE` now defaults to `true`** (v0.2.0). Setting it to `0` still works and is
   what the anonymous-label guard exists for.
 - **Committed 2026-09-06 as v0.2.0, then v0.2.1 after the shopper round** — the sign-in, the
-  guards, the round's fixes and the docs are on `main` (through `d1efb4d`). The project still
+  guards, the round's fixes and the docs are on `main` (through `a588f9a`). **v0.2.1 was
+  released 2026-09-07**: the GitHub release ran `publish.yml` (lint, offline tests, tag-equals-
+  version check, build, OIDC publish with attestations), PyPI holds the wheel and sdist, and a
+  PyPI-installed server driven over stdio returned live member data. The project still
   forbids committing unasked.
 - **The real cache now holds member data** — `tests/*/141.member.*` for tv, written 2026-09-06
   by a signed-in `rt_ratings` through this session's own MCP connection. Everything else in
@@ -39,7 +43,7 @@ account — see below.
 Sign-in end to end (window → cookie → validate → store → in-process adopt, browser reaped, no PII
 stored); Phase-0 q1 and captures a, c, d, f, g, p (`RECON.md` §13); the release scan's anonymity
 guard with a real cookie on disk (12/16, zero drift); the write guard live on tv and mattress in
-both flag states; member-tier writes and cache hits; **382 offline + 9 live tests**, the offline
+both flag states; member-tier writes and cache hits; **436 offline + 9 live tests**, the offline
 suite hermetic even under a hostile environment.
 
 ### Verified 2026-09-06 over the MCP wire (a fresh stdio server per run, scratch cache)
@@ -147,7 +151,7 @@ and a PASS/FAIL. Use a scratch `RTINGS_CACHE_DIR`.
   findings while reporting success. If you delegate a review, check it actually ran.
 
 ```bash
-.venv/bin/pytest tests/ -q                 # 382 offline, ~4 s
+.venv/bin/pytest tests/ -q                 # 436 offline, ~5 s
 .venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
 .venv/bin/ruff check src/ tests/
 .venv/bin/rtings-mcp auth --status         # what credential is stored, and its session
@@ -330,7 +334,9 @@ is unknown.
       real transport — `StubTransport` overrides every method without `super()`, so status precedence
       and the `errors[]` rule were dead code under the suite and both survived mutation.
 
-- [ ] Confirm `rtings-mcp` is free on PyPI before publishing.
+- [x] Confirm `rtings-mcp` is free on PyPI before publishing. It was, and it now holds this
+      project: v0.2.1 published 2026-09-07 via trusted publishing (`publish.yml`, environment
+      `pypi`). Releasing is `gh release create vX.Y.Z --generate-notes` after a version bump.
 - [ ] Decide whether `rt_ratings` should default to projecting the category's public tests, so a
       bare `rt_ratings("tv")` returns something numeric rather than catalog-plus-gated-scores.
 
