@@ -231,6 +231,8 @@ async def test_telemetry_never_records_a_body_or_a_cookie(transport, tmp_path):
         assert "SECRETVALUE123" not in written
         assert "MEMBER-PROFILE-DATA" not in written
         assert "set-cookie" not in written.lower()
+        # Several processes share one log; a line is attributable only by its pid.
+        assert '"pid":' in written
 
 
 async def test_the_cdn_cap_clears_the_largest_curve_rtings_actually_publishes():

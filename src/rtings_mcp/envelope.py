@@ -101,15 +101,23 @@ def observe_test_rows(
 ) -> None:
     """Fold one response's rows into the observation.
 
-    Rows whose product is ``published:false`` are **excluded**: they are blurred for a
-    different reason (an Early Access review, withheld from this session) and would
-    otherwise make an open silo look gated.
+    Blurred rows whose product is ``published:false`` are **excluded**: they are withheld
+    for a different reason (an Early Access review, withheld from this session) and would
+    otherwise make an open silo look gated. A row of theirs that came through **counts**:
+    a value served proves the surface is served, whatever the product's publication state
+    — the verdict loop already counts a visible Early Access verdict, and excluding the
+    test rows made one response say ``insider_tests: unknown`` beside three served insider
+    values (member round S11, 2026-09-07).
     """
     for row in rows:
         if row.get("status") != "tested":
             continue
         product_id = row.get("product_id")
-        if product_id is not None and str(product_id) in unpublished_product_ids:
+        if (
+            product_id is not None
+            and str(product_id) in unpublished_product_ids
+            and not row.get("unblurred")
+        ):
             continue
         original_id = row.get("original_id")
         if original_id is None:

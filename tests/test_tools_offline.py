@@ -3253,3 +3253,89 @@ def test_find_words_match_whole_words_or_their_plural_and_ing_forms():
     assert _find_score(["weight"], "weight", "design weight") == 11
     assert _find_score(["print"], "print", "printing speed black only") >= 1
     assert _find_score(["window"], "window", "peak 2% windows") >= 1
+
+
+async def test_dual_y_axes_declared_under_vaxes_are_read(ctx):
+    """tv's PQ EOTF curve declares its two y axes under `vAxes` ("0" stimulus, "1"
+    luminance) with `vAxis` left as a placeholder, and spells the scale `scaleType`. Read
+    from `vAxis`/`scale` alone the curve had no y axis (member round S8, 2026-09-07)."""
+
+    async def dual(path):
+        return {
+            "header": ["Input Stimulus", "Target", "Measured"],
+            "data": [[0, 0, 0], [1, 1, 0.86]],
+            "options": {
+                "hAxis": {"scaleType": "linear", "title": "Signal Input Stimulus"},
+                "vAxis": {"ignore": "me"},
+                "vAxes": {
+                    "0": {"scaleType": "linear", "title": "Measured Output Stimulus"},
+                    "1": {"scaleType": "linear", "title": "Measured Output Luminance"},
+                },
+                "series": {"0": {"targetAxisIndex": 1}, "1": {"targetAxisIndex": 0}},
+            },
+        }
+
+    ctx.transport.cdn_get_json = dual
+    out = await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "13907")
+    assert out["error"] is None, out["error"]
+    axes = out["data"]["axes"]
+    assert axes["x"] == {"title": "Signal Input Stimulus", "scale": "linear"}
+    assert axes["y"] == {"title": "Measured Output Stimulus", "scale": "linear"}
+    assert [a["title"] for a in axes["y_axes"]] == [
+        "Measured Output Stimulus",
+        "Measured Output Luminance",
+    ]
+    assert axes["series_y_axis_index"] == [1, 0]
+
+
+async def test_a_wrong_qualifier_lists_the_tests_with_that_leaf_name(ctx):
+    """`Treble/RMS Deviation From Target` guesses the group; the real qualifier is the full
+    group name. "No test named" sent the caller back to the schema (member round S3)."""
+    from dataclasses import replace
+
+    from rtings_mcp.services import _field_lookup
+
+    schema = await ctx.repo.schema("tv")
+    twin = replace(schema.test("12000"), original_id="12001", parent_original_id="31615")
+    schema.tests["12001"] = twin
+    with pytest.raises(RtingsError) as excinfo:
+        _field_lookup(schema, "Nowhere/Peak Brightness")
+    assert excinfo.value.code == "unknown_test"
+    assert len(excinfo.value.details["matches"]) == 2
+    assert any("(12001)" in m for m in excinfo.value.details["matches"])
+    assert _field_lookup(schema, "Nowhere/No Such Leaf") is None
+
+
+async def test_a_group_named_in_tests_lists_its_leaves(ctx):
+    """mattress `tests=["Firmness"]` resolved to the group and stopped at "structure, not a
+    result"; the leaf "Firmness Level" and the usage of the same name were the answer
+    (member round S12, 2026-09-07)."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", tests=["900"])
+    assert excinfo.value.code == "unknown_test"
+    assert "Native Contrast" in excinfo.value.message
+    leaves = {t["original_id"] for t in excinfo.value.details["tests"]}
+    assert {"11", "12000", "208"} <= leaves
+
+
+def test_reasoning_nolink_shortcodes_are_unwrapped():
+    """Best-of prose ships "[nolink:Sonos Beam (Gen 2)]" for a product RTINGS chose not to
+    link; the name is the text (member round S9, 2026-09-07)."""
+    from rtings_mcp.services import _strip_wrappers
+
+    assert (
+        _strip_wrappers("<div>The [nolink:Sonos Beam (Gen 2)] beats the [nolink:Arc Ultra].</div>")
+        == "The Sonos Beam (Gen 2) beats the Arc Ultra."
+    )
+
+
+async def test_find_marks_an_unscored_usage(ctx):
+    """mattress "Firmness" is an `is_unscored` usage: sorting on it can only fall back, and
+    `find` listed it like any other (member round S12, 2026-09-07)."""
+    schema = await ctx.repo.schema("tv")
+    from dataclasses import replace
+
+    schema.usages["1"] = replace(schema.usages["1"], is_unscored=True)
+    out = await services.rt_schema(ctx, "tv", find="mixed usage")
+    hit = next(u for u in out["data"]["usages"] if u["original_id"] == "1")
+    assert hit["is_unscored"] is True

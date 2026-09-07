@@ -243,3 +243,17 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   `inf`/`infinity`/`∞` explicitly and carry a real `math.inf`, so sorting and filtering rank it
   above every finite value (`_comparable` maps it back); the wire says `value: null,
   is_infinite: true` plus `display`, because JSON has no infinity token.
+- **Review path: a test with no display unit is shown in its input unit (member round S4,
+  2026-09-07).** monitor `Total Response Time` declares `number_input_unit: milliseconds` and no
+  display unit; RTINGS renders "0.2 ms". Read from the display unit alone the review row
+  carried no `unit` while `rt_ratings` said milliseconds for the same test. `unit` is now the
+  display unit, else the input unit; the parenthesised-value swap only runs when a display
+  unit actually exists.
+- **A VISIBLE Early Access row proves the surface; only a withheld one is excluded (S11).**
+  `observe_test_rows` skipped every row of a `published:false` product, so a member's
+  `rt_product` on `/early-access/tv/reviews/lg/b6e-oled` reported `insider_tests: unknown`
+  beside three served insider values (and `usage_ratings: available` from the verdict loop,
+  which already counted the visible verdicts). Excluding the blurred row is still right — it
+  is withheld for the Early Access reason, not the gate — but a value that came through says
+  the surface is served to this session whatever the publication state. An anonymous session
+  sees those rows blurred, so the observation store is unchanged for it.

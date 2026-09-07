@@ -88,3 +88,6 @@
 - **Never log or return a response body** — challenge pages carry tokens, member pages carry profile
   data. Status, `reason` and `<title>` only.
 - Cache-first. Hit the network only on a miss or an explicit `refresh`.
+- **Telemetry lines carry `pid` (member round S15, 2026-09-07).** Several processes append to
+  one `telemetry/requests.jsonl`; without it a line could only be attributed by cross-referencing
+  cache-file timestamps. Still never a body, a cookie or `set-cookie`.

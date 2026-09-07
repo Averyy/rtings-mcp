@@ -8,7 +8,7 @@ against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership f
 conversation (which is the only route Claude Desktop has: it offers no terminal for
 `rtings-mcp auth`). 436 offline tests and 9 live anonymous tests pass, and the release-gate
 re-scan reproduces the 12-enforcing / 16-open map exactly. **Published on PyPI as
-`rtings-mcp` 0.2.2 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
+`rtings-mcp` 0.2.3 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
 `uvx rtings-mcp`. **Member mode is ON by default**
 (`RTINGS_MEMBER_MODE`) since Phase 0 settled q1 on 2026-09-06 (`RECON.md` §13.1). Facts the build
 measured are in `RECON.md` §12, the member session in §13; the corrections they forced are marked
@@ -382,7 +382,7 @@ below), plus **two that connect a membership** rather than serve data.
 | `rt_silos()` | the 28 silos with `url_part`, **observed** paywall enforcement + `data_completeness`, tool pages | full |
 | `rt_schema(silo, bench?, group?)` | test/usage definitions: name, `kind`, unit, hierarchy, `insider_only` | full |
 | `rt_ratings(silo, bench?, tests?, usages?, filters?, sort?, limit=10, offset=0)` | catalog + 0–10 usage scores (+ optional scalar-test projection) | catalog full; scores/values gated |
-| `rt_product(url\|id, group?, include_prose, include_media, include_verdicts)` | one review: leaf test results by hierarchy; prose, media and verdicts opt-in | prose/specs/**verdicts** free; scalars gated |
+| `rt_product(product=url\|id, group?, include_prose, include_media, include_verdicts)` | one review: leaf test results by hierarchy; prose, media and verdicts opt-in | prose/specs/**verdicts** free; scalars gated |
 | `rt_graph(product, test)` | one test's **curve**, resampled | **full** |
 | `rt_search(query)` | model name/number → candidates across all silos | full |
 | `rt_recommendations(silo, list?)` | the silo's best-of lists, or one ranked list with reasoning | ranking + prose free; scalars gated |

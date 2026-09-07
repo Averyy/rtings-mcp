@@ -3,10 +3,11 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.2 is on
+**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.3 is on
 PyPI, released through `publish.yml` and verified from a fresh `uvx` install.** Three review rounds (15 defects, then 10,
-then 7 more found while testing the sign-in end to end — see Built, below). All seven data tools
-run against the live API, **436 offline + 9 live tests pass**, and the release-gate re-scan
+then 7 more found while testing the sign-in end to end — see Built, below), then the anonymous
+shopper round (40 scenarios) and the **member round (15 scenarios, below)**. All seven data tools
+run against the live API, **445 offline + 9 live tests pass**, and the release-gate re-scan
 reproduces the 12-enforcing / 16-open map with zero drift — re-run today *with* a membership
 stored, which the scan ignores by construction. What the build measured is in `RECON.md` §12; what
 the membership measured is in §13.
@@ -83,9 +84,8 @@ session's own installed MCP connection.
    `from_cache: true`. The `uncatalogued` warning fires only on the fetching call; the group
    itself is in both responses.
 
-Also confirmed: the credential rotates on disk with every run (`stored_at` advances), and the
-`rt_auth_status` `session: unknown` on a fresh process is by design (no probe yet) — the first
-data tool fills it in.
+Also confirmed: the credential rotates on disk with every run (`stored_at` advances). (`rt_auth_status`
+answered `session: unknown` on a fresh process until 2026-09-07; it now probes.)
 
 ### The shopper round (2026-09-06) — 31 scenarios, all 28 categories
 
@@ -133,6 +133,39 @@ tools agreed. What changed is in `CLAUDE.md` (rules dated 2026-09-06) and the co
 question, tell it to run `describe` first, and ask for the call log, dead ends, cross-checks
 and a PASS/FAIL. Use a scratch `RTINGS_CACHE_DIR`.
 
+### The member round (2026-09-07) — 15 scenarios, the real membership
+
+`docs/member-scenarios.md` run as written: the real credential in its real config dir, a cold
+scratch cache, one fresh agent per scenario driving a fresh stdio server per call, graded
+against the invariant table. **14 PASS, 1 FAIL**; every finding below is fixed, covered by an
+offline test, and re-verified live against the membership on the final build (v0.2.3).
+
+| Scenario | Calls | Verdict | What it found |
+|---|---|---|---|
+| S1 tv 65" bright room | 7 | PASS | default recent set truncated to 8/10 with 2 tests + default usages; "current bench" needs `bench=["227"]` |
+| S2 tv C5 vs S95H | 8 | PASS | tv's usage is "Gaming", not "Video Games"; `summary: null` without `include_prose` |
+| S3 headphones treble RMS | 6 | PASS | bare name refused with the three qualified forms; a wrong `Group/Name` said only "no test named" → **fixed: lists the same-leaf candidates** |
+| S4 monitor 27" 1440p 144 Hz | 3 | PASS | Size resolved to the numeric test, "1440" matched as text; **review rows for the response-time tests had no `unit`** (input unit only, no display unit) → fixed |
+| S5 mouse lightest wireless | 6 | PASS | one recent-set group across 2 benches (per SPEC; the scenario doc said 2 groups, corrected); `score_direction` computed over the population while documented "in this response" → docs fixed |
+| S6 printer cost per page | 3 | PASS | instructions rule 7 ("no prices") had no exception for the measured cost test → **fixed** |
+| S7 robot-vacuum quiet + pet hair | 7 | PASS | test/usage ids distinct, usage-score filter works (undocumented); `scores_available.public_tests: available` on a review that served only insider rows (schema-wide predicate, not a violation) |
+| S8 tv Bravia 9 curve + value | 9 | PASS | tv has no graph-kind brightness test; **`rt_graph` axes read `vAxis`/`scale` only — the PQ EOTF curve's `vAxes`/`scaleType` gave `y: null`** → fixed |
+| S9 soundbar recommendations | 4 | PASS | no by-size list on soundbar (content fact); `[nolink:...]` shortcode in reasoning → **fixed** |
+| S10 laptop 13–14" battery | 3 | PASS | range inclusive both ends, hours on both paths, no mislabel |
+| S11 Early Access review | 2 | **FAIL** | member sees values, silo from the URL, notice accurate — but **`insider_tests: unknown` beside three served insider values** (unpublished product excluded from the fold) → fixed: a visible Early Access row counts |
+| S12 mattress control | 6 | PASS | member and anonymous byte-identical except `session`/`auth_state`/`as_of`; `tests=["Firmness"]` hit the group with no pointer to its leaves → **fixed**; `find` hid `is_unscored` → fixed |
+| S13 camera control | 5 | PASS | props template, real `original_id`s; `from_cache:false` on a call that only fetched a side-by-side to name an off-bench pick (by definition: "did this call touch the network") |
+| S14 session health | 2 | PASS | credential rotated (mtime advanced, mode 0600, only file in the dir); **`rt_auth_status` said `unknown` on a fresh cache** → fixed: it probes |
+| S15 cache reuse | 2 | PASS | second process: `from_cache:true`, same `fetched_at`, zero requests; telemetry lines had no pid → fixed |
+
+Three graders lost a call to the instructions text `rt_product(url, ...)` — the parameter is
+`product` (fixed in the instructions, README, SPEC, the scenario doc). Measured on the side: 129
+requests from the round, all 200, 67 of them HTML session probes (the forced write-time probe,
+`docs/rules/auth-and-session.md`). Not defects: `tests/_unassigned/` holds only uncatalogued
+rows, not a duplicate slice; `observed/<silo>.json` carries `cache_tier: anonymous` as a fixed
+label while the code reads each bench's `provenance`; the uncatalogued group's `matched` ignores
+a usage filter its rows cannot carry.
+
 ### Still NOT tested
 
 1. **The review path on a legacy bench for a member** (the other half of q16).
@@ -153,7 +186,7 @@ and a PASS/FAIL. Use a scratch `RTINGS_CACHE_DIR`.
   findings while reporting success. If you delegate a review, check it actually ran.
 
 ```bash
-.venv/bin/pytest tests/ -q                 # 436 offline, ~5 s
+.venv/bin/pytest tests/ -q                 # 445 offline, ~5 s
 .venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
 .venv/bin/ruff check src/ tests/
 .venv/bin/rtings-mcp auth --status         # what credential is stored, and its session

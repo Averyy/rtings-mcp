@@ -115,7 +115,7 @@ absent from the bench queried, or measured-but-empty. Otherwise an empty result 
 product qualifies" when the truth is "you can't see it". Rows with no comparable value sort last in
 both directions.
 
-**On a gated category, ask for the verdicts.** `rt_product(url, include_verdicts=true)` returns
+**On a gated category, ask for the verdicts.** `rt_product(product=<url>, include_verdicts=true)` returns
 RTINGS' per-usage judgement in their own words, their pros and cons, and how each usage score is
 composed. Those come through even where every measurement is null.
 

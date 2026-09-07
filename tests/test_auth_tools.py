@@ -385,3 +385,17 @@ async def test_status_reports_what_is_stored_without_opening_anything(ctx):
     assert snap["cookie_name"] == "_rtings_session"
     assert snap["sign_in"] == "idle"
     assert "EXISTING" not in json.dumps(snap)
+
+
+async def test_status_resolves_the_session_instead_of_saying_unknown(ctx):
+    """On a fresh cache nothing has probed, and `rt_auth_status` answered `unknown` to "is my
+    membership live?" while the CLI's `auth --status` probed (member round S14, 2026-09-07).
+    Without a credential the answer is `anonymous` by construction and costs no request."""
+    snap = await auth_tools.rt_auth_status(ctx)
+    assert snap["session"] == "anonymous"
+    store_credential(ctx.config, "EXISTING")
+    ctx.transport.credential = load_credential(ctx.config)
+    ctx.auth._probe = None
+    snap = await auth_tools.rt_auth_status(ctx)
+    assert snap["session"] == "free"
+    assert "EXISTING" not in json.dumps(snap)

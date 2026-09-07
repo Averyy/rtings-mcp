@@ -112,7 +112,7 @@ PRODUCT_ID_FILTER_KEYS = frozenset({"product_ids", "product_id", "ids"})
 NO_LEAF_NOTE = (
     "This group has no scored test on this bench. RTINGS covers it either as a 0-10 usage "
     "score (see `usages` — e.g. a 'Pet Hair Pickup' group is scored as the 'Debris Pickup: "
-    "Pet Hair' usage) or only in review prose, which rt_product(url, group=<this id>, "
+    "Pet Hair' usage) or only in review prose, which rt_product(product=<url>, group=<this id>, "
     "include_prose=true) returns."
 )
 MAX_RATINGS_LIMIT = 200
@@ -370,6 +370,7 @@ async def rt_schema(
                             "kind": u.kind or "usage",
                             "is_usage": True,
                             "is_sub_usage": u.is_sub_usage,
+                            "is_unscored": u.is_unscored,
                             "parent_usage_name": u.parent_usage_name,
                         },
                     )
@@ -983,10 +984,34 @@ def _resolve_tests(
         if definition is None:
             raise RtingsError(errors.UNKNOWN_TEST, f"no test with original_id {test_id}")
         if definition.is_structure:
+            # mattress "Firmness" is a group; the answer the caller wanted is its leaf
+            # "Firmness Level", and a usage of the same name exists too. Say so, instead of
+            # sending them back to the schema (member round S12, 2026-09-07).
+            leaves = [
+                t
+                for t in schema.tests.values()
+                if schema.parent_of(t) == test_id and t.is_leaf_value
+            ]
+            usages = [
+                u for u in schema.usages.values() if u.name.lower() == definition.name.lower()
+            ]
+            hint = ""
+            if leaves:
+                hint += "; its tests: " + ", ".join(
+                    f"{t.name!r} ({t.original_id})" for t in leaves[:MAX_FIND_HITS]
+                )
+            if usages:
+                hint += "; a usage of the same name exists: " + ", ".join(
+                    f"usage {u.original_id}" for u in usages
+                )
             raise RtingsError(
                 errors.UNKNOWN_TEST,
                 f"test {test_id} ({definition.name!r}) is a {definition.kind} row — "
-                "structure, not a result",
+                "structure, not a result" + hint,
+                details={
+                    "tests": [{"original_id": t.original_id, "name": t.name} for t in leaves],
+                    "usages": [{"original_id": u.original_id, "name": u.name} for u in usages],
+                },
             )
         if test_id not in membership:
             raise RtingsError(
@@ -1675,6 +1700,24 @@ def _field_lookup(schema: SiloSchema, key: str) -> tuple[str, str] | None:
                 errors.UNKNOWN_TEST,
                 f"{text!r} names {len(matches)} tests on this bench; pass the original_id "
                 "or qualify it as 'Group/Name'",
+                details={"matches": options},
+            )
+    if qualifiers and forced != "usage":
+        # "Treble/RMS Deviation From Target" with a guessed group: the leaf exists, the
+        # qualifier is wrong. "No test named" sent the caller back to the schema; the
+        # forms that would have worked are one list away (member round S3, 2026-09-07).
+        same_leaf = [
+            t for t in schema.tests.values() if t.name.lower() == leaf_name and not t.is_structure
+        ]
+        if same_leaf:
+            options = sorted(
+                "/".join([*schema.ancestry(t.original_id), t.name]) + f" ({t.original_id})"
+                for t in same_leaf
+            )
+            raise RtingsError(
+                errors.UNKNOWN_TEST,
+                f"no test at {text!r}: the qualifier must be the group's full name. "
+                f"Tests named {text.split('/')[-1].strip()!r} on this bench are in `matches`",
                 details={"matches": options},
             )
     if forced == "test":
@@ -2766,7 +2809,7 @@ async def rt_graph(
             "kind": definition.kind,
         },
         "header": header,
-        "axes": _graph_axes(envelope.payload),
+        "axes": _graph_axes(envelope.payload, n_series=max(width - 1, 0)),
         "n_points": len(served),
         "n_points_shipped": len(points),
         "resampled": decimated,
@@ -3142,6 +3185,8 @@ def _strip(value: Any) -> str | None:
 
 
 _WRAPPER_TAG_RE = re.compile(r"</?div\b[^>]*>", re.IGNORECASE)
+#: RTINGS' unresolved link shortcode, "[nolink:Sonos Beam (Gen 2)]" — the name is the text.
+_NOLINK_RE = re.compile(r"\[nolink:([^\]]*)\]")
 
 
 def _strip_wrappers(html: Any) -> Any:
@@ -3152,7 +3197,8 @@ def _strip_wrappers(html: Any) -> Any:
     """
     if not isinstance(html, str):
         return html
-    return _WRAPPER_TAG_RE.sub("", html).replace("&nbsp;", " ").strip()
+    text = _WRAPPER_TAG_RE.sub("", html).replace("&nbsp;", " ")
+    return _NOLINK_RE.sub(r"\1", text).strip()
 
 
 def _graph_header(payload: dict[str, Any]) -> list[str]:
@@ -3182,19 +3228,72 @@ def _graph_header(payload: dict[str, Any]) -> list[str]:
     return [str(x_axis.get("title") or "x"), *labels]
 
 
-def _graph_axes(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Axis titles and scales as RTINGS declared them. Titles carry the unit."""
+def _slot_order(key: Any) -> tuple[int, int, str]:
+    """Google Charts keys series/axis slots "0", "1", … "10": numeric order, not string order."""
+    text = str(key)
+    return (0, int(text), "") if text.isdigit() else (1, 0, text)
+
+
+def _graph_axes(payload: dict[str, Any], *, n_series: int | None = None) -> dict[str, Any] | None:
+    """Axis titles and scales as RTINGS declared them. Titles carry the unit.
+
+    ``n_series`` is the number of value columns in a point: RTINGS declares styling slots
+    for band/area series that ship no column (tv PQ EOTF: 10 slots, 6 columns), so the
+    per-series axis map is cut to the columns that exist.
+    """
     options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+
+    def parse(value: Any) -> dict[str, Any] | None:
+        # Google Charts spells the scale `scaleType`; the newer shape spells it `scale`.
+        if not isinstance(value, dict):
+            return None
+        scale = value.get("scale") if value.get("scale") is not None else value.get("scaleType")
+        if not (value.get("title") or scale):
+            return None
+        return {"title": value.get("title"), "scale": scale}
 
     def axis(*keys: str) -> dict[str, Any] | None:
         for key in keys:
-            value = options.get(key)
-            if isinstance(value, dict) and (value.get("title") or value.get("scale")):
-                return {"title": value.get("title"), "scale": value.get("scale")}
+            parsed = parse(options.get(key))
+            if parsed is not None:
+                return parsed
         return None
 
     x_axis = axis("x", "hAxis")
     y_axis = axis("y", "vAxis")
+    # A dual-axis chart (tv PQ EOTF: output stimulus AND luminance) declares its y axes
+    # under `vAxes` keyed "0"/"1" and leaves `vAxis` as a placeholder; each series picks
+    # its axis with `targetAxisIndex`. Read from `vAxis` alone, the curve had no y axis at
+    # all (member round S8, 2026-09-07).
+    raw_v_axes = options.get("vAxes")
+    if isinstance(raw_v_axes, dict):
+        items = sorted(raw_v_axes.items(), key=lambda kv: _slot_order(kv[0]))
+    elif isinstance(raw_v_axes, list):
+        items = list(enumerate(raw_v_axes))
+    else:
+        items = []
+    y_axes = []
+    for index, value in items:
+        parsed = parse(value)
+        if parsed is not None:
+            y_axes.append({"index": int(index) if str(index).isdigit() else index, **parsed})
+    if y_axes and y_axis is None:
+        y_axis = {k: v for k, v in y_axes[0].items() if k != "index"}
     if x_axis is None and y_axis is None:
         return None
-    return {"x": x_axis, "y": y_axis}
+    axes: dict[str, Any] = {"x": x_axis, "y": y_axis}
+    if len(y_axes) > 1:
+        axes["y_axes"] = y_axes
+        series = options.get("series")
+        entries = (
+            [series[k] for k in sorted(series, key=_slot_order)]
+            if isinstance(series, dict)
+            else series
+        )
+        if isinstance(entries, list):
+            # Aligned with the series columns of each point (the x column excluded).
+            indexes = [
+                int(s.get("targetAxisIndex") or 0) if isinstance(s, dict) else 0 for s in entries
+            ]
+            axes["series_y_axis_index"] = indexes[:n_series] if n_series is not None else indexes
+    return axes

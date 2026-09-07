@@ -169,3 +169,13 @@
   blur); and legacy untagged observations are treated as unknown-provenance, which is why an
   existing cache may show `unknown` for one call before it self-heals.
 
+- **`rt_auth_status` resolves the session instead of answering `unknown` (member round S14,
+  2026-09-07).** On a fresh cache nothing had probed, so the first call said `unknown` to "is my
+  membership live?" while the CLI's `auth --status` probed. The tool now runs
+  `ensure_session()` when no sign-in is in progress: no credential → `anonymous` with no
+  request; a credential → the HTML probe of `/tv/tools/table` (never a review page, spends
+  nothing), throttled by `TTL_PROBE`. During a sign-in the long-poll path is unchanged.
+- **Measured 2026-09-07 (fifteen cold processes sharing one scratch cache): 67 of 129 requests
+  were the HTML session probe**, most of them the forced write-time probe that precedes every
+  tier-keyed write. All 129 returned 200 from CloudFront; no limit was hit. The forcing rule
+  stands (a write must never be labelled from a stale answer); the cost is now a number.

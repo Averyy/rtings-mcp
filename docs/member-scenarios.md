@@ -48,7 +48,7 @@ Pass: real brightness values with units (cd/m²), ranked descending, `data_tier:
 
 ### S2 — "Is the LG C5 better than the Samsung S95H for gaming?" (tv, head-to-head)
 Tools: `rt_search` for both → `rt_ratings(filters={"product_ids": [...]}, usages=["Video
-Games"], tests=[input lag 1080p@120, VRR])` → `rt_product(url, include_verdicts=true)` on one.
+Games"], tests=[input lag 1080p@120, VRR])` → `rt_product(product=<url>, include_verdicts=true)` on one.
 Pass: both rows present, usage scores populated, verdict prose returned, no `tested_gated`.
 
 ### S3 — "Headphones with the flattest treble for mixing" (headphones, gated, repeated names)
@@ -64,9 +64,11 @@ Pass: `Size` resolves to the numeric test (not the variant alias), the word filt
 "2560 x 1440" as text, response time is a real number in ms.
 
 ### S5 — "Lightest wireless mouse with a good sensor" (mouse, gated, two recent benches)
-Tools: `rt_ratings(tests=["Default Weight", "Click Latency"], filters={"Connectivity": "Wireless"},
+Tools: `rt_ratings(tests=["Default Weight", "Expected Connection"], filters={"Connectivity": "Wireless"},
 sort=+"Default Weight")`.
-Pass: results nested by bench (2 groups), no cross-bench merge, weight in grams, latency in ms.
+Pass: one recent-set group spanning both benches (`test_benches` lists 2, every row carries its
+`test_bench`; `SPEC.md` — widening adds groups, the default does not), weight in grams, latency
+in ms. The scored click-latency leaf is "Expected Connection"; "Click Latency" is its group.
 
 ### S6 — "Which printer is cheapest per page for black text?" (printer, gated)
 Tools: `rt_schema(find="cost per print")` → `rt_ratings(sort=+<black cost>)`.
@@ -79,7 +81,7 @@ Pass: the usage and the test are distinguished (no id collision error where none
 noise in dB, usage score 0–10.
 
 ### S8 — "Show me the peak-brightness curve and the number for the Sony Bravia 9" (tv, graph + value)
-Tools: `rt_search` → `rt_product(url, tests=[HDR peak brightness])` → `rt_graph(product, test)`.
+Tools: `rt_search` → `rt_product(product=<url>, tests=[HDR peak brightness])` → `rt_graph(product, test)`.
 Pass: the scalar is a real value (member), the curve is the same as anonymous (RECON §13.6),
 `axis_bounds_of_served_points` labelled, ≤ ~200 points unless `full=true`.
 
@@ -94,13 +96,15 @@ Pass: one call, the range works, battery life in hours (input unit), no unit mis
 
 ### S11 — "An Early Access review" (any gated silo with `published:false` products)
 Tools: `rt_ratings(silo="tv", limit=25)` → find a `review_unpublished` row anonymously would
-show; as a member → `rt_product(url)` on it.
+show; as a member → `rt_product(product=<url>)` on it.
 Pass: the member sees real values (Early Access is an Insider perk, RECON §12.10), status
 `tested_visible`, the URL's second path segment is used as the silo.
 
 ### S12 — Control: "Firmest mattress for side sleepers" (mattress, metered)
 Tools: `rt_ratings(silo="mattress", tests=["Firmness"], usages=["Side Sleepers"], sort=-Firmness)`.
-Pass: identical values to an anonymous run of the same call; `data_tier: unblurred` both times;
+Pass: identical values to an anonymous run of the same call; `data_tier: unblurred` both times
+(`previews_remaining` is `null` on the anonymous run too — with no credential the server probes
+nothing, and the probe page reads `access_limit: null` anyway, `RECON.md` §14.1);
 the member write is **refused** with a `not_cached` warning **only if** the anonymous
 observation is missing — with a cold scratch cache expect the write to go through as `member`
 (no anonymous proof yet) and no warning.
@@ -111,7 +115,8 @@ Pass: the best-of page parses (whichever template), usage scores populated.
 
 ### S14 — Session health, before and after
 Tools: `rt_auth_status()` first and last.
-Pass: `session: member` both times, `credential.source: file`, the stored cookie's mtime
+Pass: `session: member` both times (the first call on a fresh cache probes, since 2026-09-07),
+`source: file`, the stored cookie's mtime
 advanced, mode `0600`, and `~/.config/rtings-mcp/session.json` is the only file written there.
 
 ### S15 — Cache reuse across processes

@@ -217,3 +217,34 @@
   with a real name, never the wrong join key. Both migrated silos are open, so no blurred sample
   exists: a featured item rendering neither score nor value is `unknown_row_status`, never
   `tested_gated`.
+- **The server `instructions` must spell parameters as the schema names them (member round,
+  2026-09-07).** Three of fifteen graders lost a call to `rt_product(url, ...)` in the
+  instructions text; the parameter is `product`. `rt_product(product=<url>, ...)` everywhere.
+- **The "no prices" rule names its one measured exception.** Printer `Black-Only Printing Cost`
+  (US$/print) is a test, found with `find='cost'`; an agent reading rule 7 literally refused a
+  cost-per-page question that the data answers (S6).
+- **A wrong `Group/Name` qualifier lists the tests with that leaf name (S3).** "No test named
+  `Treble/RMS Deviation From Target`" sent the caller back to the schema; the qualifier must be
+  the group's full name (`Treble Profile: Target Compliance/...`), and the forms that work are
+  now in `details.matches`, the same shape the ambiguity error uses.
+- **A group named in `tests=` lists its leaves and any same-named usage (S12).** mattress
+  `tests=["Firmness"]` resolves to the group; the error now carries `details.tests`
+  (`Firmness Level` 31954, the two stiffness tests) and `details.usages` (usage 40380).
+- **`score_direction` is derived over every product the call matched, not the rows served.**
+  The legend said "in this response" while `_score_direction` ran over the pre-limit population,
+  which is the more robust reading (mouse `Delay At Half Movement` is `mixed` over 159 rows and
+  100% discordant over the top 10); the docs now say which (S5).
+- **Graph axes: read `vAxes` and `scaleType` too (S8).** tv's PQ EOTF curve declares two y axes
+  under `options.vAxes` ("0" output stimulus, "1" luminance) with `vAxis` as a placeholder, and
+  spells the scale `scaleType`. Read from `vAxis`/`scale` alone the curve had `y: null` and
+  `x.scale: null`. `axes.y` is the first declared axis; a dual-axis chart adds `y_axes` and
+  `series_y_axis_index` (per value column, cut to the columns that ship — RTINGS declares 10
+  styling slots for 6 columns).
+- **`[nolink:Name]` in best-of prose is unwrapped to `Name` (S9).** RTINGS' shortcode for a
+  product it chose not to link; two of five soundbar picks carried it into `reasoning`.
+- **`rt_schema(find=...)` usage hits carry `is_unscored` (S12).** A usage that is never scored
+  (mattress `Firmness`) sorted only by falling back; the tree already said so, `find` did not.
+- **Measured 2026-09-07, member round: the default recent-set group is ONE group** (mouse 2
+  benches, headphones 4, laptop 3) with `test_bench` on every row, per `SPEC.md`; a bench the
+  site renders as recent but publishes no schema for (headphones 244/230/183, laptop 198) has no
+  display name anywhere RTINGS ships, so it lists as `{"id": ...}` alone.

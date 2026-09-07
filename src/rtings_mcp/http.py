@@ -26,6 +26,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -543,6 +544,8 @@ class Transport:
             return
         record: dict[str, Any] = {
             "ts": time.time(),
+            # Several processes share one log; without this a line cannot be attributed.
+            "pid": os.getpid(),
             "host": host,
             "query": query,
             "status": status,

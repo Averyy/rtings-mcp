@@ -465,6 +465,12 @@ class SignInFlow:
         if budget and self.in_progress:
             seen = self._version
             await self._wait_until(lambda: self._version != seen, budget)
+        if not self.in_progress:
+            # "Is my membership live?" deserves an answer, not `unknown`: on a fresh cache
+            # nothing has probed yet, and the CLI's `auth --status` already probes. It is
+            # the session probe (`/tv/tools/table`, never a review page), throttled by its
+            # TTL, and skipped while a sign-in is running (member round S14, 2026-09-07).
+            await self.ctx.auth.ensure_session()
         return self.snapshot()
 
     def snapshot(self) -> dict[str, Any]:

@@ -380,3 +380,31 @@ def test_an_unscored_test_reports_no_score(tv_schema):
         row(original_id="208", unblurred=True, value="4k", score=10.0), tv_schema.test("208")
     )
     assert scored.score == 10.0
+
+
+def test_review_row_with_no_display_unit_is_labelled_with_the_input_unit(tv_schema):
+    """monitor "Total Response Time" declares `number_input_unit: milliseconds` and no display
+    unit: RTINGS shows it in the input unit ("0.2 ms"). Read from the display unit alone the
+    review path served the row with no unit at all while rt_ratings said milliseconds
+    (member round S4, 2026-09-07)."""
+    from dataclasses import replace
+
+    definition = replace(
+        tv_schema.test("12000"), number_display_unit=None, number_input_unit="milliseconds"
+    )
+    out = normalize_review_row(
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "0.2 ms",
+            "score": 9.9,
+            "test": {"original_id": "12000"},
+        },
+        definition,
+        product_id="1",
+        schema=tv_schema,
+    )
+    assert out.status == TESTED_VISIBLE
+    assert out.value == 0.2
+    assert out.unit == "milliseconds"
+    assert out.display_unit is None

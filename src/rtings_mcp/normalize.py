@@ -434,12 +434,17 @@ def normalize_review_row(
         # unit: "2.1 lbs (1.0 kg)" yields 2.1, pounds. When RTINGS shows the stored unit
         # in parentheses as well, that figure is taken instead, so this path agrees with
         # rt_ratings (1.0, kilograms) rather than labelling the same test two ways.
-        row.unit = definition.number_display_unit
+        # A test that declares no display unit is shown in its input unit ("0.2 ms" on a
+        # milliseconds test), so that is the unit of the parsed number. Read from the
+        # display unit alone, monitor's response-time rows carried no unit at all while
+        # rt_ratings labelled the same test milliseconds (member round S4, 2026-09-07).
+        row.unit = definition.number_display_unit or definition.number_input_unit
         row.precision = definition.number_display_precision
         row.display_unit = None
         alt = _parenthesised_number(rendered) if value is not None else None
         if (
             alt is not None
+            and definition.number_display_unit
             and definition.number_input_unit
             and definition.number_input_unit != definition.number_display_unit
             and definition.number_input_unit.lower() not in CLOCK_UNITS

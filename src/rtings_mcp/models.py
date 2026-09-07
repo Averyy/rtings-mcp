@@ -327,7 +327,8 @@ class RatingsData(Permissive):
         description=(
             "Definition of every projected test, keyed by original_id: name, kind, unit "
             "(of `value`), display_unit, precision, insider_only, hierarchy, and "
-            "`score_direction` (derived from RTINGS' own scores in this response: "
+            "`score_direction` (derived from RTINGS' own scores across every product this call "
+            "matched, not only the rows served: "
             "higher_is_better / lower_is_better / mixed). Rows carry only the answer."
         ),
     )

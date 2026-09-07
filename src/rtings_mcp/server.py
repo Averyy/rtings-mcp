@@ -95,16 +95,19 @@ mcp = MCPServer(
         "Responses over ~40K characters are trimmed per group with a `response_truncated` "
         "warning — page with offset. To compare specific products use "
         "filters={'product_ids': [...]}.\n"
-        "5. GATED category, not signed in: the numbers are withheld, so use rt_product(url, "
-        "include_verdicts=true) for RTINGS' written verdict, pros and cons on one product, "
+        "5. GATED category, not signed in: the numbers are withheld, so use "
+        "rt_product(product=<url>, include_verdicts=true) for RTINGS' written verdict, pros "
+        "and cons on one product, "
         "rt_recommendations(silo) for their ranking with reasoning, and rt_graph for the "
         "curves that are published anyway.\n"
         "6. filters and sort accept a test's original_id OR its name; `variant` filters by "
         "the size RTINGS tested. Each sort ranks ONE field; blend two by calling twice.\n"
         "7. RTINGS publishes no prices. Nothing here can answer 'cheapest' or 'under $X'; "
-        "say so rather than guess. Spec-sheet facts RTINGS does not measure (IP/water "
-        "rating, OLED burn-in/longevity, warranty) are not tests either: they appear only "
-        "in verdict/recommendation prose, if at all.\n"
+        "say so rather than guess. The one measured exception is running cost: printer "
+        "'Black-Only Printing Cost' (US$/print) is a test, found with find='cost'. "
+        "Spec-sheet facts RTINGS does not measure (IP/water rating, OLED burn-in/longevity, "
+        "warranty) are not tests either: they appear only in verdict/recommendation prose, "
+        "if at all.\n"
         "8. RTINGS tests ONE size per model: `tested_variant` on every product row is the "
         "SKU the numbers describe. A 'Best 65-inch' pick may have been measured at 77 "
         "inches; say so when it matters.\n\n"
@@ -238,7 +241,8 @@ async def rt_ratings(
     **Shape.** Each product's `tests` rows carry only the answer (`original_id`, `status`,
     `value`, `gated`, `score`, `display`, `as_of`); `data.tests[original_id]` holds the
     definition once — name, kind, `unit` (of `value`), `display_unit`, hierarchy — plus
-    `score_direction`, derived from RTINGS' own scores in this response (`lower_is_better`
+    `score_direction`, derived from RTINGS' own scores across every product this call
+    matched, not only the rows served (`lower_is_better`
     for input lag or a scratchy factor). `sort` on a test ranks by its value, never its
     score. A `number` test whose `unit` is `"score"` is itself a 0-10 rating (robot-vacuum
     "Water Left On Floor"), not a physical quantity.
@@ -493,8 +497,10 @@ async def rt_auth_status(wait_s: int = 0) -> AuthStatusEnvelope:
     under Claude Desktop's 60 s tool-call limit) — that is how you wait for a human to finish
     signing in without blocking a single call for minutes.
 
-    `session` is credential health, never entitlement to data: `member`, `free`, `anonymous`,
-    `expired`, or `unknown` when no probe has run yet.
+    `session` is credential health, never entitlement to data: `member`, `free`, `anonymous`
+    or `expired`. With a credential stored it runs the session probe (a category table page,
+    never a review, so nothing is spent) when none is cached or the cached one has aged out;
+    `unknown` only when that probe itself failed.
     """
     from . import auth_tools
 

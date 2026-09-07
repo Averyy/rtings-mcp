@@ -151,3 +151,26 @@ def test_notice_only_when_everything_is_gated():
 def test_iso_formats_utc():
     assert iso(0) == "1970-01-01T00:00:00Z"
     assert iso(None) is None
+
+
+def test_a_visible_early_access_row_proves_the_surface():
+    """A member sees an Early Access product's values. Excluding the product outright left
+    `insider_tests: unknown` beside three served insider values on the review path, while
+    the verdict loop counted the same product's visible verdicts (member round S11,
+    2026-09-07). A withheld row of theirs still proves nothing about the gate."""
+    s = scores()
+    observe_test_rows(
+        s,
+        [row("11", True, product_id="99")],
+        insider_ids=INSIDER,
+        unpublished_product_ids={"99"},
+    )
+    assert s.to_json()["insider_tests"] == AVAILABLE
+    withheld = scores()
+    observe_test_rows(
+        withheld,
+        [row("11", False, product_id="99")],
+        insider_ids=INSIDER,
+        unpublished_product_ids={"99"},
+    )
+    assert withheld.to_json()["insider_tests"] == "unknown"
