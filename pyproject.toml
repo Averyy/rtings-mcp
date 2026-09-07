@@ -52,6 +52,10 @@ path = "src/rtings_mcp/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rtings_mcp"]
 
+[tool.hatch.build.targets.sdist]
+# Agent-facing working notes are not part of the distribution; the README, SPEC and RECON are.
+exclude = ["CLAUDE.md", "TODO.md", ".gitignore", "docs/"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

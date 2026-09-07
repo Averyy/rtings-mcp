@@ -265,11 +265,10 @@ def find_membership_markers(html: str) -> dict[str, Any]:
     and ``membership_type``, plus a second literal with ``userIsInsider``. Anonymously they
     read ``"Visitor"``, ``"no plan"`` and ``false``.
 
-    This matters because **which field separates ``member`` from ``free`` in
-    ``GLOBALS.session`` has never been measured** — the access-level comparison is a guess
-    read off the client bundle. ``userIsInsider`` is a literal boolean naming the thing we
-    need, so it is the primary signal and the rest corroborate it. Phase 0 confirms what a
-    real membership puts here; ``rtings-mcp auth --status`` prints all of it.
+    Since 2026-09-06 the deciding field is ``current_user.is_insider`` (``RECON.md`` §13.2,
+    measured on a real membership); these markers corroborate it, because each comes from a
+    different part of the page and any one can be absent. ``rtings-mcp auth --status``
+    prints all of it.
     """
     out: dict[str, Any] = {}
     insider = _USER_IS_INSIDER_RE.search(html)

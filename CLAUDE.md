@@ -934,3 +934,10 @@ compared to shipping a confident lie.
 - **NEVER add Claude attribution.**
 - **Always bump version** in `pyproject.toml` (patch by default; ask before minor/major).
 - **Run the release re-scan above before any version bump.**
+- **Publishing is a GitHub release, never a manual upload.** `.github/workflows/publish.yml`
+  runs lint and the offline tests, builds, refuses a release tag that does not match
+  `__version__`, and publishes through PyPI trusted publishing (OIDC) from the `pypi`
+  environment — no token is stored anywhere. To release: bump `__version__`, commit, push,
+  then `gh release create vX.Y.Z --generate-notes`. PyPI's publisher is registered as owner
+  `Averyy`, repository `rtings-mcp`, workflow `publish.yml`, environment `pypi`; the GitHub
+  environment `pypi` must exist on the repo (Settings → Environments).

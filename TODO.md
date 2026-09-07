@@ -25,8 +25,9 @@ account — see below.
   is used and dies 30 days after it stops. Observed rotating and being persisted correctly today.
 - **`RTINGS_MEMBER_MODE` now defaults to `true`** (v0.2.0). Setting it to `0` still works and is
   what the anonymous-label guard exists for.
-- **Committed 2026-09-06 as v0.2.0** — the sign-in, the guards and the docs are on `main`.
-  The project still forbids committing unasked.
+- **Committed 2026-09-06 as v0.2.0, then v0.2.1 after the shopper round** — the sign-in, the
+  guards, the round's fixes and the docs are on `main` (through `d1efb4d`). The project still
+  forbids committing unasked.
 - **The real cache now holds member data** — `tests/*/141.member.*` for tv, written 2026-09-06
   by a signed-in `rt_ratings` through this session's own MCP connection. Everything else in
   `~/.cache/rtings-mcp` is anonymous slices from 2026-09-04/05.

@@ -1039,10 +1039,12 @@ an empty payload as a miss. What is **never** cached: `fetch_failed`, `challenge
 
 Two rules ported, both structural, both load-bearing:
 
-1. **`cache_tier` is part of the cache key — but only on the gated surfaces.** `tests/`, `ratings/`
-   and `reviews/` are tier-keyed; `schema/`, `catalog/`, `graphs/`, `bench/`, `recs/` are **not**
-   (they carry no gated fields — `RECON.md` §3, §4 — so tiering them would store two identical
-   copies, the mistake CR made and reversed). RTINGS returns a normal `200` blurred page when logged
+1. **`cache_tier` is part of the cache key — but only on the gated surfaces.** `tests/`, `ratings/`,
+   `reviews/`, `verdicts/` and — since 2026-09-06 — `recs/{silo}/{list}` are tier-keyed; `schema/`,
+   `catalog/`, `graphs/`, `bench/` and `recs/{silo}/_lists.json` are **not** (they carry no gated
+   fields — `RECON.md` §3, §4 — so tiering them would store two identical copies, the mistake CR
+   made and reversed). A best-of page does carry gated fields (each pick's `featured_test_results`
+   and `ratings` have their own `unblurred`), which is why it moved. RTINGS returns a normal `200` blurred page when logged
    out, so an untiered gated cache would overwrite scored rows with null ones on the next anonymous
    call.
 2. **Never downgrade.** A row with `unblurred:true` is never overwritten by an all-blurred row for the

@@ -54,14 +54,23 @@ agent can't read "no member session" as "RTINGS did not test this."
 
 ## Install
 
+From PyPI, with nothing to clone (`uvx` fetches and caches the package on first run):
+
+```bash
+claude mcp add rtings --scope user -- uvx rtings-mcp
+```
+
+For the in-conversation browser sign-in (`rt_sign_in`) install the `browser` extra instead:
+
+```bash
+claude mcp add rtings --scope user -- uvx --from "rtings-mcp[browser]" rtings-mcp
+```
+
+Or from a checkout, if you want to work on it:
+
 ```bash
 git clone https://github.com/Averyy/rtings-mcp && cd rtings-mcp
 uv venv && uv pip install -e .
-```
-
-Register it with your MCP client by absolute path, e.g. for Claude Code:
-
-```bash
 claude mcp add rtings --scope user -- uv --directory /absolute/path/to/rtings-mcp run rtings-mcp
 ```
 
@@ -84,7 +93,7 @@ No configuration is needed to start. Anonymous is the default and never an error
 | `rt_silos(silos?)` | the 28 categories with **observed** paywall enforcement |
 | `rt_schema(silo, bench?, group?, find?)` | test/usage definitions: name, kind, unit, hierarchy, `insider_only`; `find` searches the bench by name |
 | `rt_ratings(silo, tests?, usages?, filters?, sort?, limit?)` | catalog + 0–10 usage scores, with an optional scalar projection; `filters.product_ids` for a head-to-head |
-| `rt_product(product)` | one review: test results, plus RTINGS' verdicts and pros/cons with `include_verdicts` (`include_results=false` for the words alone) |
+| `rt_product(product, group?, tests?)` | one review: test results (bounded by `group` or `tests`), plus RTINGS' verdicts and pros/cons with `include_verdicts` (`include_results=false` for the words alone) |
 | `rt_graph(product, test)` | one test's measurement curve, resampled by selecting shipped points |
 | `rt_search(query)` | model name/number → candidates across all categories |
 | `rt_recommendations(silo, list?, limit?)` | the category's best-of lists, or one ranked list with reasoning |
@@ -127,6 +136,7 @@ review.
 | `RTINGS_CACHE_TTL_DAYS` | `30` | TTL for measurements and reviews; routing data has its own shorter clocks |
 | `RTINGS_CONCURRENCY` | `1` | in-flight requests to rtings.com |
 | `RTINGS_GRAPH_MAX_POINTS` | `200` | default curve resampling target |
+| `RTINGS_MAX_RESPONSE_CHARS` | `40000` | `rt_ratings` trims each group's page to fit this many characters on the wire and says where to page from |
 | `RTINGS_CDN_RATE_INTERVAL_S` / `RTINGS_CDN_RATE_BURST` | `0.25` / `10` | the asset CDN's own budget |
 | `RTINGS_TELEMETRY` | `true` | append header-only request records to `telemetry/requests.jsonl` |
 | `RTINGS_MEMBER_MODE` | `true` | member-tier caching. Set `0` to pin every cached file to the `anonymous` tier — a signed-in session then serves its rows but cannot cache them |
