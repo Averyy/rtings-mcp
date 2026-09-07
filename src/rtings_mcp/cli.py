@@ -254,8 +254,8 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
     if args.out:
         document = {
             "_comment": (
-                "Baseline for the release-time enforcement re-scan (see CLAUDE.md > "
-                "Release). Anonymous data only. 'enforces_paywall' is DERIVED from observed "
+                "Baseline for the release-time enforcement re-scan (see docs/rules/release.md). "
+                "Anonymous data only. 'enforces_paywall' is DERIVED from observed "
                 "unblurred on insider_only rows, excluding published:false products. "
                 "Re-scan and diff before every version bump; a change here is a spec "
                 "change, not a test failure."

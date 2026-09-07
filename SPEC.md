@@ -8,14 +8,15 @@ against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership f
 conversation (which is the only route Claude Desktop has: it offers no terminal for
 `rtings-mcp auth`). 436 offline tests and 9 live anonymous tests pass, and the release-gate
 re-scan reproduces the 12-enforcing / 16-open map exactly. **Published on PyPI as
-`rtings-mcp` 0.2.1 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
+`rtings-mcp` 0.2.2 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
 `uvx rtings-mcp`. **Member mode is ON by default**
 (`RTINGS_MEMBER_MODE`) since Phase 0 settled q1 on 2026-09-06 (`RECON.md` §13.1). Facts the build
 measured are in `RECON.md` §12, the member session in §13; the corrections they forced are marked
 **(corrected)** below.
 The anonymous surface is confirmed across all 28 silos: catalog, schema, search, review prose, ranked
-recommendations, curve data for the tests that have a curve, and — on **16 of 28 silos** — the full
-measurements and scores. **The member surface is verified** (2026-09-06, `RECON.md` §13.1): a
+recommendations, curve data for the tests that have a curve, and — on **16 of 28 silos**, while the
+anonymous three-review preview budget is unspent, which an API client that never opens a review
+page keeps it (`RECON.md` §14) — the full measurements and scores. **The member surface is verified** (2026-09-06, `RECON.md` §13.1): a
 membership cookie returns the withheld scalars over the same API, 588/588 unblurred against 0/588
 anonymous on tv bench 227. That was the one blocking unknown, and it is closed.
 
@@ -47,8 +48,9 @@ drops the structure. Meanwhile RTINGS' own front end fetches every category from
 - Be **structurally incapable of lying about the paywall** — an agent must never read a blurred
   value as "RTINGS did not test this" (§5). Core safety property, ported.
 - **Anonymous by default, exposing the maximum RTINGS serves without a session** (§5). Measured
-  2026-09-03: **16 of 28 silos serve their full measurements, scores and rankings anonymously**; the
-  other 12 (the flagship categories) gate them. So anonymous is not a consolation tier — for most of
+  2026-09-03: **16 of 28 silos serve their full measurements, scores and rankings anonymously**
+  (corrected 2026-09-07: to a session whose three-review preview budget is unspent, which this
+  server's always is — `RECON.md` §14); the other 12 (the flagship categories) gate them outright. So anonymous is not a consolation tier — for most of
   the catalog it serves the numbers outright. (Whether a membership adds *anything* on those 16 is
   unmeasured — usage ratings were not swept there, and no member session has ever been observed.) **All 28 silos, all-or-nothing** — full coverage, no launch
   subset (§12).
@@ -99,7 +101,7 @@ keyboard-switch, camera, running-shoes.
 On those 16, `insider_only` tests come back **with values and scores** — real measurements (mattress
 `Indent @ 50 kg` = `44.26`, score `5.4`), zero `Lock` markers in 5,194 rows checked.
 
-| Surface | Anonymous, 12 gated silos | Anonymous, 16 open silos | Member (verified 2026-09-06) |
+| Surface | Anonymous, 12 gated silos | Anonymous, 16 metered silos, budget unspent (§14) | Member (verified 2026-09-06) |
 |---|---|---|---|
 | Catalog, schema, search, prose, recommendations | full | full | full |
 | Graph / curve data | **full** | **full** | full |
@@ -117,10 +119,22 @@ silo look gated.
 so an open silo can be gated later as it grows. **Never hardcode the 12/16 split** — re-derive it per
 fetch, and let never-downgrade (§8) absorb a silo flipping open → gated.
 
+**Corrected 2026-09-07 (`RECON.md` §14): the 16 are METERED, not open.** An anonymous
+session reads `access_level 2, access_limit 3` on those silos — a three-product review
+preview budget, spent one unit per distinct product review page fetched as **HTML**, held
+in the plain `product-previews` cookie. Past the third product the session drops to level 1
+and `test_results` and `ratings` blur to exactly the previewed products (mattress 405 → 15,
+camera 375 → 15). The 12 "enforcing" silos are the ones where anonymous has no budget at
+all. Every scan so far ran on a fresh jar, i.e. unspent — and so does this server, by
+construction: `rt_product` is the `page_body` POST, which does not count, and no code path
+fetches a review page as HTML. So what the server observes is real for its own session, and
+the honest description is "a preview budget the server never spends", never "open".
+Never add a review-HTML fetch, and never strip, reset or persist that cookie.
+
 **One sentence a reader needs:** anonymously you get the raw measurement (the curve) but not RTINGS'
 number for it (the scalar). The server runs in two honest modes, and the envelope says which:
 
-- **Anonymous on the 16 open silos is a full *data* mode** — values, scores, ranking and comparison,
+- **Anonymous on the 16 metered silos, budget unspent, is a full *data* mode** — values, scores, ranking and comparison,
   the numbers served outright. **Not verified to be identical to what a member sees** — no member
   session has been measured (`RECON.md` §10 q1), and usage ratings were not swept on these silos.
 - **Anonymous on the 12 gated silos** is a *catalog, prose and curve* mode — search, spec routing,
@@ -414,7 +428,8 @@ are treated as unknown-provenance, so an existing cache may report `unknown` for
 self-heals. The same `provenance: anonymous` reading is what the anonymous-label write guard (§8)
 consults as its proof that a silo serves a surface in full.
 
-This matters because **16 of 28 silos answer numeric questions anonymously and 12 do not**, and the
+This matters because **16 of 28 silos answer numeric questions anonymously (budget unspent, `RECON.md`
+§14) and 12 do not**, and the
 agent cannot tell from the outside. Without it, an agent asking "rank air purifiers by CADR" and an
 agent asking "rank TVs by peak brightness" get the same-shaped call and wildly different usefulness,
 with no way to know in advance which one it is. With it, the agent routes: ask the open silos
@@ -676,9 +691,15 @@ A current-bench review is **402 rows / 437 KB** (`RECON.md` §6), so this tool b
   apply — the table tool (`rt_ratings`) is where a clean `value` exists. When the number is only
   needed numerically, prefer the table path; `rt_product` is for the full per-product picture.
 
+**Corrected 2026-09-07 (`RECON.md` §14): `page_body` does NOT increment the meter, and a free
+account has no preview budget at all** — the meter is three products on the 16 metered silos,
+anonymous and free alike, spent by the review page's HTML GET and held in a plain cookie. The
+budget control below stays as insurance and arms only when the probe reports a non-null
+`access_limit`; with none, a `free` session behaves like `anonymous`. The original design:
+
 **It consumes the user's metered previews — this needs a BUDGET, not a timer.** `rt_product` is
-`app/product_vue_page__page_body`, the endpoint the server-side free/preview meter counts
-(`RECON.md` §10 q2). Spacing calls two seconds apart protects nothing — it just spends the user's
+`app/product_vue_page__page_body`, the endpoint the server-side free/preview meter was believed
+to count (`RECON.md` §10 q2). Spacing calls two seconds apart protects nothing — it just spends the user's
 previews more slowly. Time is the wrong axis; **count** is the right one. `max_retries=0` on this
 POST is necessary (wafer's default of 3 turns one call into three consumed previews) and not
 sufficient. On a `session == free` run — anonymous has **zero** previews (`RECON.md` §5) and a member
@@ -1221,7 +1242,8 @@ a tier above `anonymous` is precisely what the flag forbids. So the write is **r
    and public-only slices stay writable and the §6 deadlock does not return.
 3. **No signed-out fetch has proven this (silo, bench) serves that surface in full**
    (`ObservationStore.anonymous_serves`). This is the load-bearing condition: **16 of 28 silos serve
-   `insider_only` rows unblurred to anonymous**, so on mattress a member's bytes are the same bytes
+   `insider_only` rows unblurred to anonymous** (with the preview budget unspent, which the server's
+   own jar always is — `RECON.md` §14), so on mattress a member's bytes are the same bytes
    anonymous gets, the `anonymous` label is true, and the write must go through. Without this
    condition the guard would refuse every legitimate write on more than half the catalog.
 
@@ -1241,8 +1263,8 @@ the category once signed out). The cost is real and should be understood — wit
 signed-in user re-fetches on every call, measured at 2.3 s against 0.0 s cached on an open silo —
 which is a large part of why the default is now on.
 
-**`free` exists only on `reviews/`.** A free account unlocks nothing on the table path — the meter is
-per *review* (`RECON.md` §5, §10 q2) — so a `free` probe fetching `tests/` or `ratings/` would miss
+**`free` exists only on `reviews/`.** A free account unlocks nothing on the table path — nor, as
+measured 2026-09-07, anywhere else (`RECON.md` §14.6); the tier is now a harmless label — so a `free` probe fetching `tests/` or `ratings/` would miss
 every `anonymous` slice and write a byte-identical `free` copy, exactly the duplicate-rows mistake
 rule 1 exists to avoid. So the **demand** tier on `tests/`/`ratings/` is `member` when the probe says
 `member`, and `anonymous` otherwise; `reviews/` uses the full three-value order.

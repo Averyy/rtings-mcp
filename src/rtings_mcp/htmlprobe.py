@@ -170,9 +170,10 @@ def classify_session(
     The ladder the client's own code implies is 1 = anonymous, 2 = logged-in free, higher =
     insider (measured: anonymous 1/2, member 3/2).
 
-    A logged-in session with no positive signal at all is still called ``free`` — an
-    under-claim, and the note says the reading is provisional so a real member is not left
-    guessing. Only a **free** account can retire that last caveat.
+    A logged-in session with no positive signal at all is called ``free``, and the note says
+    so in case a real member is misread. Measured against a real free account 2026-09-07
+    (RECON §14.6): ``is_insider: false``, ``access_level 1``, no budget — the reading is right,
+    and a free account is anonymous with a username.
     """
     session_obj = globals_obj.get("session")
     if not isinstance(session_obj, dict):

@@ -1297,9 +1297,13 @@ class Repository:
     ) -> tuple[Envelope, bool]:
         """One product review, with the preview budget enforced **before** the POST.
 
-        ``rt_product`` is ``app/product_vue_page__page_body`` — the endpoint the server-side
-        free/preview meter counts. Spacing calls apart protects nothing; it just spends the
-        user's previews more slowly. Time is the wrong axis, **count** is the right one. So:
+        ``rt_product`` is ``app/product_vue_page__page_body``. It was believed to be the
+        endpoint the free/preview meter counts; **measured 2026-09-07 (RECON §14) it is not**
+        — the meter counts the review page's HTML GET, which this server never issues, and a
+        free account has no budget on the gated silos anyway. The guard below therefore arms
+        only when the probe reports a real ``access_limit``, and stays as insurance against
+        RTINGS metering the API later. Spacing calls apart protects nothing; it just spends
+        the user's previews more slowly. Time is the wrong axis, **count** is the right one. So:
         check the budget before spending, require an explicit opt-in for a call that would
         spend, never auto-refetch a past-TTL review, hold the cross-process lock so two
         clients cannot double-spend, and re-probe afterwards.

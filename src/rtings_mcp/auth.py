@@ -707,12 +707,17 @@ class AuthManager:
     def preview_would_spend(self, product_id: str, probe: SessionProbe | None = None) -> bool:
         """True when fetching this review would consume one of a free account's previews.
 
-        Anonymous has **zero** previews — measured: ``access_level 1`` sits one level below
-        ``preview_level 2``, so it never had a budget, and no amount of page-walking changes
-        ``access_state``. A member has none of this problem.
+        **Measured 2026-09-07 (RECON §14): a free account has NO budget on the gated silos**
+        — the probe page reads ``access_level 1, access_limit null``, exactly like anonymous —
+        and the meter that does exist (three products on the 16 metered silos, anonymous and
+        free alike) is spent by the review page's HTML GET, not by ``page_body``. So the gate
+        arms only when the probe reports a real budget (``access_limit`` non-null); a free
+        session with none behaves like anonymous, which is what it is. If RTINGS ever meters
+        the API for free accounts, ``access_limit`` turns non-null on the probe page and the
+        guard re-arms without a code change.
         """
         probe = probe or self.cached_probe()
-        if probe is None or probe.session != FREE:
+        if probe is None or probe.session != FREE or probe.access_limit is None:
             return False
         return str(product_id) not in set(probe.previewed_products)
 

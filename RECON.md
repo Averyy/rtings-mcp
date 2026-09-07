@@ -1606,3 +1606,128 @@ enforced; only the constant is unknown, and it stays unknown.
 Capture (c) — "the exact `test_results` body a logged-in front end sends" — is answered by
 construction: the body this project already sends (§1) returned fully unblurred member data in
 §13.1, so it needs no adjustment for the member case.
+
+## 14. The anonymous preview meter, 2026-09-07 — the "16 open silos" are METERED
+
+Measured anonymously with `curl`, fresh cookie jars, 2 s spacing, no credential. Every number
+below reproduces on a second jar. This section corrects §11.1's framing: the split is real, but
+the 16 silos are not *open* — they give anonymous a **three-product preview budget**, and while
+it is unspent the table tool serves everything. Every scan so far ran on a fresh jar, i.e. with
+the budget unspent.
+
+### 14.1 `access_state` is per SILO, not per session
+
+The same anonymous jar reads different `access_state` on different pages:
+
+| Page | `access_level` | `access_limit` |
+|---|---|---|
+| `/`, `/login`, `/signup`, a 404, and the landing page of each of the 16 "open" silos | 2 | 3 |
+| the landing page of each of the 12 enforcing silos | 1 | null |
+
+`preview_level` is 2 everywhere. Swept 2026-09-07 over all 28 `/{silo}` landing pages: level 1
+on **exactly** the 12 silos §11.1 calls enforcing (headphones, keyboard, laptop, monitor, mouse,
+printer, projector, robot-vacuum, router, soundbar, speaker, tv), level 2 on the other 16. So
+one anonymous GET of `/{silo}` is a per-silo enforcement signal that agrees with the 41,944-row
+sweep — cheaper than a `test_results` fetch, and a candidate cross-check for the release scan.
+§5's "anonymous is `access_level 1`" was measured on a TV page and is TV-specific.
+
+### 14.2 The meter: one unit per PRODUCT, spent by the review page's HTML GET
+
+`previewed_products` (and the `product-previews` cookie behind it, §14.4) grows by one product id
+per **distinct product review page** fetched as HTML (`/{silo}/reviews/{brand}/{model}`):
+
+- mattress: `[]` → Puffy Monarch → `[141499]` → SweetNight CoolNest → `[113330, 141499]`;
+  re-fetching Monarch leaves it at two. Camera: the same, `[36568]`, `[33705, 36568]`, …
+- The list is **global** (the TV landing page shows the mattress ids) while `access_limit` is
+  per silo (§14.1).
+- After the third distinct product, the **fourth** review GET drops `access_level` to **1** on the
+  metered silos and the list stops growing (mattress and camera both: `[3 ids]`, level 1).
+- Pages that do **not** count: `/{silo}`, `/{silo}/tools/table`, `/{silo}/tools/compare`, the
+  best-of pages (`/{silo}/reviews/best/...`), and — decisively — **`POST
+  app/product_vue_page__page_body` does not count** (fresh jar, Purple mattress: list stays
+  empty), nor does `POST app/side_by_side__review` (fresh jar, Nectar: list stays empty,
+  `user_has_access: true`).
+
+### 14.3 Spent meter ⇒ the TABLE path blurs on the metered silo
+
+With the budget spent (jar at level 1) the two table surfaces blur to exactly the previewed
+products:
+
+| Surface, mattress bench 236 | fresh jar | spent jar |
+|---|---|---|
+| `table_tool__test_results`, 5 insider leaf tests, tested rows | 405 / 405 unblurred | **15 / 405** (3 products × 5 tests) |
+| `table_tool__ratings`, 3 usages | 207 / 207 | **9 / 207** (3 × 3) |
+| camera bench 278, 5 insider tests | 375 / 375 | **15 / 375** |
+
+So on these silos blur is `insider_only ∧ (access_level < preview_level)`, and the level is a
+function of the meter. §11.1's rule "blurred ⇔ published:false ∨ (insider_only ∧ silo
+enforces)" holds for a fresh session and is incomplete for a spent one. The 12 "enforcing"
+silos are simply the ones where anonymous has no budget (`access_limit: null`, level 1 from
+the start).
+
+### 14.4 The state lives in a plain cookie, not the Rails session
+
+The jar after three previews carries `product-previews=109851-141499-113330` (not HttpOnly).
+Splitting that jar:
+
+- session cookie kept, `product-previews` dropped → landing reads level 2, `previewed_products: []`;
+- `product-previews` kept, `_rtings_session` dropped → level 1, the three ids.
+
+So the meter is entirely the cookie. A client that does not persist cookies starts every
+process unspent — which is what a browser's private window does, and what this server does
+by construction (wafer's jar is in-memory; the only cookie ever written to disk is a **proven
+logged-in** `_rtings_session`).
+
+**What this means for the server.** It never fetches a product review as HTML — `rt_product`
+is the `page_body` POST, which does not count — so its own jar never spends the budget, and the
+"full" it observes on 16 silos is exactly what RTINGS serves to a session that has read fewer
+than three reviews. Three rules follow, all about *not* engineering around the meter:
+
+1. **Never add a review-HTML fetch path.** One GET per product spends the budget, and the fourth
+   blurs the table tool for the whole silo, for the rest of the process. (The sign-in browser
+   window is the human's, not the server's jar.)
+2. **Never strip, reset or rewrite `product-previews`, and never persist it.** Dropping it is a
+   bypass; persisting an anonymous cookie is the credential-hygiene rule's other half.
+3. **Describe the 16 honestly**: "three-review preview budget, and an API client that never
+   opens a review page keeps it unspent" — not "open", not "no paywall".
+
+### 14.5 What this settles and what still needs a FREE account
+
+- **§10 q2 (the meter's unit) is ANSWERED: per product**, incremented by the review page HTML
+  GET, idempotent per product, shared across silos, limit 3 for anonymous on the 16 metered
+  silos and none on the 12. Measured anonymously, which §13.7 thought impossible — the
+  anonymous tier *has* a meter on 16 silos; §5 saw `access_limit: null` because it looked at TV.
+- **Capture (o) is ANSWERED: `side_by_side__review` is not metered.** Neither is `page_body`.
+- **`rt_product`'s preview budget guards an endpoint that does not spend.** Kept as a guard —
+  a free account could in principle be metered on the API — but the measured trigger is the
+  HTML page, which the server never requests.
+- Still open, free account only: whether a logged-in free account carries the same cookie
+  meter (and with what `access_limit` on the 12 gated silos), and whether its
+  `previewed_products` moves server-side once there is a user to attach it to.
+
+### 14.6 A FREE account, measured — it is anonymous with a username
+
+Signed in a free (non-Insider) account in a browser on 2026-09-07 and walked the same pages:
+
+- `current_user` is an object with `is_insider: false` (keys: `id, username, is_admin,
+  is_insider, is_confirmed, insider_end_at, email, user_mailinglists, paywall_test_account,
+  insider_status`), so the probe's `free` classification is confirmed against a real one.
+- **Gated silo (tv): `access_level 1, access_limit null`, `previewed_products: []`** — identical
+  to anonymous. Four TV review pages later, still level 1, still empty. `table_tool__test_results`
+  on bench 227: **0 / 490** tested insider rows unblurred. A free account has **no** preview
+  budget on the 12 gated silos.
+- **Metered silo (mattress): the same three-product cookie meter as anonymous** — level 2,
+  limit 3, `[141499]`, `[113330, 141499]`, three ids, then level 1 on the fourth product, and
+  the table blurs to 15 / 405. Dropping the `product-previews` cookie while keeping the
+  logged-in session resets it to level 2 with an empty list: the meter is **not** attached to
+  the account.
+- The ladder RTINGS' bundle implied (1 anonymous, 2 free, 3 insider) is therefore not what the
+  server enforces: for data access there are two tiers, **not-Insider** and **Insider**, and
+  "free" is a mailing-list signup. §13.7's remaining question is closed.
+
+**Consequences for the server.** `rt_product`'s preview gate guarded a cost nobody is charged:
+`page_body` does not increment the meter (§14.2) and a free account has no budget to spend.
+`preview_would_spend` now arms only when the probe reports a non-null `access_limit`, so a
+`free` session behaves like `anonymous` (which it is) and the guard re-arms by itself if
+RTINGS ever meters the API. The `free` cache tier on `reviews/` stays as a harmless label —
+its bytes are anonymous bytes.

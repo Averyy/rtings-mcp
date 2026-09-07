@@ -1,7 +1,7 @@
 {
-  "_comment": "Baseline for the release-time enforcement re-scan (see CLAUDE.md > Release). Anonymous data only. 'enforces_paywall' is DERIVED from observed unblurred on insider_only rows, excluding published:false products. Re-scan and diff before every version bump; a change here is a spec change, not a test failure.",
+  "_comment": "Baseline for the release-time enforcement re-scan (see docs/rules/release.md). Anonymous data only, measured on a fresh session whose three-review preview budget is unspent (RECON.md section 14): 'enforces_paywall: false' means the silo serves everything to such a session, not that it has no paywall. 'enforces_paywall' is DERIVED from observed unblurred on insider_only rows, excluding published:false products. Re-scan and diff before every version bump; a change here is a spec change, not a test failure.",
   "scanned_at": "2026-09-04",
-  "reverified_at": "2026-09-06",
+  "reverified_at": "2026-09-07",
   "reverified_note": "Re-derived by `rtings-mcp scan` across all 28 silos: 12 enforcing / 16 open, no diff in enforcement or bench ids. Run with a member credential stored on disk, which the scan ignores by construction (it nulls the credential and pins the probe before the session is built), so the map remains an anonymous measurement \u2014 that guard had not previously been exercised against a real cookie.",
   "method": {
     "source": "table_tool__column_options + table_tool__test_results, anonymous, no cookie",

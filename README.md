@@ -31,15 +31,19 @@ blurred  ⇔  product.published == false          (Early Access, an Insider perk
          ∨  (test.insider_only  ∧  the CATEGORY enforces the paywall)
 ```
 
-Enforcement is per-category and binary. 12 of 28 enforce, 16 don't.
+Enforcement is per-category. 12 of 28 gate outright. The other 16 give a session without a
+membership a **three-review preview budget** ([`RECON.md` §14](RECON.md)): while it is unspent the
+numbers are served, and after the third product review page the same session is gated like the
+12. The budget is spent only by loading a review page as HTML, which this server never does (its
+product drilldown is a JSON call that does not count), so for the server the 16 behave as full.
 
 | | Categories | Anonymous gets |
 |---|---|---|
-| **Open (16)** | mattress, vacuum, air-purifier, air-fryer, refrigerator, microwave, toaster, toaster-oven, air-conditioner, dehumidifier, humidifier, blender, vpn, keyboard-switch, camera, running-shoes | test values, scores, ranking and comparison. The numbers are served. |
+| **Metered (16)** | mattress, vacuum, air-purifier, air-fryer, refrigerator, microwave, toaster, toaster-oven, air-conditioner, dehumidifier, humidifier, blender, vpn, keyboard-switch, camera, running-shoes | test values, scores, ranking and comparison. The numbers are served while the preview budget is unspent, which it always is for this server. |
 | **Gated (12)** | tv, headphones, monitor, mouse, keyboard, soundbar, speaker, printer, laptop, robot-vacuum, projector, router | catalog, schema, search, **RTINGS' written verdicts, pros and cons**, review prose, ranked best-of lists, published curve data, and a handful of public spec fields with their scores |
 
 Every category reports `has_paywall: true`, so that flag carries no information. Only the served
-data shows the split. What decides it is unknown and it will change, so the server never hardcodes
+data shows the split (the per-category `access_level` on the landing page agrees with it). It will change, so the server never hardcodes
 it; `rt_silos()` reports what your machine observed. The map is re-scanned before each release
 against [`docs/enforcement-snapshot.json`](docs/enforcement-snapshot.json) (baseline 2026-09-03,
 re-verified 2026-09-06: 12/16, unchanged — and re-verified *with* a membership stored, which the
@@ -115,10 +119,11 @@ both directions.
 RTINGS' per-usage judgement in their own words, their pros and cons, and how each usage score is
 composed. Those come through even where every measurement is null.
 
-⚠️ **`rt_product` can cost you something.** On a free account it hits the endpoint RTINGS meters,
-so each new review spends one of your limited previews. It refuses by default and requires an
-explicit `consume_preview=true`, reports how many remain, and never silently re-fetches a cached
-review.
+**A free RTINGS account adds nothing over anonymous** — measured ([`RECON.md` §14.6](RECON.md)):
+it has no preview budget on the gated categories and the same three-review meter on the others.
+`rt_product` keeps a budget guard in case RTINGS ever meters the API for free accounts (it arms
+only when the site reports a limit, and then requires an explicit `consume_preview=true`), but
+today nothing it calls is metered.
 
 ## Configuration
 

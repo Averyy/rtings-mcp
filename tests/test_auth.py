@@ -386,6 +386,14 @@ def test_anonymous_has_no_previews_to_spend(auth):
     assert auth.previews_remaining() is None
 
 
+def test_free_with_no_reported_budget_never_spends(auth):
+    """RECON §14: a free account reads `access_limit: null` on the probe page, like anonymous,
+    and `page_body` does not increment the meter. Gating rt_product on it refused a call that
+    anonymous makes freely."""
+    auth._probe = probe("free", access_limit=None, previewed_products=[])
+    assert auth.preview_would_spend("1") is False
+
+
 def test_free_account_spends_only_on_a_product_not_already_previewed(auth):
     auth._probe = probe("free", access_limit=3, previewed_products=["1", "2"])
     assert auth.preview_would_spend("1") is False

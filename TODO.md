@@ -3,7 +3,7 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.1 is on
+**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.2 is on
 PyPI, released through `publish.yml` and verified from a fresh `uvx` install.** Three review rounds (15 defects, then 10,
 then 7 more found while testing the sign-in end to end — see Built, below). All seven data tools
 run against the live API, **436 offline + 9 live tests pass**, and the release-gate re-scan
@@ -135,9 +135,11 @@ and a PASS/FAIL. Use a scratch `RTINGS_CACHE_DIR`.
 
 ### Still NOT tested
 
-1. **q2 and capture (o) — need a FREE account.** A membership cannot answer them; see below.
-2. **The review path on a legacy bench for a member** (the other half of q16).
-3. **`rt_sign_in` end to end on an expired cookie** — the guard was read, not run.
+1. **The review path on a legacy bench for a member** (the other half of q16).
+2. **`rt_sign_in` end to end on an expired cookie** — the guard was read, not run.
+3. ~~A free account~~ — **measured 2026-09-07 (`RECON.md` §14.6): identical to anonymous.** No
+   budget on the 12 gated silos, the same three-product cookie meter on the 16. Nothing left
+   that needs a free account.
 
 ### Cautions
 
@@ -250,12 +252,14 @@ A member has no meter (`access_limit: null`, `previewed_products: []`), so no am
 session time can measure the preview budget. The control is built and enforced; only the constant
 is unknown.
 
-- [ ] **q2 — the metered preview's unit** (per product, per session, per day). Capture
-      `previewed_products`/`access_limit` before and after one `rt_product` call **on a free
-      account**.
-- [ ] **capture o — is `app/side_by_side__review` metered?** Check `previewed_products` before and
-      after an `include_verdicts` call **on a free account**. Reasoning says no (it is the public
-      compare tool, not the review page), but that is reasoning, not measurement.
+- [x] ~~**q2 — the metered preview's unit**~~ **ANSWERED 2026-09-07, anonymously (`RECON.md`
+      §14): per PRODUCT**, spent by the review page's HTML GET, idempotent per product, shared
+      across silos, limit 3 for anonymous on the 16 metered silos and none on the 12. `page_body`
+      does not count, so `rt_product` never spends one. Past the limit the TABLE path blurs too —
+      the "16 open silos" were a fresh-jar artifact; the server's jar is always fresh by
+      construction and must stay that way honestly (no review-HTML fetch, no cookie games).
+- [x] ~~**capture o — is `app/side_by_side__review` metered?**~~ **ANSWERED 2026-09-07: no**
+      (`RECON.md` §14.2) — a fresh jar's `previewed_products` stays empty after the call.
 
 - [x] ~~**q3 / capture e — does the session slide?**~~ **ANSWERED 2026-09-04, anonymously,
       no membership needed** (`RECON.md` §12.15). It slides on *every* response, HTML and API
