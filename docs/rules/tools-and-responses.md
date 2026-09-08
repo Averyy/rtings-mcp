@@ -363,3 +363,22 @@
 - **The recent-bench set is a strict PARTITION (2026-09-08, `RECON.md` §12.23).** 6 bench pairs
   across 4 silos share zero products. Grouping by bench loses nothing and duplicates nothing, and
   a cross-bench score comparison does not exist in the data to be made — q7 is answered and moot.
+- **A result the silo schema does not define still belongs to its section (2026-09-08).**
+  Measured: EVERY TV review on legacy bench v1.11 carries two results the table schema has no
+  definition for — `12240` "1080p @ 144Hz" and `12242` "4k @ 144Hz", both `status: tested` (5 of
+  5 cached v1.11 reviews). They were reported from the row's own stub, correctly, but with no
+  parent: `hierarchy: []`, a `group: null` section that sorts last, is dropped FIRST by the
+  budget, and that `group=` cannot name — so two visible measurements ended up with no way back
+  to them. The row's stub names its parent ("Supported Resolutions"), RTINGS' internal
+  `parent.id` is NOT the `original_id` the schema is keyed by, so the NAME is the join, taken
+  only when exactly one structure row carries it (26 of 28 silos have no duplicated group name;
+  monitor's "Inputs" and projector's "Design" do, and there a null beats a guess). Two places had
+  to learn it: `ancestry` looked the row up by id and found nothing, so it walks from the
+  definition in hand (`ancestry_of`), and `_nest_by_hierarchy` is handed the stub-built
+  definitions for the same reason.
+- **`groups_omitted` never leaves a section unreachable (2026-09-08).** The truncation warning
+  tells the caller to fetch a dropped section with `group=<its group_id>`; on a section whose
+  `group_id` is null that instruction does not work. Such an entry now names its `test_ids`
+  (capped at 25) so `tests=[...]` reaches it, and the warning says so. The addressable entries
+  are unchanged — the ids are the exception, not the shape.
+

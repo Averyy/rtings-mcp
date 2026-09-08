@@ -33,7 +33,14 @@ MEMBER_MODE_ENV = "RTINGS_MEMBER_MODE"
 #:
 #: 2 (2026-09-04): the schema parse now carries `derived_category_id`, recovered from list
 #: position, so a v1 cached schema would restore a flat scramble of groups with no categories.
-CACHE_FORMAT_VERSION = 2
+#: Bumped whenever a cached payload's SHAPE changes, not just the cache's layout. The
+#: derived surfaces (`recs/<silo>/_lists.json`, `recs/<silo>/<list>`, `articles/`) store
+#: what the extractor produced, not what RTINGS sent, so a parser that learns a new field
+#: is invisible to an existing file: measured 2026-09-08, a cache written on 2026-09-04
+#: still served a best-of index with no `kind` and no brand pages (TTL_RECS is 7 days,
+#: TTL_REVIEWS 30), which is a released fix that reaches nobody until it expires. 3:
+#: `kind`/brand lists and `template` on the best-of surfaces.
+CACHE_FORMAT_VERSION = 3
 
 #: TTL per surface, in seconds (SPEC §8). A uniform TTL is a correctness bug, not a
 #: freshness preference: a new bench would go unnoticed for a month while the server ranks

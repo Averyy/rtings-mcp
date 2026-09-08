@@ -193,7 +193,14 @@ class RatingOut(LeanRow):
     status: RowStatus
     score: float | None = None
     gated: bool | None = None
-    suitable: bool | None = None
+    suitable: bool | None = Field(
+        default=None,
+        description=(
+            "RTINGS' own recommendation for this use: `false` is them saying this product "
+            "is NOT suitable for it, which is a real answer and not the same as the field "
+            "being absent (they said nothing)."
+        ),
+    )
     is_unscored: bool | None = None
     as_of: str | None = None
 

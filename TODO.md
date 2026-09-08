@@ -176,6 +176,48 @@ rows, not a duplicate slice; `observed/<silo>.json` carries `cache_tier: anonymo
 label while the code reads each bench's `provenance`; the uncatalogued group's `matched` ignores
 a usage filter its rows cannot carry.
 
+### The S16–S19 round (2026-09-08) — the v0.3.x surfaces, over the live member session
+
+The four scenarios `docs/member-scenarios.md` added for v0.3.0 and had never run, driven against
+the real membership through an MCP client (the server the session started, not a stub). **4 PASS,
+3 defects found and fixed.**
+
+| Scenario | Calls | Verdict | What it found |
+|---|---|---|---|
+| S16 "does Sony sell a bigger OLED this year?" | 3 | PASS | `/tv/learn/2026-lineup` is the top search hit, `section="Sony"` returns one heading of 16, `previews_remaining` unchanged; a review URL is refused **before** any fetch |
+| S17 "a Sony at 83 inches or bigger, and its model number" | 1 | PASS | one call, 9 rows, every one really sold ≥83"; every row's `variants[]` carries `{variation, model}` |
+| S18 "The 5 Best Samsung TVs" and the runners-up | 3 | PASS | brand pages tagged `kind: "brand"` (3 of 20 lists), picks + featured rows + usage scores all joined by real `original_id`s — **but only after `refresh=true`**: the cached index was 4 days old and predated the field → **defect 1**. `mentions: null` on this page is correct (verified against the live HTML: no Notable Mentions section); a size list returns 6 |
+| S19 a LEGACY-bench review, by URL and by id | 2 | PASS | both resolve to bench 124 (v1.11), `tested_visible`, 16 of 45 sections inside the budget, `groups_omitted` names the rest and `group=14` re-fetches one — **except one entry with `group_id: null`** → **defect 2** |
+
+Defects found, all three fixed, tested and re-verified against live data:
+
+1. **A derived cached payload keeps its old shape after an upgrade.** `CACHE_FORMAT_VERSION` had
+   never been bumped since the first commit, so the best-of index written 2026-09-04 was still
+   served on 2026-09-08 without `kind` or brand pages — a released fix reaching nobody for up to
+   7 days (30 on the review surfaces). Bumped to 3, `articles/` added to the wipe list, and the
+   rule that a shape change *is* a bump is now in `docs/rules/cache.md`.
+2. **Two measured results per legacy-bench TV review were unreachable.** `12240` "1080p @ 144Hz"
+   and `12242` "4k @ 144Hz" are in every v1.11 review and in no silo schema (5 of 5 cached
+   reviews), so they nested under a `group: null` section that sorts last, is dropped first by
+   the budget, and `group=` cannot name. They now join their real section ("Supported
+   Resolutions", group 206) via the parent name their own row carries, and an omitted section
+   with no `group_id` names its `test_ids` so `tests=[...]` always reaches it.
+3. **The `drift` release gate read the cache by default.** Over a warm cache it reported
+   `template: null` and `brand_lists: 0` for tv — a gate that cannot see the live site is worse
+   than no gate. Both gates now refresh by default (`--no-refresh` to iterate).
+
+A fourth, found while checking the round's own output rather than by a scenario: **`suitable:
+false` was dropped from every usage row**, so RTINGS' "not recommended for this use" verdict was
+indistinguishable from RTINGS saying nothing (3,903 `true` to 23 `false` across 152 cached
+slices, every false one beside a visible score). Fixed, tested, and now described in the output
+schema.
+
+Not defects, checked and left alone: `axes: null` on a frequency-response curve (RTINGS' asset
+carries only `header`/`data`); `rt_search` returning loose page hits for a nonsense query (their
+index, not ours); `from_cache: false` beside a cached `fetched_at` (the field means "this call
+made a request", as `test_from_cache_means_this_call_made_no_request` asserts — the wording in
+`docs/rules/cache.md` reads as if it meant the data's provenance, which is worth reconciling).
+
 ### Still NOT tested
 
 Nothing on the original list. All three closed 2026-09-08:

@@ -19,6 +19,11 @@ So, as a release gate, before every version bump:
 0. **Run both gates**: `rtings-mcp scan --out docs/enforcement-snapshot.json` (the paywall map)
    and `rtings-mcp drift --out docs/recommendation-template-snapshot.json` (best-of extraction).
    Each writes its own committed baseline; each diff is a spec change, not a test failure.
+   **Both refresh by default (2026-09-08).** A gate that reads the cache measures what this
+   machine fetched last week, and both snapshots are the record of RTINGS' CURRENT decisions:
+   measured, `drift` over a warm cache reported `template: null` and `brand_lists: 0` for tv
+   because those fields postdate the cached pages. `--no-refresh` exists for iterating on a diff
+   without re-fetching 28 silos; a snapshot must never be written from one.
 1. **Re-run the anonymous 28-silo scan** — the enforcement half of the smoke test (`SPEC.md` §10):
    per silo, `column_options` + `products_list` + one `test_results` over the current bench's leaf
    tests, anonymous, no cookie.

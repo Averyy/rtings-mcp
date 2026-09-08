@@ -219,3 +219,18 @@ def test_format_version_mismatch_clears_payloads_but_not_the_tree(tmp_path):
     (cache.root / "meta.json").write_text(json.dumps({"format_version": 0}), encoding="utf-8")
     rebuilt = Cache(config)
     assert rebuilt.get("silos.json") is None
+
+
+def test_the_wipe_covers_every_surface_that_stores_EXTRACTED_content(tmp_path):
+    """The bump exists for shape changes, and a surface left out of the list keeps serving
+    the old shape: measured 2026-09-08, a `_lists.json` written four days earlier still had
+    no `kind` and no brand pages. `recs/` and `articles/` are extractor output, not what
+    RTINGS sent, so they are exactly the ones that must go."""
+    config = load_config({"RTINGS_CACHE_DIR": str(tmp_path / "c")})
+    cache = Cache(config)
+    cache.put(env(), "recs", "tv", "_lists.json")
+    cache.put(env(), "articles", "tv", "2026-lineup.json")
+    (cache.root / "meta.json").write_text(json.dumps({"format_version": 0}), encoding="utf-8")
+    rebuilt = Cache(config)
+    assert rebuilt.get("recs", "tv", "_lists.json") is None
+    assert rebuilt.get("articles", "tv", "2026-lineup.json") is None

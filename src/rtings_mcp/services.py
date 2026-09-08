@@ -2462,6 +2462,9 @@ async def rt_product(
     values: list[dict[str, Any]] = []
     commentary: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    #: Definitions built from a review row's own stub because the schema has none. They are
+    #: not in `schema.tests`, so anything that resolves a row by id has to be handed them.
+    stub_defs: dict[str, TestDef] = {}
     group_filter = _group_name_or_id(schema, group) if group else None
 
     for row in rows:
@@ -2481,7 +2484,7 @@ async def rt_product(
                 kind=str(stub.get("kind") or ""),
                 has_score=bool(stub.get("has_score")),
                 insider_only=bool(stub.get("insider_only")),
-                parent_original_id=None,
+                parent_original_id=_stub_parent_id(schema, stub),
                 order=0,
                 published=True,
                 number_display_unit=None,
@@ -2489,6 +2492,7 @@ async def rt_product(
                 number_prefix=None,
                 words=(),
             )
+            stub_defs[original_id] = definition
         raw_for_tier.append(
             {
                 "original_id": original_id,
@@ -2629,7 +2633,9 @@ async def rt_product(
         # rows the caller already had from rt_ratings.
         # Nested under the breadcrumb rather than repeating it on every row; `result_count`
         # still counts the RESULTS, not the groups.
-        "results": _nest_by_hierarchy(values, schema) if include_results else [],
+        "results": (
+            _nest_by_hierarchy(values, schema, stub_defs) if include_results else []
+        ),
         "result_count": len(values) if include_results else 0,
     }
     if include_prose:
@@ -2721,6 +2727,11 @@ async def rt_product(
     ).to_json()
 
 
+#: How many test ids an unaddressable omitted section names. It exists only for a section
+#: with no `group_id`, and the index of what was cut has to fit inside the budget too.
+_OMITTED_ID_CAP = 25
+
+
 def _fit_product_budget(data: dict[str, Any], budget: int) -> list[str]:
     """Bound an ``rt_product`` response on the wire, by whole sections where it can.
 
@@ -2747,6 +2758,20 @@ def _fit_product_budget(data: dict[str, Any], budget: int) -> list[str]:
                 "group": g.get("group"),
                 "group_id": g.get("group_id"),
                 "test_count": g.get("test_count"),
+                # A section with no `group_id` cannot be re-fetched with `group=` — the
+                # warning's own instruction does not work on it, and its rows would simply
+                # be gone. Naming their ids keeps that promise through `tests=[...]`
+                # instead. Only for that case: the whole index has to fit too.
+                **(
+                    {}
+                    if g.get("group_id")
+                    else {
+                        "test_ids": [
+                            t.get("original_id")
+                            for t in (g.get("tests") or [])[:_OMITTED_ID_CAP]
+                        ]
+                    }
+                ),
             }
             for g in reversed(dropped)
         ] or None
@@ -2774,6 +2799,12 @@ def _fit_product_budget(data: dict[str, Any], budget: int) -> list[str]:
         "group=<its group_id>, or pass tests=[ids] for specific measurements. "
         "include_results=false drops the rows entirely when you only want the words."
         + (
+            " A section with no group_id cannot be addressed by group=; its `test_ids` "
+            "are listed so tests=[...] still reaches it."
+            if any(not g.get("group_id") for g in (data.get("groups_omitted") or ()))
+            else ""
+        )
+        + (
             " Even one section exceeds the budget here: pass tests=[ids]."
             if size > budget
             else ""
@@ -2781,8 +2812,35 @@ def _fit_product_budget(data: dict[str, Any], budget: int) -> list[str]:
     ]
 
 
+def _stub_parent_id(schema: SiloSchema, stub: dict[str, Any]) -> str | None:
+    """The section a review row belongs to when the silo schema does not define its test.
+
+    Measured 2026-09-08: **every** TV review on legacy bench v1.11 carries two results the
+    schema has no definition for — `12240` "1080p @ 144Hz" and `12242` "4k @ 144Hz", both
+    `status: tested`, both really measured (5 of 5 cached v1.11 reviews). With no parent
+    they nested under a `group: null` section, which sorts last, is dropped FIRST by
+    `_fit_product_budget` and cannot be named by `group=` — so two visible answers left the
+    response with no way back to them.
+
+    The row's own stub names its parent ("Supported Resolutions"). RTINGS' internal
+    `parent.id` is not the `original_id` the schema is keyed by, so the NAME is the only
+    join, and it is taken only when exactly one structure row carries it: 26 of the 28
+    silos have no duplicated group name at all, and where one exists (monitor's "Inputs",
+    projector's "Design") a null beats a guess — the same rule that makes a repeated test
+    name an error rather than "the first one".
+    """
+    parent = stub.get("parent") if isinstance(stub.get("parent"), dict) else {}
+    wanted = str(parent.get("name") or "").strip().lower()
+    if not wanted:
+        return None
+    matches = [t for t in schema.tests.values() if t.is_structure and t.name.lower() == wanted]
+    return matches[0].original_id if len(matches) == 1 else None
+
+
 def _nest_by_hierarchy(
-    values: list[dict[str, Any]], schema: SiloSchema
+    values: list[dict[str, Any]],
+    schema: SiloSchema,
+    stub_defs: dict[str, TestDef] | None = None,
 ) -> list[dict[str, Any]]:
     """Group ``rt_product``'s rows under their breadcrumb, which is then carried once.
 
@@ -2802,7 +2860,8 @@ def _nest_by_hierarchy(
         if key not in grouped:
             order.append(key)
             grouped[key] = []
-            definition = schema.test(str(entry.get("original_id") or ""))
+            row_id = str(entry.get("original_id") or "")
+            definition = schema.test(row_id) or (stub_defs or {}).get(row_id)
             group_ids[key] = schema.parent_of(definition) if definition else None
         grouped[key].append(entry)
     return [

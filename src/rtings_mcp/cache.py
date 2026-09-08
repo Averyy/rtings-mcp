@@ -262,6 +262,9 @@ class Cache:
                 "verdicts",
                 "graphs",
                 "recs",
+                # `articles/` holds extractor output like `recs/` does, so it goes stale
+                # in exactly the same way when the parser changes (added 2026-09-08).
+                "articles",
                 "observed",
             ):
                 target = self.root / name

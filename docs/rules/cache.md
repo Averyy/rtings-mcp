@@ -151,3 +151,13 @@
   two identical copies. It shares `TTL_RECS` (7 days) with the best-of surfaces, which is the same
   kind of editorial content on the same refresh rhythm. Note the contrast with `recs/<silo>/<list>`
   — that one **is** tier-keyed, because a best-of page's featured rows do carry gated values.
+- **A change to a DERIVED payload's shape is a `CACHE_FORMAT_VERSION` bump (2026-09-08, now 3).**
+  `recs/<silo>/_lists.json`, `recs/<silo>/<list>` and `articles/` store what the extractor
+  produced, not what RTINGS sent, so a parser that learns a new field is invisible to a file
+  already on disk. Measured on this machine: a `_lists.json` written 2026-09-04 was still served
+  on 2026-09-08 with no `kind` and no brand pages, and cached best-of pages still reported
+  `template: null` — a shipped fix reaching nobody for up to `TTL_RECS` (7 days), or
+  `TTL_REVIEWS` (30) on the review surfaces. The version bump is the only thing that clears them
+  on upgrade, so it is part of the change, not a follow-up. `articles/` was missing from the
+  wipe list and was added at the same time.
+

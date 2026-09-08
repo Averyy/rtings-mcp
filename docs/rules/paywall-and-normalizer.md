@@ -272,3 +272,12 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
 - **Usage ratings follow the enforcement map exactly (2026-09-08, `RECON.md` §12.20):** 3,006
   rows across all 28 silos, 0% unblurred on the 12 that enforce and 100% on the 15 metered ones
   that define usages, with no silo partial. `keyboard-switch` defines no usages at all.
+- **`suitable: false` is an answer and is reported (2026-09-08).** The lean row dropped every
+  falsy `suitable`, so RTINGS' own "not recommended for this use" verdict looked exactly like
+  RTINGS having said nothing — the same two-into-one-null collapse the seven states exist to
+  prevent, in the one field a shopper reads as advice. Measured across 152 cached slices: 3,903
+  `true` to 23 `false`, every false one beside a VISIBLE score, so reporting it costs 23 fields
+  in 3,926 rows. Only `None` is dropped now. `is_unscored` keeps the truthy-only rule on
+  purpose: it describes the usage DEFINITION, which has a well-defined default, not a judgement
+  about this product.
+

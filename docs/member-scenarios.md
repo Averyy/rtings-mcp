@@ -6,11 +6,12 @@ together touch every tool and every honesty rule the server makes. Anonymous sce
 half, and it is the acceptance test for "the tools work for a paying member".
 
 **S1–S15 were run 2026-09-07 against the real membership (14 PASS, 1 FAIL, every finding
-fixed). S16–S19 were added 2026-09-08** for the surfaces that arrived with v0.3.0 —
-`rt_article`, `sold_in`, variant model numbers, brand best-of lists, `mentions`, the nested
-and budget-bounded `rt_product`, and legacy-bench URL resolution — and have not yet been run
-as a full member round; their mechanics are covered by the offline suite and by a live stdio
-MCP session.
+fixed). S16–S19 — added 2026-09-08** for the surfaces that arrived with v0.3.0 (`rt_article`,
+`sold_in`, variant model numbers, brand best-of lists, `mentions`, the nested and
+budget-bounded `rt_product`, legacy-bench URL resolution) — **were run 2026-09-08 over the
+live member session: 4 PASS, 3 defects found and fixed** (a stale cached payload shape, two
+unreachable results on every legacy-bench TV review, and a release gate reading the cache).
+The round is recorded in `TODO.md`.
 
 ## Ground rules
 

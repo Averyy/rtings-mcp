@@ -163,9 +163,19 @@ class SiloSchema:
         grouped category (``["Brightness", "HDR Brightness"]``), which is what the site
         itself shows.
         """
+        return self.ancestry_of(self.test(original_id))
+
+    def ancestry_of(self, test: TestDef | None) -> list[str]:
+        """:meth:`ancestry` for a definition that may not be IN this schema.
+
+        A review can carry a result the table schema never defines (measured 2026-09-08:
+        two per TV review on legacy bench v1.11). Such a row is reported from its own stub,
+        and looking its ancestry up by id would find nothing — the walk has to start from
+        the definition in hand.
+        """
         chain: list[str] = []
         seen: set[str] = set()
-        current = self.test(original_id)
+        current = test
         while current is not None:
             parent_id = self.parent_of(current)
             if not parent_id or parent_id in seen:

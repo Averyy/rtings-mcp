@@ -396,14 +396,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="insider tests to sample per silo (default matches the committed snapshot)",
     )
     scan.add_argument("--out", help="write the result as JSON to this path")
-    scan.add_argument("--refresh", action="store_true", help="ignore cached slices")
+    # A gate that reads the cache measures what this machine fetched last week, not what
+    # RTINGS serves now — and both snapshots are the record of RTINGS' CURRENT business
+    # decisions. Measured 2026-09-08: `drift` over a warm cache reported `template: null`
+    # and `brand_lists: 0` for tv, because those fields were added after the cached pages
+    # were written. So the gates refresh by default; `--no-refresh` is for iterating on
+    # the diff without re-fetching 28 silos.
+    scan.add_argument(
+        "--refresh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="re-fetch every slice (default; --no-refresh reads the cache)",
+    )
 
     drift = sub.add_parser(
         "drift", help="release gate: does best-of extraction still work on every silo?"
     )
     drift.add_argument("--silo", help="check one silo instead of all 28")
     drift.add_argument("--out", help="write the result as JSON to this path")
-    drift.add_argument("--refresh", action="store_true", help="ignore cached pages")
+    drift.add_argument(
+        "--refresh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="re-fetch every page (default; --no-refresh reads the cache)",
+    )
     return parser
 
 

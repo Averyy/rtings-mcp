@@ -408,3 +408,21 @@ def test_review_row_with_no_display_unit_is_labelled_with_the_input_unit(tv_sche
     assert out.value == 0.2
     assert out.unit == "milliseconds"
     assert out.display_unit is None
+
+
+def test_a_usage_rtings_marks_NOT_suitable_says_so():
+    """`suitable: false` is RTINGS' own "not recommended for this use" verdict. Dropped, it
+    was indistinguishable from "RTINGS said nothing" — measured 2026-09-08, 23 of 3,926
+    cached usage rows carry it, every one beside a visible score."""
+
+    def usage_row(**over):
+        raw = {"original_id": "1", "product_id": "9", "score": 7.4, "unblurred": True}
+        raw.update(over)
+        return normalize_rating_row(raw, name="Mixed Usage").to_json()
+
+    said_no = usage_row(suitable=False)
+    assert said_no["suitable"] is False, "a stated no is not an absence"
+    assert said_no["score"] == 7.4, "and it does not cost the row its value"
+    assert usage_row(suitable=True)["suitable"] is True
+    assert "suitable" not in usage_row(), "nothing said stays nothing said"
+

@@ -3738,6 +3738,101 @@ def test_a_review_inside_the_budget_is_left_completely_alone():
     assert "groups_omitted" not in data and "groups_shown" not in data
 
 
+async def test_a_result_the_schema_does_not_define_still_lands_in_its_own_section(ctx):
+    """MEASURED 2026-09-08: every TV review on legacy bench v1.11 carries two results the
+    silo schema has no definition for — `12240` "1080p @ 144Hz" and `12242` "4k @ 144Hz",
+    both really measured (5 of 5 cached v1.11 reviews). They nested under `group: null`,
+    which sorts last, is dropped FIRST by the budget and cannot be named by `group=`."""
+    page = ctx.transport.payloads["app/product_vue_page__page_body"]
+    rows = page["data"]["page"]["product"]["review"]["test_results"]
+    rows.append(
+        {
+            "status": "tested",
+            "unblurred": True,
+            "rendered_value": "Yes",
+            "test": {
+                "original_id": "99999",
+                "name": "4k @ 144Hz",
+                "kind": "word",
+                # RTINGS' internal `id`, which is NOT the original_id the schema is keyed
+                # by — the name is the only join back to the section.
+                "parent": {"name": "Picture Quality", "kind": "group", "id": "18631"},
+            },
+        }
+    )
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    section = next(g for g in out["data"]["results"] if g["group_id"] == "900")
+    assert "99999" in {r["original_id"] for r in section["tests"]}, (
+        "it belongs beside its siblings, not in an unnamed bucket"
+    )
+    assert not [g for g in out["data"]["results"] if g["group_id"] is None]
+    # and it is addressable, which is the whole point
+    scoped = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", group="900")
+    assert "99999" in {r["original_id"] for r in product_rows(scoped)}
+
+
+def test_a_parent_name_two_sections_share_is_not_guessed_at(tv_schema):
+    """monitor has two groups called "Inputs" and projector two called "Design". A null
+    beats a guess — the same rule that makes a repeated test name an error."""
+    from rtings_mcp.schema import parse_column_options
+    from rtings_mcp.services import _stub_parent_id
+
+    stub = {"parent": {"name": "Picture Quality", "kind": "group", "id": "18631"}}
+    assert _stub_parent_id(tv_schema, stub) == "900"
+    assert _stub_parent_id(tv_schema, {"parent": {"name": "Nowhere"}}) is None
+    assert _stub_parent_id(tv_schema, {}) is None
+
+    raw = json.loads((FIXTURES / "column_options_min.json").read_text())
+    raw["test_bench"]["tests"].append(
+        {
+            "original_id": "901",
+            "name": "Picture Quality",
+            "kind": "group",
+            "published": True,
+            "has_score": False,
+            "parent_original_id": None,
+            "order": 99,
+            "insider_only": True,
+            "number_display_unit": None,
+            "number_display_precision": 1,
+            "words": [],
+        }
+    )
+    ambiguous = parse_column_options("tv", raw)
+    assert _stub_parent_id(ambiguous, stub) is None, "two sections share the name"
+
+
+def test_an_omitted_section_that_group_cannot_address_names_its_test_ids():
+    """The truncation warning tells the caller to fetch a dropped section with
+    `group=<its group_id>`. On a section whose group_id is null that instruction does not
+    work, and the rows would simply be gone — so `tests=[...]` has to be able to reach
+    them."""
+    from rtings_mcp.services import _fit_product_budget
+
+    data = {
+        "results": [
+            {
+                "group": ["Category", f"Section {n}"],
+                "group_id": str(n) if n else None,
+                "test_count": 6,
+                "tests": [
+                    {"original_id": f"{n}{i}", "name": "A test with a name", "value": i}
+                    for i in range(6)
+                ],
+            }
+            for n in range(8)
+        ]
+    }
+    # The unaddressable section is at the HEAD here, so force it out of the response.
+    data["results"].append(data["results"].pop(0))
+    warnings = _fit_product_budget(data, 6_000)
+    omitted = {g["group_id"]: g for g in data["groups_omitted"]}
+    assert None in omitted, "the unaddressable section was dropped"
+    assert omitted[None]["test_ids"] == [f"0{i}" for i in range(6)]
+    assert all("test_ids" not in g for g in data["groups_omitted"] if g["group_id"])
+    assert "test_ids" in warnings[0] and "cannot be addressed by group=" in warnings[0]
+
+
 async def test_a_bare_call_projects_the_public_tests_when_every_score_is_withheld(ctx):
     """MEASURED 2026-09-08: a bare rt_ratings("tv") without a membership was the catalog
     plus 33 usage scores of which ZERO were visible — nothing numeric at all, on an

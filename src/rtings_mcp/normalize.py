@@ -276,7 +276,7 @@ def _base(
         precision=definition.value_precision if numeric else None,
         insider_only=definition.insider_only,
         product_id=product_id,
-        hierarchy=schema.ancestry(definition.original_id) if schema else None,
+        hierarchy=schema.ancestry_of(definition) if schema else None,
     )
 
 
@@ -496,10 +496,17 @@ class NormalizedRating:
             "score": self.score,
             "gated": self.gated,
         }
-        for key in ("suitable", "is_unscored"):
-            value = getattr(self, key)
-            if value is not None and value is not False:
-                out[key] = value
+        # `suitable` is RTINGS' own per-product "not recommended for this use" verdict, and
+        # dropping a `false` made "RTINGS says no" indistinguishable from "RTINGS said
+        # nothing" — the two-into-one-null collapse this server exists to prevent. Measured
+        # 2026-09-08 across 152 cached slices: 3,903 `true` to 23 `false`, every false one
+        # beside a visible score, so keeping it costs 23 fields in 3,926 rows.
+        if self.suitable is not None:
+            out["suitable"] = self.suitable
+        # `is_unscored` keeps the truthy-only rule: it is a property of the usage
+        # DEFINITION with a well-defined default, not a judgement about this product.
+        if self.is_unscored:
+            out["is_unscored"] = self.is_unscored
         if self.as_of is not None:
             out["as_of"] = _iso(self.as_of)
         return out
