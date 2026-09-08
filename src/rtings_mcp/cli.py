@@ -291,6 +291,85 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_drift(args: argparse.Namespace) -> int:
+    """Release gate, second half: does best-of extraction still work on every silo?
+
+    RTINGS is migrating best-of pages onto a second, server-rendered template
+    (`RECON.md` §12.17), and the only symptom is `recommendations_missing` on a silo that
+    worked last month. That was a MANUAL checklist step and a dated note; this is the one
+    call per silo that reproduces it — plus the discovered list count, which catches the
+    other half (a nav change that hides the lists rather than the picks).
+    """
+    ctx = Context.build(load_config())
+    repo = ctx.repo
+    silos = await repo.silo_index()
+    names = [args.silo] if args.silo else sorted(silos)
+    out: dict[str, Any] = {}
+    bad = 0
+
+    for name in names:
+        row: dict[str, Any] = {}
+        try:
+            index = await repo.recommendation_lists(name, refresh=args.refresh)
+            lists = (index.payload or {}).get("lists") or []
+            row["lists"] = len(lists)
+            row["brand_lists"] = sum(1 for e in lists if e.get("kind") == "brand")
+            if not lists:
+                row["status"] = "no_lists_discovered"
+            else:
+                first = lists[0].get("list")
+                row["sampled"] = first
+                envelope = await repo.recommendation(name, first, refresh=args.refresh)
+                payload = envelope.payload or {}
+                picks = payload.get("product_recommendations") or []
+                row["template"] = payload.get("template")
+                row["picks"] = len(picks)
+                row["status"] = "ok" if picks else "no_picks"
+        except RtingsError as exc:
+            row["status"] = exc.code
+            row["message"] = exc.message
+        out[name] = row
+        if row.get("status") != "ok":
+            bad += 1
+        _print(
+            f"{name:<18} lists {row.get('lists', '-')!s:<4} "
+            f"brand {row.get('brand_lists', '-')!s:<4} "
+            f"template {row.get('template') or '-'!s:<7} "
+            f"picks {row.get('picks', '-')!s:<4} {row.get('status')}"
+        )
+
+    props = sum(1 for v in out.values() if v.get("template") == "props")
+    static = sum(1 for v in out.values() if v.get("template") == "static")
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "_comment": (
+                        "Best-of template drift (see docs/rules/release.md and RECON.md "
+                        "§12.17). One list per silo. A silo that moves from 'props' to "
+                        "'static', or lands on a non-ok status, is a SPEC CHANGE."
+                    ),
+                    "scanned_at": time.strftime("%Y-%m-%d"),
+                    "totals": {
+                        "silos": len(out),
+                        "ok": len(out) - bad,
+                        "props_template": props,
+                        "static_template": static,
+                    },
+                    "silos": out,
+                },
+                handle,
+                indent=2,
+            )
+            handle.write("\n")
+        _print(f"\nwrote {args.out}")
+    _print(
+        f"\n{len(out) - bad} ok / {len(out)} silos — {props} on the props template, "
+        f"{static} on the server-rendered one"
+    )
+    return 1 if bad else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rtings-mcp", description="MCP server for RTINGS.com test data"
@@ -318,6 +397,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--out", help="write the result as JSON to this path")
     scan.add_argument("--refresh", action="store_true", help="ignore cached slices")
+
+    drift = sub.add_parser(
+        "drift", help="release gate: does best-of extraction still work on every silo?"
+    )
+    drift.add_argument("--silo", help="check one silo instead of all 28")
+    drift.add_argument("--out", help="write the result as JSON to this path")
+    drift.add_argument("--refresh", action="store_true", help="ignore cached pages")
     return parser
 
 
@@ -335,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_auth(args))
     if command == "scan":
         return asyncio.run(_cmd_scan(args))
+    if command == "drift":
+        return asyncio.run(_cmd_drift(args))
     parser.print_help()
     return 1
 

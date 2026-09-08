@@ -257,3 +257,18 @@ anonymous, no api-key/CSRF/cookie (`RECON.md` §1). The one page-extraction exce
   is withheld for the Early Access reason, not the gate — but a value that came through says
   the surface is served to this session whatever the publication state. An anonymous session
   sees those rows blurred, so the observation store is unchanged for it.
+- **The blur rule is an approximation with a known counterexample (2026-09-08, `RECON.md`
+  §12.21).** `published:false ∨ (insider_only ∧ silo enforces)` predicted every row in six
+  bench-samples except one: headphones **legacy** bench 4 serves test 287 `Transducer` (kind
+  `word`) unblurred on all 16 products, with `insider_only: true`. It is per-TEST — every
+  product sits at exactly 1 of 8 — not the per-product unblurring a preview produces. Nothing in
+  the server changed, because the boundary has always been read off the observed `unblurred` bit
+  rather than the flag; the entry exists so nobody re-derives the rule as exact, and so a future
+  `partial` in the release scan is broken down per test before it is called a paywall change.
+- **Enforcement is kind-agnostic (2026-09-08).** `picture`, `video`, `graph` and `audio` rows
+  follow the same boundary as `number`/`word`: 0% unblurred on tv and headphones, 100% on the
+  metered mattress. A blurred `graph` ROW is not a withheld curve — `rt_graph` serves those
+  anonymously; the table cell and the `graph_data_url` payload are different surfaces.
+- **Usage ratings follow the enforcement map exactly (2026-09-08, `RECON.md` §12.20):** 3,006
+  rows across all 28 silos, 0% unblurred on the 12 that enforce and 100% on the 15 metered ones
+  that define usages, with no silo partial. `keyboard-switch` defines no usages at all.

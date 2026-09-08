@@ -248,3 +248,95 @@
   benches, headphones 4, laptop 3) with `test_bench` on every row, per `SPEC.md`; a bench the
   site renders as recent but publishes no schema for (headphones 244/230/183, laptop 198) has no
   display name anywhere RTINGS ships, so it lists as `{"id": ...}` alone.
+- **`terms_with_no_matches` must not be vouched for by an empty `matched_terms`
+  (2026-09-08).** `_unmatched_terms` read `term in (h.get("matched_terms") or [term])`, and an
+  empty list is falsy, so one hit that matched some *other* term only partially made every term
+  read as matched and the field came back `[]` for a six-term search that matched two.
+  `matched_terms` is absent only on the single-term shape (where the hit itself is the match);
+  `[]` is a real answer and must be read as one — `h.get("matched_terms", [term])`.
+- **A lone digit in a `find` term scores only beside a word of the same term (2026-09-08).**
+  `_find_words("hdmi 2.1")` gives `hdmi/2/1`, and on their own the bare digits hit "Peak 2%
+  Window", "USB Ports" (values `1`, `2`) and sixty more rows, filling the 60-row cap with noise
+  while the real matches sat past it. A term that is *nothing but* a digit keeps it — that is all
+  the caller gave us (`find="1440"`).
+- **An off-bench `usages=`/`tests=` entry is a warning and a partial answer, not a failed call
+  (2026-09-08).** It now matches `product_ids`, which has always warned: the warning names the
+  usage or test, its name, and the `bench=[...]` that carries it. The one exception is a request
+  where *every* entry is off-bench — dropping them all would leave `usages=[]`, which reads as
+  "no scores exist", so that still raises `unknown_test` with `details.available` and
+  `details.on_other_benches`.
+- **MEASURED 2026-09-08: the client cuts a tool description at exactly 2048 characters** and
+  appends "… [truncated]". `rt_ratings` was 4,229 characters with the filter vocabulary
+  (`brand`, `variant`, `name_contains`, `published`) at ~1,540 and `sort`'s "no prefix means
+  descending" past 2,600 — so an agent filtered by `name_contains` and read sizes by eye for
+  an answer the tool already had (shopper round 3). The description is now ordered by what a
+  caller cannot work without: filters, sort, the not-applied rule, the `status` domain, then
+  paging, all inside the window; Size/Shape/Uncatalogued are reference and may fall past it.
+  `test_every_tool_description_fits_or_front_loads_the_client_budget` asserts each essential
+  phrase is inside the first 2048 characters, so a future edit cannot push one out silently.
+- **`sold_in` filters on the sizes a product is SOLD in (2026-09-08).** `variant` matches the
+  TESTED sku only, and "which Sony OLED comes at 83 inches or bigger" had no filter at all —
+  one session took the whole brand's table and scanned by eye. It takes the same comparators
+  and ranges as any other filter (`{"sold_in": ">=83"}`), matches loosely when textual
+  (`"California King"`), and warns rather than returning a bare 0 when nobody sells that size.
+- **Each `variants[]` entry carries the manufacturer model number (2026-09-08).** RTINGS' sku
+  `name` is `"XR-83A80L"` / `"UN43TU7000FXZA"` — what a retailer is searched by — and only
+  `variation` was kept, so a session went to a web search for it. `variants` is now
+  `[{"variation": "83\"", "model": "XR-83A80L"}]`; `model` is omitted where it only repeats
+  the product's own name, which is all some silos put there.
+- **`rt_schema(find=...)` names a catalog field instead of returning nothing (2026-09-08).**
+  `find="size, brand, year, price"` matched no test and said nothing at all. Terms that match
+  nothing are now checked against the catalog vocabulary and answered in `catalog_fields`
+  ("that is `filters={'brand': ...}` on rt_ratings, not a test"; for price, that RTINGS
+  publishes none). Only terms in `terms_with_no_matches` are checked, so a silo that really
+  has a "Size" test (laptop, monitor) matches the test and never sees the hint.
+- **`rt_search(silo=...)` scopes the cross-silo index (2026-09-08).** "Sony A80J" returned 822
+  hits with cameras and soundbars on page one of a TV question. RTINGS' query takes no
+  category, so the filter is applied here — over more hits than `count` (`scanned`), reporting
+  `silo_matches`, and saying in the notice that a product ranked below them will not appear.
+- **`rt_article` reads a `learn` page as prose (2026-09-08).** RTINGS' lineup and explainer
+  articles answer what no measurement can, and nothing surfaced them. It takes the `url`
+  `rt_search` returns, lists the article's headings in `sections`, and slices one out with
+  `section=` — a lineup article is past 25,000 characters, so one heading is the readable
+  unit. Prose only, never a measurement, and never gated. See `RECON.md` §12.19, and §14.7
+  for the meter measurement that let it ship.
+- **`rt_product`'s results are nested by section, and MEASURED 2026-09-08 that is a shape
+  win, not a byte win.** The flat rows repeated `hierarchy` on every one — on a real TV
+  review (Sony BRAVIA 9 II, 243 results) that breadcrumb is **18,589 of 69,852 characters,
+  26.6%**, which is where the "~23%" estimate came from. Removing it recovers far less than
+  that, because nesting adds two indent levels to 243 rows: **flat 69,852 → nested 68,592,
+  only 1.8%**. A flat row carrying a `group` id against a breadcrumb legend measured 65,249
+  (6.6%) — better on bytes, worse on shape. Nesting was kept for what it buys instead: the
+  response reads like the sectioned review it came from, and each section's `group_id` goes
+  straight back as `rt_product(group=...)` to fetch that section alone — which is what the
+  budget warning now tells a caller to do. Do not re-derive the 23%: it is the breadcrumb's
+  share, not the saving.
+- **`rt_product` never bounded its response, and now does (2026-09-08).** "Bound every
+  response on the wire" was true of `rt_ratings` only: a TV review measured **77,407
+  characters against the 40,000 budget** with no warning and no trimming. It now drops whole
+  sections from the TAIL (a half-section reads as a section with tests missing), then rows
+  from the last one, never below one; `result_count` still counts the WHOLE review, and
+  `groups_omitted` names every dropped section with its `group_id` so the rest is one call
+  away. The index of what was cut is itself part of the response, so it is measured inside
+  the trim loop — computing it afterwards left the answer 2 KB over budget.
+- **`rt_recommendations` surfaces `mentions` (2026-09-08).** RTINGS' "Notable Mentions" — the
+  runners-up below the ranked picks, each with its own reasoning — reached no caller on either
+  template: unparsed on the server-rendered one, parsed but never emitted on the props one. Both
+  now emit the same shape and the tool returns it, honouring `include_reasoning` like the picks.
+- **A featured usage joins to the schema by NAME + `target_type`, never by `target_id`
+  (2026-09-08).** Measured: 0 of 9 tooltip `target_id`s are schema ids, while all 9 labels
+  resolve once the type picks the namespace ("Cooling" is both a test and a usage). Unique name →
+  the real `original_id`; repeated name → a null id and a `candidates` list. Same rule
+  `_featured_results` has used for tests since 2026-09-06 — a wrong join key is worse than none.
+- **A review URL resolves against EVERY bench, not just the recent set (2026-09-08).**
+  `_product_from_url` scanned `info.recent_ids` only, so every legacy-bench review was
+  unresolvable by URL while the same product resolved by its numeric id — the Samsung TU7000
+  (bench 124) failed on the URL RTINGS' own catalog gives for it, under "no product in the tv
+  catalog has the URL", which reads as "no such product". A review URL is `rt_product`'s
+  documented primary input, so the scan widened rather than the promise narrowing: recent benches
+  first (cheap, usually cached), then the rest, and the error now says every bench was searched.
+  **Search is still forbidden as a URL fallback** — a relevance hit is not an identity, and that
+  rule is what stopped `/early-access/tv/reviews/lg/b6-oled-2026` returning the 2016 B6.
+- **The recent-bench set is a strict PARTITION (2026-09-08, `RECON.md` §12.23).** 6 bench pairs
+  across 4 silos share zero products. Grouping by bench loses nothing and duplicates nothing, and
+  a cross-bench score comparison does not exist in the data to be made — q7 is answered and moot.

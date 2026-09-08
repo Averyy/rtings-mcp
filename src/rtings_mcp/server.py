@@ -24,6 +24,7 @@ from .context import Context, get_context
 from .envelope import error_envelope
 from .errors import RtingsError
 from .models import (
+    ArticleEnvelope,
     AuthStatusEnvelope,
     GraphEnvelope,
     ProductEnvelope,
@@ -230,70 +231,56 @@ async def rt_ratings(
 ) -> RatingsEnvelope:
     """Rank and compare products in a category: catalog, 0-10 usage scores, and measurements.
 
+    **filters** — ids and names are interchangeable everywhere:
+    * a test/usage id or name: `{"Peak Brightness": ">1000"}`, a two-sided range
+      (`"13..14"`, `"13 to 14"`, `">=13 <=14"`); a **word** test matches its value exactly
+      or as a substring (`{"Bagel Mode": "One-Sided"}`) and `"!=No"` excludes.
+    * `{"product_ids": ["39008", "63313"]}` — compare exactly those (ids from rt_search).
+    * `brand`, `name_contains` (substring, catches siblings), `published`.
+    * `variant` — the size RTINGS **tested** (`{"variant": "65"}`); `sold_in` — the sizes
+      a product is **sold** in, with the same operators (`{"sold_in": ">=83"}`). Most
+      categories have no "Size" test, so these are how you ask that; laptop and monitor DO
+      have one, and there `{"Size": "31..33"}` is the test.
+
+    **sort** takes a test/usage id or name. **No prefix means descending** — prefix `+` for
+    lower-is-better metrics (input lag, dE), `-` for explicit descending. Defaults to
+    release date. One field per call; blend two by calling twice.
+
+    A field you filter or sort on **is fetched for you**. When it cannot be compared the
+    predicate is **not applied** and the envelope says which of three: gated for this
+    session, not on the bench(es) queried, or RTINGS published no value — otherwise
+    "0 results" reads as "nothing qualifies" when the truth is "you cannot see it". Rows
+    with no comparable value sort last both ways.
+
+    Every value carries a `status`: `tested_visible`, `tested_gated` (RTINGS measured it and
+    is withholding it — **not** the same as `not_tested`), `not_applicable`, `not_tested`,
+    `review_unpublished` (review in progress), `coverage_unknown`.
+
+    `tests` projects those measurements; `usages` the 0-10 scores, defaulting to the
+    headline usages (`[]` for none, explicit ids for sub-usages). `bench` defaults to the
+    recent-bench set; `data.groups` is one group per bench, never flattened — a bench is a
+    methodology version. `limit` is 10 per group; page with `offset`.
+
     **Size.** Responses are trimmed to a character budget per call: when a window would
     exceed it, each group keeps the head of its ranking and the envelope carries a
     `response_truncated` warning with the offset to continue from. To fit more products per
-    call, pass fewer `tests`/`usages` or `limit<=10`. `bench=[...]` narrows to named
-    benches; the default is every recent bench (2 to 10 depending on the category), and a
-    product tested on an older recent bench drops out of a narrowed call (the `product_ids`
-    warning names its bench).
+    call, pass fewer `tests`/`usages` or `limit<=10`. Narrowing `bench` drops a product
+    tested on another recent bench — the `product_ids` warning names its bench.
 
     **Shape.** Each product's `tests` rows carry only the answer (`original_id`, `status`,
     `value`, `gated`, `score`, `display`, `as_of`); `data.tests[original_id]` holds the
     definition once — name, kind, `unit` (of `value`), `display_unit`, hierarchy — plus
     `score_direction`, derived from RTINGS' own scores across every product this call
-    matched, not only the rows served (`lower_is_better`
-    for input lag or a scratchy factor). `sort` on a test ranks by its value, never its
-    score. A `number` test whose `unit` is `"score"` is itself a 0-10 rating (robot-vacuum
-    "Water Left On Floor"), not a physical quantity.
-
-    **Specific products.** `filters={"product_ids": ["39008", "63313"]}` compares exactly
-    those (ids from rt_search); `name_contains` is a substring match and can catch siblings.
+    matched, not only the rows served. `sort` on a test ranks by its value, never its score.
+    A `number` test whose `unit` is `"score"` is itself a 0-10 rating (robot-vacuum "Water
+    Left On Floor"), not a physical quantity. Each product's `variants` carries every size
+    it is sold in with that sku's manufacturer model number.
 
     **Uncatalogued products.** Some products return measurements but are absent from
     RTINGS' product listing, so they have no name or brand here. They are summarised as a
     `coverage: "uncatalogued"` group carrying only `product_ids`; pass
     `include_uncatalogued=true` (or filter by their ids) to rank their values, and
     `rt_product(<id>, silo=...)` to identify one.
-
-    `tests` takes test `original_id`s (from `rt_schema`) and projects those measurements
-    onto every product. `usages` likewise for the 0-10 usage scores, defaulting to the
-    category's headline usages — pass `usages=[]` to skip them when you only want
-    measurements, or explicit ids to include sub-usages.
-
-    `limit` defaults to 10 products per group; use `offset` to page.
-
-    `bench` defaults to the recent-bench set RTINGS itself renders together. Results come
-    back in `data.groups`, one group per comparable bench set — never flattened across
-    benches, because a bench is a methodology version.
-
-    Every value carries a `status`: `tested_visible` (here it is), `tested_gated` (RTINGS
-    measured it and is withholding it), `not_applicable` (the test does not apply to this
-    product), `not_tested` (RTINGS did not measure this product on this test),
-    `review_unpublished` (the review is in progress) or `coverage_unknown` (the cached data
-    cannot be shown to cover this product). A gated null is NOT `not_tested`.
-
-    `filters` accepts `{"<test original_id or name>": ">1000"}` — also a two-sided range
-    (`"13..14"`, `"13 to 14"`, `">=13 <=14"`); a word test matches its value exactly or as a
-    substring (`{"Bagel Mode": "One-Sided"}`) and `"!=No"` excludes — plus `brand`,
-    `name_contains`, `published`,
-    and `variant` — the size RTINGS tested, e.g. `{"variant": "65"}` for 65-inch TVs. TVs,
-    soundbars and the like have no "Size" test, so `variant` is the way to ask that;
-    laptop and monitor DO have a numeric "Size" test, and there `{"Size": "31..33"}` is
-    the test (with operators and ranges), while `variant` stays the tested SKU.
-    `sort` takes a test/usage id or name (prefix `-` for
-    descending, `+` for ascending; **no prefix means descending**, so prefix `+` for
-    lower-is-better metrics like input lag or dE); it defaults to release date.
-
-    **A field you filter or sort on is fetched for you** — you do not also have to list it in
-    `tests=`. Names and ids are interchangeable everywhere: `tests=["Thickness"]` and
-    `tests=["26891"]` are the same request.
-
-    When a field genuinely cannot be compared the predicate is **not applied** and the
-    envelope names which of three things happened: it is gated for this session, it is not on
-    the bench(es) queried (call rt_schema for one that is), or RTINGS published no value for
-    it. Otherwise "0 results" would read as "no product qualifies" when the truth is "you
-    cannot see it". Products with no comparable value sort last in both directions.
     """
     return await _run(
         RatingsEnvelope,
@@ -327,7 +314,11 @@ async def rt_product(
     consume_preview: bool = False,
     refresh: bool = False,
 ) -> ProductEnvelope:
-    """Every test result for one product, each row carrying its place in RTINGS' hierarchy.
+    """Every test result for one product, grouped by section the way RTINGS' review is.
+
+    `data.results` is a list of sections, each carrying its `group` breadcrumb once, a
+    `group_id` you can pass straight back as `group=` to re-fetch that section alone, and
+    its `tests`. `result_count` counts the RESULTS, not the sections.
 
     `product` takes a review URL, a numeric RTINGS product id, or a model name to search
     for. Pass `group` (a group `original_id`) or `tests=[ids or names]` to bound the
@@ -405,13 +396,57 @@ async def rt_graph(
 
 
 @mcp.tool()
-async def rt_search(query: str, count: int = 10) -> SearchEnvelope:
+async def rt_search(
+    query: str, count: int = 10, silo: SiloParam | None = None
+) -> SearchEnvelope:
     """Find a product across every RTINGS category by model name or number.
 
     Uses RTINGS' own live search index, so an empty result means the index has no match —
     it is not evidence that a product was never tested.
+
+    `silo` keeps only that category's hits. RTINGS' index is cross-silo and its query takes
+    no category, so the filter is applied here, over the top hits scanned (`scanned`, with
+    `silo_matches` for how many survived) — a model ranked below them will not appear;
+    raise `count` to scan deeper.
     """
-    return await _run(SearchEnvelope, services.rt_search(_ctx(), query, count=count))
+    return await _run(
+        SearchEnvelope, services.rt_search(_ctx(), query, count=count, silo=silo)
+    )
+
+
+@mcp.tool()
+async def rt_article(
+    article: str,
+    silo: SiloParam | None = None,
+    section: str | None = None,
+    include_body: bool = True,
+    refresh: bool = False,
+) -> ArticleEnvelope:
+    """RTINGS' `learn` articles as prose: brand lineups, explainers, buying guidance.
+
+    For the questions no measurement answers — "what is Sony launching this year", "what
+    changed between mini-LED generations". Nothing here is a test result and nothing here
+    is gated; cite it as RTINGS' writing.
+
+    Find one with `rt_search(query, silo=...)` and pass the `url` it returns
+    (`/tv/learn/2026-lineup`), or a bare slug with `silo=`. Only `/{silo}/learn/{slug}` is
+    fetchable here.
+
+    `sections` lists the article's headings. A lineup article runs past 25,000 characters,
+    so pass `section="Sony"` to read one heading instead of the whole page;
+    `include_body=false` returns the outline alone.
+    """
+    return await _run(
+        ArticleEnvelope,
+        services.rt_article(
+            _ctx(),
+            article,
+            silo=silo,
+            section=section,
+            include_body=include_body,
+            refresh=refresh,
+        ),
+    )
 
 
 @mcp.tool(name="rt_recommendations")

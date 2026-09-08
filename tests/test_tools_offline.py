@@ -55,6 +55,9 @@ SILO_LAYOUT_PROPS = _props(
                     "url": "/tv/reviews/best/static-template",
                     "short": "Static",
                 },
+                # RTINGS' Best nav carries the per-brand pages beside the /best/ lists,
+                # one segment up: "The 4 Best Sony TVs" at /tv/reviews/sony.
+                {"title": "The 4 Best Alpha TVs", "url": "/tv/reviews/alpha", "short": "Alpha"},
             ]
         },
     }
@@ -159,6 +162,41 @@ REC_STATIC_HTML = (FIXTURES / "recommendation_static_min.html").read_text(
 )
 
 
+#: A `learn` article: `page.article` with the prose in `text_with_anchors`, headings and
+#: all. Shape copied from /tv/learn/2026-lineup, measured 2026-09-08.
+ARTICLE_PROPS = _props(
+    {
+        "page_data": {
+            "page": {
+                "url": "/tv/learn/alpha-lineup",
+                "updated_at": "2026-06-18 07:24:41 -0400",
+                "authors": [{"name": "A Writer", "author_url": "/authors/a-writer"}],
+                "article": {
+                    "title": "2026 Alpha Lineup",
+                    "introduction": "<p>The intro.</p>",
+                    "text": "no anchors",
+                    "text_with_anchors": (
+                        "<h2>Market Trends</h2><p>Panels got brighter.</p>"
+                        "<h2>Brand Lineups</h2><h3>Alpha</h3><p>Alpha ships an 83 inch "
+                        "OLED this year.</p><h3>Beta</h3><p>Beta ships nothing.</p>"
+                    ),
+                    "latest_update_date": "2026-06-18 07:24:41 -0400",
+                    "created_at": "2026-01-09 00:00:00 -0400",
+                    "toc_items": [{"name": "Intro", "url": "#page-top"}],
+                    "meta_description": "what is new",
+                },
+            }
+        }
+    }
+)
+
+ARTICLE_HTML = f"""
+<html><head><title>2026 Alpha Lineup - RTINGS.com</title></head><body>
+{ARTICLE_PROPS}
+</body></html>
+"""
+
+
 REC_HTML = f"""
 <html><head><title>The 7 Best TVs - RTINGS.com</title></head><body>
 {REC_PROPS}
@@ -180,9 +218,11 @@ def product(
         "page": {"url": url or f"/tv/reviews/alpha/{name.lower().replace(' ', '-')}"},
         "image": None,
         "reviewed_sku_id": "s-" + pid,
+        # A sku's `name` is the MANUFACTURER model number, not the product's name —
+        # `{"id":"2951","name":"UN43TU7000FXZA","variation":"43\""}` on the live catalog.
         "variant_skus": [
-            {"id": "s-" + pid, "name": name, "variation": tested},
-            {"id": "other-" + pid, "name": name, "variation": '75"'},
+            {"id": "s-" + pid, "name": f"XR-{tested.strip(chr(34))}A{pid}", "variation": tested},
+            {"id": "other-" + pid, "name": f"XR-75A{pid}", "variation": '75"'},
         ],
     }
 
@@ -251,7 +291,20 @@ class StubTransport(Transport):
         elif "/reviews/best/made-up" in path:
             html = "<html><head><title>Not found</title></head><body></body></html>"
         elif "/reviews/best/" in path:
-            html = getattr(self, "rec_html", None) or REC_HTML
+            # RTINGS answers an unknown best-of slug with the silo landing page, not a
+            # 404 — which is why the brand shape is tried whenever no template matched.
+            html = (
+                PAGE_HTML
+                if path.endswith("/alpha")
+                else (getattr(self, "rec_html", None) or REC_HTML)
+            )
+        elif path == "/tv/reviews/alpha":
+            html = REC_HTML
+        elif path == "/tv/learn/alpha-lineup":
+            html = ARTICLE_HTML
+        elif "/learn/" in path:
+            # RTINGS answers an unknown learn slug with another page, never a 404.
+            html = PAGE_HTML
         elif self.session_page == "member":
             html = MEMBER_HTML
         elif self.session_page == "anonymous":
@@ -345,6 +398,13 @@ def payloads():
                     "product": {
                         "id": "1",
                         "fullname": "Alpha One",
+                        # The review body carries the size lineup as skus, each named by
+                        # the manufacturer's model number.
+                        "reviewed_sku_id": "s-1",
+                        "variant_skus": [
+                            {"id": "s-1", "name": "XR-65A1", "variation": '65"'},
+                            {"id": "other-1", "name": "XR-75A1", "variation": '75"'},
+                        ],
                         "review": {
                             "test_bench": {"id": "227", "display_name": "v2.2"},
                             "compared_summary_linked": "<p>summary</p>",
@@ -439,6 +499,11 @@ def flag_off_ctx(tmp_path, payloads):
     auth = AuthManager(config=config, cache=cache, transport=transport)
     repo = Repository(config, cache, transport, auth)
     return Context(config=config, cache=cache, transport=transport, auth=auth, repo=repo)
+
+
+def product_rows(out):
+    """`rt_product`'s results, flattened out of their hierarchy groups."""
+    return [row for group in out["data"]["results"] for row in group["tests"]]
 
 
 def values(out, product_id):
@@ -689,7 +754,7 @@ async def test_rt_product_scopes_to_the_products_own_bench(ctx):
     out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", include_prose=True)
     data = out["data"]
     assert data["product"]["test_bench"]["id"] == "227"
-    by_name = {v["name"]: v for v in data["results"]}
+    by_name = {v["name"]: v for v in product_rows(out)}
     assert by_name["Resolution"]["status"] == "tested_visible"
     assert by_name["Resolution"]["value_source"] == "rendered"
     assert by_name["Native Contrast"]["status"] == "tested_gated"
@@ -1072,8 +1137,10 @@ async def test_the_static_template_separates_usages_from_tests(ctx):
     assert ratings["Mixed Usage"]["score"] == 8.8
     assert ratings["Mixed Usage"]["status"] == "tested_visible"
     # `target_id` is NOT the schema's original_id (live: Side Sleeping is 38309 here and
-    # 36553 in the schema), so a null id with a real name is the honest pair.
-    assert ratings["Mixed Usage"]["original_id"] is None
+    # 36553 in the schema, and measured 2026-09-08, 0 of 9 target_ids resolve). The NAME
+    # does resolve, so a usage whose name is unique on the silo gets its real id.
+    assert ratings["Mixed Usage"]["original_id"] == "1"
+    assert "candidates" not in ratings["Mixed Usage"]
 
     tests = {t["name"]: t for t in first["featured_results"]}
     assert tests["Resolution"]["display"] == "4k"
@@ -1348,7 +1415,10 @@ async def test_the_tested_variant_is_reported_and_filterable(ctx):
     out = await services.rt_ratings(ctx, "tv", tests=["208"])
     row = values(out, "1")
     assert row["tested_variant"] == '65"'
-    assert row["variants"] == ['65"', '75"']
+    assert row["variants"] == [
+        {"variation": '65"', "model": "XR-65A1"},
+        {"variation": '75"', "model": "XR-75A1"},
+    ]
 
     narrowed = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"variant": "65"})
     ids = {r["product_id"] for g in narrowed["data"]["groups"] for r in g["products"]}
@@ -1389,7 +1459,7 @@ async def test_a_graph_row_is_not_reported_as_an_empty_measurement(ctx):
         }
     )
     out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
-    curve = next(v for v in out["data"]["results"] if v["original_id"] == "13907")
+    curve = next(v for v in product_rows(out) if v["original_id"] == "13907")
     assert curve["value_kind"] == "curve"
     assert "rt_graph" in curve["warning"]
 
@@ -1772,7 +1842,7 @@ async def test_rt_product_rows_do_not_repeat_response_constants(ctx):
     """`product_id` and `as_of` are identical on all 243 rows of a real response."""
     out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
     assert out["data"]["product"]["product_id"] == "1"
-    for row in out["data"]["results"]:
+    for row in product_rows(out):
         assert "product_id" not in row
         assert "as_of" not in row
 
@@ -1939,7 +2009,7 @@ async def test_a_stale_review_against_a_newer_schema_is_not_a_false_not_tested(c
     documents of different ages. SPEC §8 promised a `bench_mismatch` guard; this is it."""
 
     out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
-    by_name = {v["name"]: v for v in out["data"]["results"]}
+    by_name = {v["name"]: v for v in product_rows(out)}
     assert by_name["Peak Brightness"]["status"] == "not_tested", "fresh: a real answer"
 
     # Now make the cached review past-TTL, with a schema fetched after it.
@@ -1955,7 +2025,7 @@ async def test_a_stale_review_against_a_newer_schema_is_not_a_false_not_tested(c
     )
 
     out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
-    by_name = {v["name"]: v for v in out["data"]["results"]}
+    by_name = {v["name"]: v for v in product_rows(out)}
     assert by_name["Peak Brightness"]["status"] == "coverage_unknown"
     assert any("bench_mismatch" in w for w in out["warnings"]), out["warnings"]
 
@@ -2124,7 +2194,7 @@ async def test_a_review_unblurred_on_a_signed_in_session_is_not_written(flag_off
         "test": {"original_id": "11"},
     }
     out = await services.rt_product(flag_off_ctx, "/tv/reviews/alpha/alpha-one")
-    gated = [v for v in out["data"]["results"] if v["original_id"] == "11"]
+    gated = [v for v in product_rows(out) if v["original_id"] == "11"]
     assert gated and gated[0]["status"] == "tested_visible"
     assert any(w.startswith("not_cached:") for w in out["warnings"]), out["warnings"]
     assert flag_off_ctx.cache.list_variants("reviews", key="1") == []
@@ -3106,8 +3176,8 @@ async def test_rt_product_can_be_bounded_to_named_tests(ctx):
         ctx, "/tv/reviews/alpha/alpha-one", tests=["Native Contrast", "208"]
     )
     assert out["error"] is None
-    assert {r["original_id"] for r in out["data"]["results"]} <= {"11", "208"}
-    assert out["data"]["result_count"] == len(out["data"]["results"])
+    assert {r["original_id"] for r in product_rows(out)} <= {"11", "208"}
+    assert out["data"]["result_count"] == len(product_rows(out))
 
 
 async def test_find_names_the_terms_that_matched_nothing(ctx):
@@ -3339,3 +3409,438 @@ async def test_find_marks_an_unscored_usage(ctx):
     out = await services.rt_schema(ctx, "tv", find="mixed usage")
     hit = next(u for u in out["data"]["usages"] if u["original_id"] == "1")
     assert hit["is_unscored"] is True
+
+
+async def test_a_partial_only_hit_does_not_mark_every_term_matched(ctx):
+    """`_unmatched_terms` fell back to `[term]` on an empty `matched_terms`, so one hit
+    that matched only part of one term reported every term as matched."""
+    out = await services.rt_schema(ctx, "tv", find="wind contrast, vent fan")
+    contrast = next(t for t in out["data"]["tests"] if t["name"] == "Native Contrast")
+    assert contrast["matched_terms"] == []
+    assert out["data"]["terms_with_no_matches"] == ["vent fan"]
+
+
+def test_a_lone_digit_scores_only_beside_a_word_of_the_same_term():
+    """`find="hdmi 2.1"` split into hdmi/2/1 and the bare digits matched "Peak 2%
+    Window", "USB Ports" (values 1, 2) and sixty more rows on their own, filling the
+    60-row cap with noise while the real matches sat past it (shopper round 3)."""
+    from rtings_mcp.services import _find_score, _find_words
+
+    words = _find_words("hdmi 2.1")
+    assert words == ["hdmi", "2", "1"]
+    assert _find_score(words, "hdmi 2.1", "peak 2% window") == 0
+    assert _find_score(words, "hdmi 2.1", "usb ports") == 0
+    assert _find_score(words, "hdmi 2.1", "hdmi 2.1 bandwidth") == 13
+    # hdmi alone still counts; so does the digit once its word is there.
+    assert _find_score(words, "hdmi 2.1", "hdmi input lag") == 1
+    # A term that is only digits keeps them — it is all the caller gave us.
+    assert _find_score(["1440"], "1440", "native resolution 1440") == 11
+    assert _find_score(["2"], "2", "peak 2% window") == 11
+
+
+async def test_an_off_bench_usage_is_a_warning_not_a_failed_call(ctx):
+    """`usages=["1", "77"]` on bench 227 failed the whole call over the one usage that
+    had moved bench, while an off-bench `product_ids` entry gets a warning and a partial
+    answer (shopper round 3, 2026-09-07)."""
+    out = await services.rt_ratings(ctx, "tv", bench=["227"], usages=["1", "77"], limit=3)
+    assert out["error"] is None
+    warning = next(w for w in out["warnings"] if w.startswith("usages:"))
+    assert "77" in warning and "Legacy Usage" in warning and "bench=['2']" in warning
+    scored = [u["original_id"] for g in out["data"]["groups"] for u in g.get("usages", [])]
+    assert "77" not in scored
+
+
+async def test_an_off_bench_test_is_a_warning_not_a_failed_call(ctx):
+    out = await services.rt_ratings(ctx, "tv", bench=["227"], tests=["11", "5"], limit=3)
+    assert out["error"] is None
+    warning = next(w for w in out["warnings"] if w.startswith("tests:"))
+    assert "5" in warning and "Bright Room" in warning
+
+
+async def test_a_request_of_only_off_bench_usages_still_errors(ctx):
+    """Dropping every usage would leave `usages=[]`, which reads as "no scores exist";
+    the error's `available` list is the actionable answer instead."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", bench=["227"], usages=["77"])
+    assert excinfo.value.code == "unknown_test"
+    assert excinfo.value.details["on_other_benches"] == {"77": ["2"]}
+    assert "1" in excinfo.value.details["available"]
+
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", bench=["227"], tests=["5"])
+    assert excinfo.value.details["on_other_benches"] == {"5": ["2"]}
+
+
+async def test_sold_in_filters_on_the_sizes_a_product_is_offered_in(ctx):
+    """`variant` matches the TESTED sku only, so "which of these is SOLD at 75 inches"
+    had no filter and one session scanned `variants` by eye (shopper round 3)."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"sold_in": ">=75"})
+    ids = {r["product_id"] for g in out["data"]["groups"] for r in g["products"]}
+    assert ids == {"1", "2", "3"}, "all are sold at 75 inches; only one was tested there"
+
+    # Textual variations work the same loose way `variant` does.
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"sold_in": "55-inch"})
+    ids = {r["product_id"] for g in out["data"]["groups"] for r in g["products"]}
+    assert ids == {"2"}
+
+
+async def test_sold_in_says_so_when_nobody_sells_that_size(ctx):
+    """A bare 0 must not read as "RTINGS tested nothing that size"."""
+    out = await services.rt_ratings(ctx, "tv", tests=["208"], filters={"sold_in": ">=83"})
+    assert not [r for g in out["data"]["groups"] for r in g["products"]]
+    warning = next(w for w in out["warnings"] if w.startswith("filter_unavailable"))
+    assert "no product in this call is sold in" in warning and '75"' in warning
+
+
+async def test_each_variant_carries_the_manufacturer_model_number(ctx):
+    """`variant_skus[].name` is the model number a retailer is searched by; it was
+    dropped, and one session went to a web search for it (shopper round 3)."""
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", include_results=False)
+    assert {"variation": '75"', "model": "XR-75A1"} in out["data"]["product"]["variants"]
+
+
+async def test_find_says_when_a_term_is_a_catalog_field_not_a_test(ctx):
+    """`find="size, brand, year, price"` matched nothing and said nothing; those are
+    catalog facts on the product row, and the answer was one tool over the whole time
+    (shopper round 3, 2026-09-07)."""
+    out = await services.rt_schema(ctx, "tv", find="brand, year, price, contrast")
+    hints = out["data"]["catalog_fields"]
+    assert set(hints) == {"brand", "year", "price"}
+    assert "name_contains" in hints["brand"] or "brand" in hints["brand"]
+    assert "released_at" in hints["year"]
+    assert "no price" in hints["price"]
+    assert out["data"]["terms_with_no_matches"] == ["brand", "year", "price"]
+
+
+async def test_a_single_term_that_matches_nothing_still_gets_its_hint(ctx):
+    """`terms_with_no_matches` is a multi-term field; a one-word search that missed got
+    an empty response and no explanation at all."""
+    out = await services.rt_schema(ctx, "tv", find="size")
+    assert not out["data"]["tests"] and not out["data"]["usages"]
+    assert "sold_in" in out["data"]["catalog_fields"]["size"]
+
+
+async def test_a_silo_with_a_real_size_test_gets_the_test_not_the_hint(ctx):
+    """laptop and monitor DO have a numeric "Size" test; the hint must never shadow it."""
+    from rtings_mcp.services import _catalog_field_hints
+
+    assert _catalog_field_hints([]) == {}
+    assert _catalog_field_hints(["contrast"]) == {}
+
+
+async def test_the_brand_best_of_pages_are_discovered_and_fetchable(ctx):
+    """RTINGS' Best nav lists "The 4 Best Sony TVs" at /tv/reviews/sony beside the
+    /best/ lists, and the `brands` list's own prose links to it. Discovery kept only
+    /best/ slugs, so `list="sony"` guessed /tv/reviews/best/sony and reported
+    `unknown_list` for a page that exists (shopper round 3, 2026-09-07)."""
+    index = await services.rt_recommendations(ctx, "tv")
+    entry = next(e for e in index["data"]["lists"] if e["list"] == "alpha")
+    assert entry["kind"] == "brand" and entry["url"] == "/tv/reviews/alpha"
+    assert {e["kind"] for e in index["data"]["lists"]} == {"best", "brand"}
+
+    out = await services.rt_recommendations(ctx, "tv", list="alpha")
+    assert out["error"] is None and out["data"]["picks"]
+    assert "GET /tv/reviews/alpha" in ctx.transport.calls
+
+
+def test_a_slug_with_a_slash_never_reaches_the_brand_shape():
+    """A product review page is /{silo}/reviews/{brand}/{model} and fetching one as HTML
+    spends a preview (RECON.md §14.2). Only a single-segment slug may try that shape."""
+    from rtings_mcp.repository import recommendation_paths
+
+    assert recommendation_paths("tv", "sony") == [
+        "/tv/reviews/best/sony",
+        "/tv/reviews/sony",
+    ]
+    assert recommendation_paths("tv", "sony/a80l") == ["/tv/reviews/best/sony/a80l"]
+    assert recommendation_paths("tv", "by-size/65-inch") == [
+        "/tv/reviews/best/by-size/65-inch"
+    ]
+    assert recommendation_paths("tv", "best") == ["/tv/reviews/best/best"]
+
+
+async def test_rt_search_can_be_scoped_to_one_silo(ctx):
+    """"Sony A80J" returned 822 hits with cameras, headphones and soundbars mixed into
+    page one of a TV question (shopper round 3, 2026-09-07)."""
+    ctx.transport.payloads["app/search__search_results"] = {
+        "data": {
+            "search_results": {
+                "query": "alpha",
+                "total_count": 822,
+                "results": [
+                    {"kind": "page", "title": "Alpha Cam", "url": "/camera/reviews/a/cam"},
+                    {"kind": "page", "title": "Alpha One TV", "url": "/tv/reviews/alpha/one"},
+                    {"kind": "page", "title": "Alpha Buds", "url": "/headphones/reviews/a/b"},
+                ],
+            }
+        }
+    }
+    out = await services.rt_search(ctx, "alpha", silo="tv")
+    assert [h["title"] for h in out["data"]["results"]] == ["Alpha One TV"]
+    assert out["data"]["silo"] == "tv"
+    assert out["data"]["silo_matches"] == 1
+    assert out["data"]["total_count"] == 822, "RTINGS' own count, not the filtered one"
+    assert "not by RTINGS" in out["data"]["notice"]
+
+    unfiltered = await services.rt_search(ctx, "alpha")
+    assert len(unfiltered["data"]["results"]) == 3
+    assert unfiltered["data"]["silo_matches"] is None
+
+
+async def test_an_unknown_silo_on_rt_search_is_refused_against_the_live_list(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_search(ctx, "alpha", silo="not-a-silo")
+    assert excinfo.value.code == "unknown_silo"
+
+
+async def test_rt_article_returns_a_learn_page_as_prose(ctx):
+    """"Does Alpha sell a bigger OLED this year" is answered by /tv/learn/…-lineup, and
+    the server had no surface for it at all (shopper round 3, 2026-09-07)."""
+    out = await services.rt_article(ctx, "/tv/learn/alpha-lineup")
+    data = out["data"]
+    assert out["error"] is None
+    assert data["title"] == "2026 Alpha Lineup"
+    assert data["sections"] == ["Market Trends", "Brand Lineups", "Alpha", "Beta"]
+    assert data["introduction"] == "The intro."
+    assert "83 inch OLED" in data["body"]
+    assert data["authors"] == ["A Writer"]
+    assert data["updated_at"] == "2026-06-18"
+
+
+async def test_rt_article_can_return_one_section(ctx):
+    """A lineup article runs past 25,000 characters; one heading is the readable unit."""
+    out = await services.rt_article(ctx, "alpha-lineup", silo="tv", section="alpha")
+    assert out["data"]["section"] == "Alpha"
+    assert out["data"]["body"] == "Alpha ships an 83 inch OLED this year."
+    assert out["data"]["introduction"] is None
+
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_article(ctx, "/tv/learn/alpha-lineup", section="gamma")
+    assert excinfo.value.details["sections"] == [
+        "Market Trends", "Brand Lineups", "Alpha", "Beta"
+    ]
+
+
+async def test_rt_article_can_return_the_outline_alone(ctx):
+    out = await services.rt_article(ctx, "/tv/learn/alpha-lineup", include_body=False)
+    assert out["data"]["body"] is None and out["data"]["sections"]
+
+
+async def test_rt_article_refuses_any_path_that_is_not_a_learn_page(ctx):
+    """A product review page is /{silo}/reviews/{brand}/{model} and fetching one as HTML
+    spends a preview (RECON.md §14.2). No accepted input may name one."""
+    for bad in (
+        "/tv/reviews/alpha/alpha-one",
+        "/tv/reviews/best/tvs-on-the-market",
+        "tv/reviews/sony/a80l",
+        "/tv/learn",
+    ):
+        with pytest.raises(RtingsError) as excinfo:
+            await services.rt_article(ctx, bad)
+        assert excinfo.value.code == "unknown_list", bad
+    assert not [c for c in ctx.transport.calls if "/reviews/" in c]
+
+
+async def test_a_learn_slug_that_does_not_exist_is_not_a_plausible_empty_article(ctx):
+    """RTINGS answers an unknown learn slug with another page, so "no article object" is
+    the only honest signal that it is not there."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_article(ctx, "/tv/learn/made-up")
+    assert excinfo.value.code == "recommendations_missing"
+
+
+async def test_rt_product_groups_its_results_under_the_breadcrumb_once(ctx):
+    """The rows came back flat with `hierarchy` repeated on each one — on a TV, 243 rows
+    x a 2-3 element breadcrumb, ~23% of a 56 KB response saying the same thing over."""
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    groups = out["data"]["results"]
+    assert groups, "the review has results"
+    assert all("hierarchy" not in row for row in product_rows(out)), (
+        "the breadcrumb belongs to the group now, not to every row"
+    )
+    picture = next(g for g in groups if g["group"] == ["Picture", "Picture Quality"])
+    assert picture["group_id"] == "900"
+    assert picture["test_count"] == len(picture["tests"])
+    assert out["data"]["result_count"] == len(product_rows(out)), (
+        "result_count counts results, not groups"
+    )
+    # `group_id` is addressable: it is what re-fetches this section alone.
+    scoped = await services.rt_product(
+        ctx, "/tv/reviews/alpha/alpha-one", group=picture["group_id"]
+    )
+    assert {r["original_id"] for r in product_rows(scoped)} == {
+        r["original_id"] for r in picture["tests"]
+    }
+
+
+async def test_rt_product_bounds_its_response(ctx, monkeypatch):
+    """Measured 2026-09-08: a real TV review is 243 results and 77,407 characters in the
+    indent=2 form the client counts, against a 40,000 budget — and this tool bounded
+    nothing at all, while rt_ratings always has."""
+    from rtings_mcp.services import _wire_size
+
+    full = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    budget = _wire_size(full["data"]) - 200
+    monkeypatch.setattr(ctx.config, "max_response_chars", budget)
+    out = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one", refresh=False)
+    data = out["data"]
+    assert _wire_size(data) <= budget, "the whole point is that it fits"
+    assert data["result_count"] == 4, "counts the WHOLE review, not what survived"
+    assert len(product_rows(out)) < 4, "and something was actually cut"
+    warning = next(w for w in out["warnings"] if w.startswith("response_truncated"))
+    assert "group=<its group_id>" in warning
+
+    # A floor it cannot get under says so rather than pretending to have fitted.
+    monkeypatch.setattr(ctx.config, "max_response_chars", 500)
+    tiny = await services.rt_product(ctx, "/tv/reviews/alpha/alpha-one")
+    assert len(product_rows(tiny)) == 1
+    assert "Even one section exceeds the budget" in "".join(tiny["warnings"])
+
+
+def test_the_budget_drops_whole_sections_from_the_tail_and_names_them():
+    """A section dropped silently reads as a section RTINGS did not test, so the index of
+    what was cut is part of the response — and therefore part of what has to fit."""
+    from rtings_mcp.services import _fit_product_budget, _wire_size
+
+    data = {
+        "results": [
+            {
+                "group": ["Category", f"Section {n}"],
+                "group_id": str(n),
+                "test_count": 6,
+                "tests": [
+                    {"original_id": f"{n}{i}", "name": "A test with a name", "value": i}
+                    for i in range(6)
+                ],
+            }
+            for n in range(8)
+        ]
+    }
+    warnings = _fit_product_budget(data, 6_000)
+    assert _wire_size(data) <= 6_000
+    assert data["groups_total"] == 8
+    assert data["groups_shown"] == len(data["results"]) < 8
+    # dropped from the TAIL, so the head of the review survives in its own order
+    assert [g["group_id"] for g in data["results"]] == [
+        str(n) for n in range(data["groups_shown"])
+    ]
+    assert [g["group_id"] for g in data["groups_omitted"]] == [
+        str(n) for n in range(data["groups_shown"], 8)
+    ]
+    assert "8 section(s)" in warnings[0] or "of 8 section(s)" in warnings[0]
+
+
+def test_a_review_inside_the_budget_is_left_completely_alone():
+    from rtings_mcp.services import _fit_product_budget
+
+    data = {"results": [{"group": ["A"], "group_id": "1", "test_count": 1, "tests": [{}]}]}
+    assert _fit_product_budget(data, 40_000) == []
+    assert "groups_omitted" not in data and "groups_shown" not in data
+
+
+async def test_a_bare_call_projects_the_public_tests_when_every_score_is_withheld(ctx):
+    """MEASURED 2026-09-08: a bare rt_ratings("tv") without a membership was the catalog
+    plus 33 usage scores of which ZERO were visible — nothing numeric at all, on an
+    agent's first call."""
+    ctx.transport.payloads["table_tool__ratings"] = {
+        "data": {"ratings": [rating_row("1", "1"), rating_row("2", "1")]}
+    }
+    out = await services.rt_ratings(ctx, "tv")
+    assert out["scores_available"]["usage_ratings"] == "gated"
+    assert "208" in out["data"]["tests"], "Resolution is public and now answers something"
+    row = values(out, "1")
+    assert [t["value"] for t in row["tests"] if t["original_id"] == "208"] == ["4k"]
+    assert any("public test(s) were projected" in w for w in out["warnings"])
+
+
+async def test_visible_scores_leave_the_bare_call_exactly_as_it_was(ctx):
+    """On a member session — or a metered silo with its budget unspent — the scores ARE
+    the answer, and the rule must not fire. It reads the rows, never the cookie."""
+    out = await services.rt_ratings(ctx, "tv")
+    assert out["scores_available"]["usage_ratings"] in {"partial", "available"}
+    assert not (out["data"]["tests"] or {})
+    assert not any("public test(s) were projected" in w for w in out["warnings"])
+
+
+async def test_an_explicit_tests_argument_is_never_second_guessed(ctx):
+    """`tests=[]` means "no measurements"; the projection must not override the caller."""
+    ctx.transport.payloads["table_tool__ratings"] = {
+        "data": {"ratings": [rating_row("1", "1"), rating_row("2", "1")]}
+    }
+    out = await services.rt_ratings(ctx, "tv", tests=[])
+    assert not (out["data"]["tests"] or {})
+    assert not any("public test(s) were projected" in w for w in out["warnings"])
+
+
+def test_a_repeated_usage_name_keeps_a_null_id_and_lists_the_candidates():
+    """A wrong join key is worse than none: the featured tooltip's `target_id` is in a
+    different namespace, so the name is the only join, and a repeated name is ambiguous."""
+    from dataclasses import dataclass
+    from typing import ClassVar
+
+    from rtings_mcp.services import _featured_ratings
+
+    @dataclass
+    class Usage:
+        original_id: str
+        name: str
+        parent_usage_name: str | None = None
+
+    class Schema:
+        usages: ClassVar[dict] = {
+            "1": Usage("1", "Cooling", "Sleep"),
+            "2": Usage("2", "Cooling", "Comfort"),
+            "3": Usage("3", "Side Sleeping"),
+        }
+
+    rows = [
+        {"usage": {"original_id": None, "name": "Side Sleeping"}, "unblurred": True, "score": 8.3},
+        {"usage": {"original_id": None, "name": "Cooling"}, "unblurred": True, "score": 7.1},
+        {"usage": {"original_id": None, "name": "Nowhere"}, "unblurred": False, "score": None},
+    ]
+    out = {r["name"]: r for r in _featured_ratings(rows, Schema())}
+    assert out["Side Sleeping"]["original_id"] == "3"
+    assert out["Cooling"]["original_id"] is None
+    assert [c["parent_usage_name"] for c in out["Cooling"]["candidates"]] == ["Sleep", "Comfort"]
+    assert out["Nowhere"]["original_id"] is None and "candidates" not in out["Nowhere"]
+    # No schema at all is the old behaviour, unchanged.
+    assert _featured_ratings(rows)[0]["original_id"] is None
+
+
+async def test_a_legacy_bench_review_url_resolves(ctx):
+    """MEASURED 2026-09-08: `_product_from_url` scanned only the RECENT benches, so every
+    legacy-bench review was unresolvable BY URL while the same product resolved by its
+    numeric id — the Samsung TU7000 (bench 124) failed on the URL RTINGS' own catalog
+    gives for it, under an error that reads as "no such product". A review URL is
+    rt_product's documented primary input."""
+    recent, legacy = [], []
+
+    def by_bench(body):
+        benches = body["variables"]["test_bench_ids"]
+        rows = list(recent)
+        if "2" in benches:
+            rows = rows + legacy
+        return {"data": {"products": rows}}
+
+    recent[:] = [product("1", "Alpha One")]
+    legacy[:] = [
+        product("77", "Alpha Ancient", bench="2", url="/tv/reviews/alpha/alpha-ancient")
+    ]
+    ctx.transport.payloads["table_tool__products_list"] = by_bench
+
+    ref = await ctx.repo.resolve_product("/tv/reviews/alpha/alpha-ancient", "tv")
+    assert (ref.product_id, ref.bench_id, ref.name) == ("77", "2", "Alpha Ancient")
+
+    # The recent set still answers first, and without touching a legacy catalog.
+    ref = await ctx.repo.resolve_product("/tv/reviews/alpha/alpha-one", "tv")
+    assert ref.product_id == "1"
+
+
+async def test_a_url_on_no_bench_says_every_bench_was_searched(ctx):
+    """The old message said "no product in the tv catalog has the URL", which was true of
+    the recent set and read as "no such product"."""
+    with pytest.raises(RtingsError) as excinfo:
+        await ctx.repo.resolve_product("/tv/reviews/alpha/not-a-real-review", "tv")
+    assert excinfo.value.code == "unknown_product"
+    assert "on ANY bench" in str(excinfo.value)
+    assert "numeric product id" in str(excinfo.value)

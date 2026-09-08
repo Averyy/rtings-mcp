@@ -3,12 +3,13 @@
 An MCP server that exposes an RTINGS **member's own** subscription as structured tools, so an agent
 can consult RTINGS test data the way it consults any other data source.
 
-Status: **The anonymous server is built and working (2026-09-05).** All seven data tools run
+Status: **The anonymous server is built and working (2026-09-05).** All eight data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 436 offline tests and 9 live anonymous tests pass, and the release-gate
-re-scan reproduces the 12-enforcing / 16-open map exactly. **Published on PyPI as
-`rtings-mcp` 0.2.3 (2026-09-07)** through GitHub-Actions trusted publishing; the install is
+`rtings-mcp auth`). 481 offline tests and 9 live anonymous tests pass, and **both** release
+gates reproduce their snapshots exactly — `rtings-mcp scan` the 12-enforcing / 16-open map,
+`rtings-mcp drift` 28 / 28 best-of extraction (26 props / 2 static). **Published on PyPI as
+`rtings-mcp` 0.3.0 (2026-09-08)** through GitHub-Actions trusted publishing; the install is
 `uvx rtings-mcp`. **Member mode is ON by default**
 (`RTINGS_MEMBER_MODE`) since Phase 0 settled q1 on 2026-09-06 (`RECON.md` §13.1). Facts the build
 measured are in `RECON.md` §12, the member session in §13; the corrections they forced are marked
@@ -382,10 +383,11 @@ below), plus **two that connect a membership** rather than serve data.
 | `rt_silos()` | the 28 silos with `url_part`, **observed** paywall enforcement + `data_completeness`, tool pages | full |
 | `rt_schema(silo, bench?, group?)` | test/usage definitions: name, `kind`, unit, hierarchy, `insider_only` | full |
 | `rt_ratings(silo, bench?, tests?, usages?, filters?, sort?, limit=10, offset=0)` | catalog + 0–10 usage scores (+ optional scalar-test projection) | catalog full; scores/values gated |
-| `rt_product(product=url\|id, group?, include_prose, include_media, include_verdicts)` | one review: leaf test results by hierarchy; prose, media and verdicts opt-in | prose/specs/**verdicts** free; scalars gated |
+| `rt_product(product=url\|id, group?, include_prose, include_media, include_verdicts)` | one review: leaf test results **grouped by section**; prose, media and verdicts opt-in | prose/specs/**verdicts** free; scalars gated |
 | `rt_graph(product, test)` | one test's **curve**, resampled | **full** |
-| `rt_search(query)` | model name/number → candidates across all silos | full |
-| `rt_recommendations(silo, list?)` | the silo's best-of lists, or one ranked list with reasoning | ranking + prose free; scalars gated |
+| `rt_search(query, silo?)` | model name/number → candidates, across all silos or one | full |
+| `rt_recommendations(silo, list?)` | the silo's best-of lists (`/best/` **and** per-brand), or one ranked list with reasoning | ranking + prose free; scalars gated |
+| `rt_article(article, section?)` | one `/{silo}/learn/{slug}` page as prose — lineups, explainers | **full** (nothing there is gated) |
 
 | Membership tool | Does | Anonymous |
 |---|---|---|
@@ -396,6 +398,13 @@ These two carry their **own lean envelope**, not `BaseEnvelopeOut`: `data_tier`,
 `scores_available` and `test_benches` describe served measurement rows, and a sign-in serves
 none, so filling them in would be a claim about data nobody fetched. `session` is the one shared
 field that means the same thing on both.
+
+**Why eight data tools.** `rt_article` was added 2026-09-08 (`RECON.md` §12.19): RTINGS' `learn`
+pages answer questions no measurement can ("does Sony sell a bigger OLED this year"), they are
+prose only and never gated, and nothing surfaced them. It shares `rt_recommendations`' isolation —
+its own extractor, its own drift signal — and its accepted path shape (`/{silo}/learn/{slug}`, and
+nothing else) is what makes it structurally incapable of opening a product review page, whose HTML
+GET spends a preview (`RECON.md` §14.7). Discovery is `rt_search`, which indexes these pages.
 
 **Why seven data tools, not nine.** `rt_products` folded into `rt_ratings` — anonymously they are the same
 catalog list, and CR did exactly this (catalog into `cr_ratings`). `rt_results` folded into
@@ -788,6 +797,13 @@ the pick mapper, the featured-row tier derivation and the cached envelope identi
 `recommendations_missing` now means **neither** matched — that, not "the props are missing", is the
 drift signal. The static template carries no API either (its whole bundle is ~3 KB with zero
 `/api/v2/safe/` references), so extraction remains the only route on both.
+
+**The Best nav carries TWO url shapes** (measured 2026-09-08, `RECON.md` §12.18): the `/best/`
+lists and the per-brand pages one segment up (`/tv/reviews/tcl`, "Best TCL TVs"), which RTINGS
+labels identically (`type: "Recommendation"`). Discovery keeps both, tagged `kind`. The brand form
+is tried only when no template matched the `/best/` one — RTINGS answers an unknown slug with a
+200 landing page, not a 404 — and **only for a single-segment slug**, which is the guard that stops
+this path from ever naming a product review page (§14.7).
 
 **A silo has many best-of lists, and the URL slug is not derivable.** `/tv/reviews/best/tvs` does not
 follow from `url_part: "tv"`, and a silo carries dozens of lists (best gaming TVs, best 65-inch, …).

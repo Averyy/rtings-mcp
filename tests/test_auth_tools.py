@@ -399,3 +399,98 @@ async def test_status_resolves_the_session_instead_of_saying_unknown(ctx):
     snap = await auth_tools.rt_auth_status(ctx)
     assert snap["session"] == "free"
     assert "EXISTING" not in json.dumps(snap)
+
+
+# -- validate_cookie itself: the guard that was read but never run ------------------
+
+
+@pytest.fixture
+def stub_build(monkeypatch, payloads):
+    """Run the REAL `validate_cookie` against the stub transport.
+
+    Every test above injects `validate`, so `validate_cookie` — the function that turns a
+    probe into "member" / "expired" / "could_not_check" and the one the CLI calls too — had
+    no coverage at all. It builds its own `Context`, so the seam is `Context.build`.
+    """
+    from rtings_mcp.auth import AuthManager
+    from rtings_mcp.cache import Cache
+    from rtings_mcp.context import Context
+    from rtings_mcp.repository import Repository
+    from test_tools_offline import StubTransport
+
+    built = {}
+
+    def fake_build(cls, config=None):
+        transport = StubTransport(config, payloads)
+        # What the page says back is what the cookie is worth; `session_page` is the stub's
+        # knob for exactly that.
+        transport.session_page = built.get("page", "member")
+        transport.credential.configured = config.session_cookie_env
+        cache = Cache(config)
+        auth = AuthManager(config=config, cache=cache, transport=transport)
+        built["config"] = config
+        built["transport"] = transport
+        return Context(
+            config=config,
+            cache=cache,
+            transport=transport,
+            auth=auth,
+            repo=Repository(config, cache, transport, auth),
+        )
+
+    monkeypatch.setattr(Context, "build", classmethod(fake_build))
+    return built
+
+
+async def test_validate_cookie_calls_a_cookie_rtings_logs_out_expired(ctx, stub_build):
+    """The negative half: a cookie that comes back logged out must be `expired`, or a dead
+    credential would be written over a working one."""
+    stub_build["page"] = "anonymous"  # a configured cookie that came back logged out
+    assert await auth_tools.validate_cookie(ctx.config, "DEAD") == "expired"
+    assert stub_build["config"].session_cookie_env == "DEAD", "the candidate rode in on it"
+
+
+async def test_validate_cookie_confirms_a_live_member_cookie(ctx, stub_build):
+    stub_build["page"] = "member"
+    assert await auth_tools.validate_cookie(ctx.config, CAPTURED) == "member"
+
+
+async def test_validate_cookie_never_writes_to_the_real_cache_or_credential(
+    ctx, stub_build
+):
+    """An `AuthManager` persists its probe under the cache root, so the check runs on a
+    throwaway cache dir — and that dir is removed afterwards."""
+    store_credential(ctx.config, "EXISTING")
+    before = sorted(p.name for p in ctx.config.cache_dir.rglob("*"))
+    stub_build["page"] = "anonymous"
+
+    assert await auth_tools.validate_cookie(ctx.config, "DEAD") == "expired"
+
+    scratch = stub_build["config"].cache_dir
+    assert scratch != ctx.config.cache_dir, "never the caller's cache"
+    assert not scratch.exists(), "and the scratch dir is cleaned up"
+    assert sorted(p.name for p in ctx.config.cache_dir.rglob("*")) == before
+    assert load_credential(ctx.config).configured == "EXISTING", "nothing was stored"
+    assert stub_build["config"].session_override is None, "an override would beg the question"
+
+
+async def test_a_probe_that_crashes_is_no_verdict_on_the_cookie(ctx, monkeypatch, stub_build):
+    from rtings_mcp.auth import AuthManager
+
+    async def boom(self, *, force=False):
+        raise RuntimeError("network gone")
+
+    monkeypatch.setattr(AuthManager, "session_probe", boom)
+    outcome = await auth_tools.validate_cookie(ctx.config, "MAYBE")
+    assert outcome == "could_not_check:RuntimeError"
+    assert outcome.split(":")[0] not in ("member", "expired", "anonymous")
+
+
+async def test_an_unknown_probe_reports_its_note_not_a_verdict(ctx, monkeypatch, stub_build):
+    from rtings_mcp.auth import AuthManager
+
+    async def unknown(self, *, force=False):
+        return self.unknown_probe("challenged")
+
+    monkeypatch.setattr(AuthManager, "session_probe", unknown)
+    assert await auth_tools.validate_cookie(ctx.config, "MAYBE") == "could_not_check:challenged"

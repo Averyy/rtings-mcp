@@ -30,7 +30,7 @@ annotation** — every tool returns a declared Pydantic model for that reason.
 
 ## Status
 
-Built, working, signed in, published (v0.2.2). Member mode is on by default; a member cookie
+Built, working, signed in, published (v0.3.0). Member mode is on by default; a member cookie
 unblurs the API (`RECON.md` §13.1). **The paywall model was corrected 2026-09-07 (`RECON.md`
 §14):** the 16 silos the docs called "open" give an anonymous session a **three-product review
 preview budget**, and while it is unspent the table tool serves everything. The budget is
@@ -87,6 +87,12 @@ Each of these has a longer entry, with the evidence, in `docs/rules/`.
   the shape changed; an empty 200 is `fetch_failed`.
 - **The 28 silos are a description hint, never a JSON-Schema `enum`.** Validate against live
   `static.silos` only.
+- **A tool description is cut at 2048 characters by the client (measured 2026-09-08).** Order it
+  by what a caller cannot work without — vocabulary before rationale. A test asserts the
+  essentials are inside the window.
+- **Two page-extraction paths now, and both are shape-guarded against the meter.** A best-of
+  brand page is tried only for a single-segment slug; `rt_article` accepts `/{silo}/learn/{slug}`
+  and nothing else. Neither can name `/{silo}/reviews/{brand}/{model}` (`RECON.md` §14.7).
 
 ## Development
 
@@ -97,7 +103,8 @@ uv pip install -e ".[browser]"              # only for the browser sign-in (`rt_
 .venv/bin/pytest -m live -q                # live, anonymous, against the real API
 .venv/bin/pytest -m "live and slow" -q -s  # + the 28-silo enforcement re-scan (~4 min)
 .venv/bin/ruff check src/ tests/           # lint (fix with --fix)
-.venv/bin/rtings-mcp scan --out docs/enforcement-snapshot.json   # the release gate, by hand
+.venv/bin/rtings-mcp scan --out docs/enforcement-snapshot.json   # release gate 1: the paywall map
+.venv/bin/rtings-mcp drift --out docs/recommendation-template-snapshot.json  # gate 2: best-of extraction
 ```
 
 - Run lint and the offline tests before every commit — with the real exit code, never through
@@ -115,7 +122,8 @@ uv pip install -e ".[browser]"              # only for the browser sign-in (`rt_
 The paywall map is a snapshot of RTINGS' business decisions and changes silently. Details and
 the invariant list are in `docs/rules/release.md`.
 
-1. Re-run the anonymous 28-silo scan and diff against `docs/enforcement-snapshot.json`.
+1. Re-run the anonymous 28-silo scan and diff against `docs/enforcement-snapshot.json`, and
+   `rtings-mcp drift` against `docs/recommendation-template-snapshot.json`.
 2. A diff is a **spec change**: update the snapshot, `RECON.md` §11.1/§14, `SPEC.md` §5, the
    gated list in `server.py`'s `instructions`, and the `README.md` tables. Never
    `config.KNOWN_SILOS`, and never let the runtime read the snapshot.

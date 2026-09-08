@@ -268,6 +268,18 @@ class SchemaEnvelope(BaseEnvelopeOut):
     data: SchemaData | None = None
 
 
+class VariantOut(LeanRow):
+    """One sku of a product family: the variation, and the model number a retailer knows.
+
+    RTINGS reviews one sku and lists the rest; the sku's ``name`` is the manufacturer's
+    model number (``"XR-83A80L"``), which is what a shopper searches by. ``model`` is
+    omitted where it only repeats the product's own name.
+    """
+
+    variation: str | None = None
+    model: str | None = None
+
+
 class ProductRowOut(LeanRow):
     product_id: str
     name: str | None = None
@@ -288,7 +300,13 @@ class ProductRowOut(LeanRow):
             "sizes in the family often differ. Filter on it with `variant`."
         ),
     )
-    variants: list[str] | None = None
+    variants: list[VariantOut] | None = Field(
+        default=None,
+        description=(
+            "Every variation the family is SOLD in, each with its manufacturer model "
+            "number. Filter on it with `sold_in` (`{'sold_in': '>=83'}`)."
+        ),
+    )
     test_bench: BenchOut | None = None
     image: str | None = None
     usage_scores: list[RatingOut] = Field(default_factory=list)
@@ -371,6 +389,25 @@ class HighlightOut(LeanRow):
     title: str | None = None
 
 
+class ResultGroupOut(LeanRow):
+    """One section of a review, carrying its breadcrumb ONCE.
+
+    The rows used to come back flat with `hierarchy` repeated on every one — on a TV, 243
+    rows x a 2-3 element breadcrumb, about 23% of a 56 KB response saying the same thing
+    over and over. RTINGS' own review page is sectioned; this is the shape the data had.
+    """
+
+    group: list[str] | None = Field(
+        default=None, description="The breadcrumb these tests sit under, deepest last."
+    )
+    group_id: str | None = Field(
+        default=None,
+        description="Pass back as rt_product's `group=` to fetch this section alone.",
+    )
+    test_count: int | None = None
+    tests: list[ValueOut] = Field(default_factory=list)
+
+
 class ProductData(Permissive):
     product: dict[str, Any] | None = None
     verdicts: list[VerdictOut] | None = Field(
@@ -390,7 +427,13 @@ class ProductData(Permissive):
             "measurements are null and must not be overwritten."
         ),
     )
-    results: list[ValueOut] = Field(default_factory=list)
+    results: list[ResultGroupOut] = Field(
+        default_factory=list,
+        description=(
+            "Leaf results, grouped by the section they sit under. `result_count` counts the "
+            "RESULTS, not the groups."
+        ),
+    )
     result_count: int | None = None
     commentary: list[dict[str, Any]] | None = Field(
         default=None,
@@ -452,7 +495,20 @@ class SearchHitOut(LeanRow):
 
 class SearchData(Permissive):
     query: str | None = None
-    total_count: int | None = None
+    silo: str | None = None
+    total_count: int | None = Field(
+        default=None, description="RTINGS' match count for the WHOLE index, unfiltered."
+    )
+    scanned: int | None = Field(
+        default=None,
+        description=(
+            "How many hits the `silo` filter was applied to. RTINGS' query takes no "
+            "category, so a product ranked below these is not in `results`."
+        ),
+    )
+    silo_matches: int | None = Field(
+        default=None, description="How many of the scanned hits were in `silo`."
+    )
     results: list[SearchHitOut] = Field(default_factory=list)
     searched: str | None = None
     notice: str | None = None
@@ -460,6 +516,29 @@ class SearchData(Permissive):
 
 class SearchEnvelope(BaseEnvelopeOut):
     data: SearchData | None = None
+
+
+class ArticleData(Permissive):
+    """RTINGS' editorial prose. Never a measurement, and never gated."""
+
+    silo: str | None = None
+    article: str | None = None
+    title: str | None = None
+    url: str | None = None
+    updated_at: str | None = None
+    authors: list[str] | None = None
+    sections: list[str] = Field(
+        default_factory=list,
+        description="The article's headings. Pass one as `section` to read just it.",
+    )
+    section: str | None = None
+    introduction: str | None = None
+    body: str | None = None
+    notice: str | None = None
+
+
+class ArticleEnvelope(BaseEnvelopeOut):
+    data: ArticleData | None = None
 
 
 class RecommendationPickOut(LeanRow):

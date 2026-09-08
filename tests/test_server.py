@@ -9,7 +9,7 @@ import pytest
 from rtings_mcp import server
 from rtings_mcp.normalize import STATUS_VALUES
 
-#: The seven data tools …
+#: The eight data tools …
 DATA_TOOLS = {
     "rt_silos",
     "rt_schema",
@@ -18,6 +18,7 @@ DATA_TOOLS = {
     "rt_graph",
     "rt_search",
     "rt_recommendations",
+    "rt_article",
 }
 #: … and the two that connect a membership. They are separate here because the data tools all
 #: carry `BaseEnvelopeOut` and these two deliberately do not: a sign-in serves no measurement
@@ -202,3 +203,42 @@ def test_the_instructions_gated_list_matches_the_enforcement_snapshot():
         "Re-run `rtings-mcp scan` and update the instructions with the snapshot."
     )
     assert not (listed & open_silos)
+
+
+#: Measured 2026-09-08 against Claude Code: the client cuts a tool description at exactly
+#: 2048 characters and appends "… [truncated]". Anything past that is not read.
+CLIENT_DESCRIPTION_LIMIT = 2048
+
+#: What a caller cannot work the tool without. All of it must survive the cut — the filter
+#: vocabulary was at character ~1540 of a 4,229-character description and the agent
+#: filtered by `name_contains` and scanned sizes by eye instead (shopper round 3).
+ESSENTIALS = {
+    "rt_ratings": [
+        "product_ids",
+        "brand",
+        "name_contains",
+        "published",
+        "variant",
+        "sold_in",
+        "No prefix means descending",
+        "not applied",
+        "tested_gated",
+        "not_tested",
+        "offset",
+    ],
+    "rt_schema": ["find=", "original_id"],
+    "rt_product": ["include_verdicts"],
+}
+
+
+async def test_every_tool_description_fits_or_front_loads_the_client_budget(tools):
+    """A description is cut at 2048 characters by the client, silently. A tool may run
+    longer than that — the tail is reference — but nothing a caller NEEDS may sit past
+    the cut, because they will never see it."""
+    for name, tool in tools.items():
+        visible = (tool.description or "")[:CLIENT_DESCRIPTION_LIMIT]
+        for phrase in ESSENTIALS.get(name, []):
+            assert phrase in visible, (
+                f"{name}: {phrase!r} is past the client's {CLIENT_DESCRIPTION_LIMIT}-char "
+                "cut, so no caller will ever read it"
+            )

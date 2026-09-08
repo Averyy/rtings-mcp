@@ -16,6 +16,9 @@ since opened up.**
 
 So, as a release gate, before every version bump:
 
+0. **Run both gates**: `rtings-mcp scan --out docs/enforcement-snapshot.json` (the paywall map)
+   and `rtings-mcp drift --out docs/recommendation-template-snapshot.json` (best-of extraction).
+   Each writes its own committed baseline; each diff is a spec change, not a test failure.
 1. **Re-run the anonymous 28-silo scan** — the enforcement half of the smoke test (`SPEC.md` §10):
    per silo, `column_options` + `products_list` + one `test_results` over the current bench's leaf
    tests, anonymous, no cookie.
@@ -34,15 +37,27 @@ So, as a release gate, before every version bump:
    `playwright` (the `[browser]` extra), and the Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
    drifted two majors is a bug waiting to surface.
 5. **Re-check the invariants too, not just the split** — they are what the normalizer is built on:
-   - blur is still exactly `published:false ∨ (insider_only ∧ silo enforces)` — no third mechanism;
-   - gating within a silo is still **per-product, never per-test**;
+   - blur is still **approximately** `published:false ∨ (insider_only ∧ silo enforces)`. It is
+     not exact: measured 2026-09-08 (`RECON.md` §12.21), headphones legacy bench 4 serves test
+     287 `Transducer` unblurred on all 16 products while its `insider_only` is `true`. One
+     counterexample in six bench-samples — the rule is a good approximation and nothing more,
+     which is why the runtime derives the boundary from observed `unblurred` and never from
+     the flag;
+   - gating within a silo is **usually** per-product; the `Transducer` case above is per-TEST,
+     so a `partial` result is to be broken down per test before it is read as a paywall change;
    - `status` domain is still `{tested, na, untested}`;
    - usage definitions still carry no `insider_only`.
    - **which best-of template each silo serves** (`RECON.md` §12.17) — mattress and
      running-shoes are server-rendered, the rest are `RecommendationVuePage`, and RTINGS is
      migrating. This drifts silently exactly like the paywall map: the symptom is
      `recommendations_missing`, and the fix is a parser, never a "that silo has no lists".
-     One `rt_recommendations(silo, list=<first>)` per silo is the check.
+     **This is no longer a manual step (2026-09-08): `rtings-mcp drift` is that check**, one
+     list per silo, and it diffs against `docs/recommendation-template-snapshot.json` the way
+     `scan` diffs against the enforcement snapshot. Baseline `scanned_at` 2026-09-08:
+     **28 / 28 ok, 26 props / 2 static**, reproducing §12.17 exactly. It exits non-zero on any
+     silo that is not `ok`, so CI can run it. It also counts each silo's discovered
+     `brand_lists`, which catches the other half of a nav change — lists that vanish rather
+     than picks that fail to parse.
 6. **Never let the runtime read the snapshot.** It is a release-time diff baseline and documentation
    only. The server derives the boundary from observed `unblurred` per (silo, bench) on every fetch
    (`SPEC.md` §5) — a hardcoded map is exactly the bug this rule exists to catch.

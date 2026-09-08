@@ -132,12 +132,21 @@ async def test_recommendations_discovers_multi_segment_lists(ctx):
 async def test_product_review_normalizes_against_its_own_bench(ctx):
     out = await services.rt_product(ctx, "/tv/reviews/sony/x90l-x90cl")
     models.ProductEnvelope.model_validate(out)
-    results = out["data"]["results"]
+    groups = out["data"]["results"]
+    assert groups
+    # Results are nested under their section, each carrying its breadcrumb once.
+    assert all(g["group_id"] or g["group"] is None for g in groups)
+    results = [row for g in groups for row in g["tests"]]
     assert results
+    assert out["data"]["result_count"] == len(results) or out["data"].get("groups_omitted"), (
+        "result_count counts the whole review; a trimmed response says so in groups_omitted"
+    )
     # A legacy-bench product has 54 tests, a current-bench one 402. Joining against the
     # full silo schema would invent hundreds of false not_tested rows.
     assert all(r["status"] != "coverage_unknown" for r in results)
     assert not any(r["kind"] in {"group", "category"} for r in results)
+    # The breadcrumb moved to the group; repeating it per row was ~27% of the response.
+    assert not any("hierarchy" in r for r in results)
 
 
 @pytest.mark.slow

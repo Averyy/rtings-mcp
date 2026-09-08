@@ -1629,7 +1629,10 @@ class Repository:
             # catalog does not know is `unknown_product`, not a near miss.
             raise RtingsError(
                 errors.UNKNOWN_PRODUCT,
-                f"no product in the {silo_part} catalog has the URL {path!r}",
+                f"no product in the {silo_part} catalog has the URL {path!r} on ANY bench "
+                "(every bench with a published schema was searched, not just the recent "
+                "set). Check the path, or pass the numeric product id — "
+                "`test_results` carries products the catalog does not list.",
             )
 
         if text.isdigit():
@@ -1665,12 +1668,39 @@ class Repository:
         )
 
     async def _product_from_url(self, silo: str, path: str) -> ProductRef | None:
+        """Exact URL match, recent benches first and legacy benches second.
+
+        Measured 2026-09-08: scanning only ``recent_ids`` made every LEGACY-bench review
+        unresolvable **by URL** while the same product resolved by its numeric id — the
+        Samsung TU7000 (bench 124) failed on the URL RTINGS' own catalog gives for it, and
+        the error said "no product in the tv catalog has the URL", which reads as "no such
+        product" for a review that is right there. A review URL is this tool's documented
+        primary input, so the scan widens rather than the promise narrowing.
+
+        Searching by *search* is still forbidden on this path (a relevance hit is not an
+        identity — see the caller); this widens the EXACT-match scan only, and only after
+        the cheap set has missed. tv is 3 recent benches and 11 legacy ones, so a genuine
+        miss costs those catalog fetches once per TTL.
+        """
         try:
             await self.resolve_silo(silo)
         except RtingsError:
             return None
         info = await self.bench_info(silo)
-        generations = await self.catalog(silo, info.recent_ids)
+        recent = list(info.recent_ids)
+        found = await self._url_in_benches(silo, recent, path)
+        if found is not None:
+            return found
+        schema = await self.schema(silo)
+        older = [b for b in schema.bench_order if b not in recent]
+        return await self._url_in_benches(silo, older, path) if older else None
+
+    async def _url_in_benches(
+        self, silo: str, benches: list[str], path: str
+    ) -> ProductRef | None:
+        if not benches:
+            return None
+        generations = await self.catalog(silo, benches)
         for generation in generations.values():
             for entry in generation.products:
                 page = entry.get("page")
@@ -1855,6 +1885,59 @@ class Repository:
 
         return await self._flight.run(f"recs:{key}", do_fetch)
 
+    async def article(self, silo: str, slug: str, *, refresh: bool = False) -> Envelope:
+        """One ``/{silo}/learn/{slug}`` prose page.
+
+        The second page-extraction path, and the only other one. RTINGS' lineup and
+        explainer articles answer questions no measurement can ("does Sony sell a bigger
+        OLED this year"), and nothing here is gated — the page carries no ``unblurred``
+        bit and no test row, so it is cached at ``ANONYMOUS`` like the best-of index.
+
+        ``/learn/`` is required by :func:`article_path`, and that is a paywall guard:
+        a product review page is ``/{silo}/reviews/{brand}/{model}`` and fetching one as
+        HTML spends a preview (RECON.md §14.2). No path this builds can name one.
+        """
+        key = validate_silo(silo)
+        clean = validate_slug(slug)
+        file_key = slug_to_key(clean)
+        cached = self.cache.get("articles", key, f"{file_key}.json")
+        if cached is not None and not refresh and not cached.is_stale(TTL_RECS):
+            return cached
+
+        async def do_fetch() -> Envelope:
+            async with file_lock(self.cache.root / "locks" / f"art-{key}-{file_key}.lock"):
+                again = self.cache.get("articles", key, f"{file_key}.json")
+                if again is not None and not refresh and not again.is_stale(TTL_RECS):
+                    return again
+                path = article_path(key, clean)
+                try:
+                    result = await self.transport.api_get_html(path)
+                except RtingsError:
+                    if again is not None:
+                        self.warn("refresh_failed: serving the cached article")
+                        return again
+                    raise
+                payload = _extract_article(result.text)
+                if payload is None:
+                    raise RtingsError(
+                        errors.RECOMMENDATIONS_MISSING,
+                        f"no article body found at {result.url} — RTINGS answers an "
+                        "unknown learn slug with another page, so this is most likely a "
+                        "slug that does not exist",
+                    )
+                envelope = Envelope(
+                    fetched_at=time.time(),
+                    source_url=result.url,
+                    cache_tier=ANONYMOUS,
+                    request={"page": path},
+                    payload=payload,
+                    silo=key,
+                )
+                self.cache.put(envelope, "articles", key, f"{file_key}.json")
+                return envelope
+
+        return await self._flight.run(f"article:{key}:{file_key}", do_fetch)
+
     async def recommendation(
         self, silo: str, list_slug: str, *, refresh: bool = False
     ) -> Envelope:
@@ -1880,23 +1963,39 @@ class Repository:
                 again = self.cache.read_variants("recs", key, key=file_key, min_tier=demand)
                 if again and not refresh and not again[0].is_stale(TTL_RECS):
                     return again[0]
-                try:
-                    result = await self.transport.api_get_html(f"/{key}/reviews/best/{slug}")
-                except RtingsError:
+                # Two shapes, tried in order (see :func:`recommendation_paths`), and a
+                # shape only counts as *found* when a template matches: RTINGS answers an
+                # unknown best-of slug with a 200 landing page as readily as a 404, so
+                # stopping at the first successful GET would never reach the brand page.
+                result = None
+                payload = None
+                last: RtingsError | None = None
+                for path in recommendation_paths(key, slug):
+                    try:
+                        fetched = await self.transport.api_get_html(path)
+                    except RtingsError as exc:
+                        last = exc
+                        continue
+                    result = fetched
+                    # Two templates are legitimate (see `_extract_recommendation_static`),
+                    # so the alarm fires only when NEITHER matches — that, not "the props
+                    # are missing", is the drift signal now.
+                    payload = _extract_recommendation(fetched.text) or (
+                        _extract_recommendation_static(fetched.text)
+                    )
+                    if payload is not None:
+                        break
+                if result is None:
                     if again:
                         self.warn("refresh_failed: serving the cached best-of list")
                         return again[0]
-                    raise
-                # Two templates are legitimate (see `_extract_recommendation_static`), so
-                # the alarm fires only when NEITHER matches — that, not "the props are
-                # missing", is the drift signal now.
-                payload = _extract_recommendation(result.text)
-                if payload is None:
-                    payload = _extract_recommendation_static(result.text)
+                    raise last or RtingsError(
+                        errors.RECOMMENDATIONS_MISSING, f"no best-of page for {slug!r}"
+                    )
                 if payload is None:
                     raise RtingsError(
                         errors.RECOMMENDATIONS_MISSING,
-                        f"neither best-of template matched /{key}/reviews/best/{slug}",
+                        f"neither best-of template matched {result.url}",
                     )
                 rows = _recommendation_insider_rows(payload)
                 probe = self.auth.cached_probe()
@@ -1962,8 +2061,16 @@ class Repository:
 
 
 def _extract_best_lists(html: str, silo: str) -> list[dict[str, Any]]:
-    """``silo_layout.best`` first, an href scan second."""
+    """``silo_layout.best`` first, an href scan second.
+
+    The Best nav carries two shapes and discovery kept only the first: the ``/best/``
+    lists, and the per-BRAND pages one segment up (``/tv/reviews/sony``, "The 4 Best Sony
+    TVs"), which the ``brands`` list's own prose links to. Dropping them turned
+    ``list="sony"`` into ``unknown_list`` (shopper round 3, 2026-09-07), so they are kept
+    and tagged ``kind: "brand"``.
+    """
     prefix = f"/{silo}/reviews/best/"
+    brand_re = re.compile(rf"^/{re.escape(silo)}/reviews/([a-z0-9][a-z0-9-]*)/?$")
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for blob in extract_data_props(html, contains="silo_layout"):
@@ -1974,15 +2081,20 @@ def _extract_best_lists(html: str, silo: str) -> list[dict[str, Any]]:
             if not isinstance(entry, dict):
                 continue
             url = str(entry.get("url") or "")
-            if not url.startswith(prefix):
-                continue
-            slug = url[len(prefix) :].strip("/")
+            if url.startswith(prefix):
+                slug, kind = url[len(prefix) :].strip("/"), "best"
+            else:
+                brand = brand_re.match(url)
+                if not brand:
+                    continue
+                slug, kind = brand.group(1), "brand"
             if not slug or slug in seen:
                 continue
             seen.add(slug)
             out.append(
                 {
                     "list": slug,
+                    "kind": kind,
                     "title": entry.get("title"),
                     "short": entry.get("short"),
                     "url": url,
@@ -1994,9 +2106,73 @@ def _extract_best_lists(html: str, silo: str) -> list[dict[str, Any]]:
         if silo_part == silo and slug not in seen:
             seen.add(slug)
             out.append(
-                {"list": slug, "title": None, "short": None, "url": f"{prefix}{slug}"}
+                {
+                    "list": slug,
+                    "kind": "best",
+                    "title": None,
+                    "short": None,
+                    "url": f"{prefix}{slug}",
+                }
             )
     return out
+
+
+def article_path(silo: str, slug: str) -> str:
+    """Where a ``learn`` article lives. The ``/learn/`` segment is not decoration: it is
+    what makes this path incapable of naming a product review page, whose HTML GET spends
+    a preview (RECON.md §14.2)."""
+    return f"/{silo}/learn/{slug}"
+
+
+def _extract_article(html: str) -> dict[str, Any] | None:
+    """Pull ``page.article`` out of the page props.
+
+    Shallow and defensive, like the best-of extractor: RTINGS serves *something* for an
+    unknown slug (``/tv/learn`` answers with ``/research``), so "no article object" is the
+    only honest signal that the page asked for is not there.
+    """
+    for blob in extract_data_props(html, contains="article"):
+        page_data = blob.get("page_data")
+        page = page_data.get("page") if isinstance(page_data, dict) else blob.get("page")
+        if not isinstance(page, dict):
+            continue
+        article = page.get("article")
+        if not isinstance(article, dict) or not article.get("title"):
+            continue
+        return {
+            "title": article.get("title"),
+            "url": page.get("url"),
+            "introduction": article.get("introduction"),
+            # `text_with_anchors` is the same prose with the heading anchors the table of
+            # contents links to; it is what `section` is sliced out of.
+            "text": article.get("text_with_anchors") or article.get("text"),
+            "conclusion": article.get("conclusion_with_anchors") or article.get("conclusion"),
+            "toc_items": article.get("toc_items") or [],
+            "updated_at": article.get("latest_update_date") or page.get("updated_at"),
+            "created_at": article.get("created_at"),
+            "meta_description": article.get("meta_description"),
+            "authors": [
+                a.get("name")
+                for a in (page.get("authors") or [])
+                if isinstance(a, dict) and a.get("name")
+            ],
+        }
+    return None
+
+
+def recommendation_paths(silo: str, slug: str) -> list[str]:
+    """Where a best-of ``list`` may live, in the order to try.
+
+    ``/{silo}/reviews/best/{slug}`` is the list shape; a brand page is one segment up.
+    The brand shape is offered ONLY for a single-segment slug, and that is a paywall
+    guard, not tidiness: a product review page is ``/{silo}/reviews/{brand}/{model}``
+    (RECON.md §14.2), and fetching one as HTML spends a preview. A slug carrying a slash
+    could name one, so it never reaches the second form.
+    """
+    paths = [f"/{silo}/reviews/best/{slug}"]
+    if "/" not in slug and slug != "best":
+        paths.append(f"/{silo}/reviews/{slug}")
+    return paths
 
 
 def _extract_recommendation(html: str) -> dict[str, Any] | None:
@@ -2028,6 +2204,9 @@ def _extract_recommendation(html: str) -> dict[str, Any] | None:
             "conclusion": recommendation.get("conclusion"),
             "product_recommendations": picks,
             "recommendation_mentions": recommendation.get("recommendation_mentions") or [],
+            # Which of the two legitimate templates answered (RECON.md §12.17). The
+            # migration state was a dated manual note; `rtings-mcp drift` reads this.
+            "template": "props",
         }
     return None
 
@@ -2179,6 +2358,55 @@ def _static_featured(block: str) -> tuple[list[dict[str, Any]], list[dict[str, A
     return tests, ratings
 
 
+_MENTION_ITEM_RE = re.compile(r"<li\b[^>]*>")
+
+
+def _static_mentions(html: str) -> list[dict[str, Any]]:
+    """The "Notable Mentions" section, emitted in the props template's shape.
+
+    Measured 2026-09-08: the section is plainly on the server-rendered page (an
+    ``<a id="mentions">`` anchor, an ``<h2>Notable Mentions</h2>`` and a
+    ``recommendation_vue_page-mentions`` block listed in the page's own table of contents),
+    while ``recommendation_mentions`` came back ``[]`` there and populated on the props
+    template. Each item is ``<strong>Name:&nbsp;</strong>`` + a rich-content span + a "See
+    our review" link.
+
+    ``<li>`` is frequently unclosed on these pages (69 opens to 26 closes, measured
+    2026-09-05), so items are cut at the next ``<li``, never at ``</li>``.
+    """
+    block = _block(html, "recommendation_vue_page-mentions")
+    if not block:
+        return []
+    starts = [m.start() for m in _MENTION_ITEM_RE.finditer(block)]
+    out: list[dict[str, Any]] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(block)
+        item = block[start:end]
+        name_match = re.search(r"<strong\b[^>]*>(.*?)</strong>", item, re.S)
+        name = _text(name_match.group(1)) if name_match else None
+        if name:
+            # The rendered label carries its own punctuation ("Purple RestorePlus Hybrid:"),
+            # and the props template gives the bare fullname.
+            name = name.rstrip(":").strip() or None
+        description = _block(item, "e-rich_content_inline")
+        href = re.search(r'<a\b[^>]*\shref="([^"]+)"[^>]*>\s*See our review', item)
+        if not name and not description:
+            continue
+        out.append(
+            {
+                "description": (description or "").strip() or None,
+                "sku": None,
+                # No `brand` on this template: the props one nests `product.brand.name` and
+                # the server-rendered page never renders it separately. A null beats a guess.
+                "product": {
+                    "fullname": name,
+                    "page": {"url": href.group(1) if href else None},
+                },
+            }
+        )
+    return out
+
+
 def _extract_recommendation_static(html: str) -> dict[str, Any] | None:
     """Parse the server-rendered best-of template into the props template's shape.
 
@@ -2261,7 +2489,8 @@ def _extract_recommendation_static(html: str) -> dict[str, Any] | None:
         "introduction": intro,
         "conclusion": None,
         "product_recommendations": picks,
-        "recommendation_mentions": [],
+        "recommendation_mentions": _static_mentions(html),
+        "template": "static",
     }
 
 

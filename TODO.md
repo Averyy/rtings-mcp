@@ -3,20 +3,29 @@
 Tracking for open research and decisions. Confirmed items are recorded in `RECON.md`; this file is
 the working checklist. Facts land in `RECON.md`, not here.
 
-**Status 2026-09-07: built, working, signed in, and published — `rtings-mcp` 0.2.3 is on
-PyPI, released through `publish.yml` and verified from a fresh `uvx` install.** Three review rounds (15 defects, then 10,
-then 7 more found while testing the sign-in end to end — see Built, below), then the anonymous
-shopper round (40 scenarios) and the **member round (15 scenarios, below)**. All seven data tools
-run against the live API, **445 offline + 9 live tests pass**, and the release-gate re-scan
-reproduces the 12-enforcing / 16-open map with zero drift — re-run today *with* a membership
-stored, which the scan ignores by construction. What the build measured is in `RECON.md` §12; what
-the membership measured is in §13.
+**Status 2026-09-08: built, working, signed in, published, and the backlog is closed.** Three
+review rounds (15 defects, then 10, then 7 more found while testing the sign-in end to end — see
+Built, below), the anonymous shopper round (40 scenarios), the member round (15 scenarios), and
+on **2026-09-08 the whole open list was worked through**: 3 confirmed defects fixed, 6
+discoverability gaps closed, `rt_article` added (8 data tools now), and **7 research questions
+answered by measurement** — q6, q7, q15, q16, the usage-rating map, the orphan products and both
+best-of template gaps. **481 offline + 9 live tests pass**, lint is clean, and both release gates
+(`rtings-mcp scan`, `rtings-mcp drift`) reproduce their snapshots. What the build measured is in
+`RECON.md` §12; the membership in §13; the preview meter in §14.
 
-**Phase 0 is DONE for everything a membership can answer** (`RECON.md` §13): q1 is YES, the
-member/free field is `current_user.is_insider`, the browser headers turn out not to matter,
-`user_has_access` flips, and member/anonymous curves are byte-identical. `RTINGS_MEMBER_MODE`
-therefore defaults to **`true`** as of 2026-09-06. The only questions left need a **free**
-account — see below.
+**Two findings from that round change what the docs may claim:**
+
+- **The blur rule is an approximation, not an identity** (`RECON.md` §12.21). headphones legacy
+  bench 4 serves test 287 `Transducer` unblurred on all 16 products with `insider_only: true` —
+  **per test**, not per product. One counterexample in six bench-samples. Nothing in the server
+  changed, because the boundary has always been read off the observed `unblurred` bit.
+- **A product is on exactly ONE bench** (`RECON.md` §12.23): 6 bench pairs across 4 silos share
+  zero products, so the recent-bench set is a strict partition and q7 is both answered and moot.
+
+**Phase 0 is DONE** (`RECON.md` §13): q1 is YES, the member/free field is
+`current_user.is_insider`, the browser headers turn out not to matter, `user_has_access` flips,
+and member/anonymous curves are byte-identical. `RTINGS_MEMBER_MODE` defaults to **`true`** as of
+2026-09-06. §13.8 closed the last member-only question on 2026-09-08.
 
 ## Handoff — read this before touching anything (2026-09-06)
 
@@ -168,11 +177,16 @@ a usage filter its rows cannot carry.
 
 ### Still NOT tested
 
-1. **The review path on a legacy bench for a member** (the other half of q16).
-2. **`rt_sign_in` end to end on an expired cookie** — the guard was read, not run.
-3. ~~A free account~~ — **measured 2026-09-07 (`RECON.md` §14.6): identical to anonymous.** No
-   budget on the 12 gated silos, the same three-product cookie meter on the 16. Nothing left
-   that needs a free account.
+Nothing on the original list. All three closed 2026-09-08:
+
+1. ~~The review path on a legacy bench for a member~~ — **measured** (`RECON.md` §13.8): 8/8
+   `tested_visible`, `data_tier: unblurred`, on tv bench 1. The attempt found a real defect
+   (a legacy-bench review URL was unresolvable); fixed and tested.
+2. ~~`rt_sign_in` end to end on an expired cookie~~ — `validate_cookie` had **no test coverage at
+   all** (every test injected `validate`). Five now cover it against the stub transport: expired,
+   member, a crash, an unknown probe, and the guard that matters — it never writes to the real
+   cache or the stored credential.
+3. ~~A free account~~ — measured 2026-09-07 (`RECON.md` §14.6): identical to anonymous.
 
 ### Cautions
 
@@ -184,13 +198,18 @@ a usage filter its rows cannot carry.
   uses. A member session measuring enforcement reports every gated silo as open.
 - The delegated-review MCP (`codex-dobby`) had **expired auth** on 2026-09-06 and returned zero
   findings while reporting success. If you delegate a review, check it actually ran.
+- **The two release gates are `rtings-mcp scan` and `rtings-mcp drift`** (added 2026-09-08), each
+  with its own committed snapshot. `drift` exits non-zero on any silo that fails to extract.
+- **`RECON.md`'s blur rule is an approximation** (§12.21). Do not re-derive it as an identity, and
+  break a `partial` scan result down per test before calling it a paywall change.
 
 ```bash
-.venv/bin/pytest tests/ -q                 # 445 offline, ~5 s
+.venv/bin/pytest tests/ -q                 # 481 offline, ~5 s
 .venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
 .venv/bin/ruff check src/ tests/
 .venv/bin/rtings-mcp auth --status         # what credential is stored, and its session
-.venv/bin/rtings-mcp scan --silo tv        # release gate, one silo (anonymous by construction)
+.venv/bin/rtings-mcp scan --silo tv        # gate 1, one silo (anonymous by construction)
+.venv/bin/rtings-mcp drift --silo tv       # gate 2, best-of extraction
 ```
 
 ## Built
@@ -281,101 +300,76 @@ this list is only the checklist. The two that remain need a **free** account, no
 
 ### Still open — these need a FREE account, not a member one
 
-A member has no meter (`access_limit: null`, `previewed_products: []`), so no amount of member
-session time can measure the preview budget. The control is built and enforced; only the constant
-is unknown.
+Nothing. q2 and capture (o) were answered anonymously on 2026-09-07 (`RECON.md` §14), and q7 was
+answered on 2026-09-08 (`RECON.md` §12.23) — a product is on exactly one bench, so there is no
+cross-bench comparison to make.
 
-- [x] ~~**q2 — the metered preview's unit**~~ **ANSWERED 2026-09-07, anonymously (`RECON.md`
-      §14): per PRODUCT**, spent by the review page's HTML GET, idempotent per product, shared
-      across silos, limit 3 for anonymous on the 16 metered silos and none on the 12. `page_body`
-      does not count, so `rt_product` never spends one. Past the limit the TABLE path blurs too —
-      the "16 open silos" were a fresh-jar artifact; the server's jar is always fresh by
-      construction and must stay that way honestly (no review-HTML fetch, no cookie games).
-- [x] ~~**capture o — is `app/side_by_side__review` metered?**~~ **ANSWERED 2026-09-07: no**
-      (`RECON.md` §14.2) — a fresh jar's `previewed_products` stays empty after the call.
+## CLOSED 2026-09-08 — the whole open list, worked through in one pass
 
-- [x] ~~**q3 / capture e — does the session slide?**~~ **ANSWERED 2026-09-04, anonymously,
-      no membership needed** (`RECON.md` §12.15). It slides on *every* response, HTML and API
-      alike, with a fresh 30-day expiry each time — so a session lives indefinitely with use
-      and dies 30 days after it stops. Rotation write-back is now implemented, gated on a
-      probe proving `current_user` non-null. What remains for Phase 0 is only to confirm the
-      same holds for a logged-in session (it is the same Rails mechanism).
-- [ ] **q7 — minor-bench comparability** (are v2.0.1/v2.1/v2.2 rescored or additive?). Needs member
-      scores to compare. Decides whether the default comparable population is one bench or the set.
+Every item below carries where the evidence landed. Nothing here is outstanding.
 
-## Product — from the second best-of template (2026-09-05)
+### Defects fixed (3)
 
-- [ ] **"Notable Mentions" is not extracted on the server-rendered template.**
-      `recommendation_mentions` comes back `[]` there while the props template populates it, and
-      the section is plainly on the page. Nothing surfaces mentions today, so this is latent
-      rather than broken.
-- [ ] **The static template's featured `target_id` cannot be joined to the schema.** Its
-      `DistributionTooltip` gives `target_label` / `target_type` and an id in a different
-      namespace — Side Sleeping is `38309` there and `36553` in the schema — so those rows carry
-      a null `original_id` and a real name. Whether a mapping exists is unmeasured; a wrong join
-      key would be worse than none.
-- [ ] **Template drift has no automated check.** `RECON.md` §12.17 is a dated snapshot (mattress
-      and running-shoes migrated, 12 others not), and the release checklist covers it as a MANUAL
-      step. One `rt_recommendations(silo, list=<first>)` per silo would catch it; the symptom is
-      `recommendations_missing` on a silo that used to work.
+- [x] **`rt_schema find`: `terms_with_no_matches` was always `[]`.** `term in (h.get(...) or
+      [term])` — an empty list is falsy, so one partial-only hit made every term read as matched.
+      Now `h.get("matched_terms", [term])`; only the single-term shape defaults.
+- [x] **`find` digit tokens drowned the real matches.** "hdmi 2.1" split into hdmi/2/1 and the
+      bare digits filled the 60-row cap with noise. A lone digit now scores only beside a word of
+      the same term — unless the term is nothing but that digit (`find="1440"`).
+- [x] **`rt_ratings` failed the whole call on one off-bench usage.** Now a warning and a partial
+      answer, matching `product_ids`; `tests=` too. A request where EVERY entry is off-bench still
+      errors, because dropping them all would leave `usages=[]`, which reads as "no scores exist".
 
-## Research — answerable anonymously
+### Discoverability (6)
 
-- [ ] **q16 — does enforcement hold on LEGACY benches, the review path, and non-leaf kinds?** Both
-      sweeps covered only each silo's **current** bench and its first 40–50 `number`/`word` leaf
-      tests. Non-blocking — the server derives the boundary per fetch anyway — but it bounds what
-      `RECON.md` §11 may be cited for. (`RECON.md` §10 q16)
-- [ ] **usage ratings on the other 15 open silos.** `RECON.md` §12.3 falsified "assume gated there"
-      for mattress (`Side Sleeping` = 7.7, unblurred, anonymous). Whether that generalizes is
-      unmeasured. Cheap to check: one `table_tool__ratings` call per open silo.
-- [ ] **the 9 orphan TV products** (`RECON.md` §12.2) — ids that return `test_results` rows while
-      appearing in no `products_list` across all 18 benches. Almost certainly reviews in progress
-      that the catalog filters out entirely, but that is inference, not measurement.
-- [ ] **q15 — what decides whether a silo enforces?** Probably NOT answerable from the API; it is a
-      business decision. Tracked so nobody re-derives the falsified "maturity" story.
-      (`RECON.md` §10 q15)
-- [ ] **q6 — API behaviour under sustained volume.** Answered **passively** from
-      `telemetry/requests.jsonl` during real use — the file now accumulates
-      `retry-after`, `x-ratelimit-*`, `x-cache`, `age` per response. The 28-silo re-scan
-      (~140 requests over ~3.5 min at the default rate) is the first sample and hit no limit.
+- [x] **The client cuts a tool description at exactly 2048 characters** (measured). `rt_ratings`
+      was 4,229 with the filter vocabulary at ~1,540. Reordered by what a caller cannot work
+      without; a test asserts each essential phrase is inside the window.
+- [x] **`sold_in`** — the sizes a product is SOLD in, with operators (`{"sold_in": ">=83"}`).
+- [x] **`variants[].model`** — the manufacturer model number per sku (`"XR-83A80L"`).
+- [x] **`rt_schema(find=...)` answers catalog fields** in `catalog_fields` instead of nothing.
+- [x] **`rt_search(silo=...)`** scopes the cross-silo index, reporting `scanned`/`silo_matches`.
+- [x] **`rt_article`** reads a `/{silo}/learn/{slug}` page as prose, with `sections`/`section=`.
 
-## Product
+### Product (4)
 
-- [ ] Flip the repository public.
-- [x] ~~Null fields survive the output model.~~ **DONE 2026-09-04.** Measured on the wire,
-      not the raw dict: the model was re-adding every declared field as `null`, so one
-      `rt_product` response went from 55,857 bytes of content to **113,406** delivered, and a
-      gated row from 168 to 424 bytes. Row models now omit their null optionals
-      (`rt_product` −51%, ~36% across the six most common responses). `value`, `gated` and
-      `status` are exempt, and envelopes are untouched, so `out["error"] is None` still
-      works — with four tests pinning exactly that.
-- [ ] **Nest `data.results` by hierarchy** — the code returns a flat list repeating
-      `hierarchy` on every row (~23% of a 56 KB response). Recommended by review, deliberately
-      deferred as its own change. **The docs no longer claim otherwise** (2026-09-04): SPEC §7,
-      CLAUDE.md and the `rt_product` docstring said "grouped by hierarchy", which the response
-      shape did not support; they now describe the breadcrumb the rows actually carry.
-- [x] **Seven-agent review round (2026-09-04) — all findings fixed.** In brief: `filters`/`sort`
-      silently no-opped unless the field was also in `tests=` (live-confirmed on mattress, an OPEN
-      silo — nothing was gated, the test had simply never been fetched); descending sorts put rows
-      with no comparable value FIRST; `rt_ratings` read Early-Access status from the freshly
-      refetched catalog instead of the row's own slice envelope, so a stale slice reported
-      `tested_gated` for an unpublished review; `graph_data_url` mapped ANY `payload_missing` to
-      "no curve" and cached that for 3 days (the real negative is a well-formed `test_results: []`,
-      measured); `rt_product`'s Early-Access notice asserted "a membership does not lift it", the
-      exact claim §12.10 reversed; write-time demotion was structurally dead on `ratings/` (the
-      predicate needs `status` and an `insider_only` id, and a ratings row has neither), which also
-      made the pruning exemption never fire there; `verdicts/` had no demotion at all; a graph-kind
-      test on the table path collapsed to "measured, and the answer is nothing"; `RTINGS_CACHE_MAX_MB`
-      was documented as the growth bound but `enforce_size_limit` was called from nowhere;
-      `silo_hint_drift` was promised in three docs and emitted nowhere. Plus a `test_http.py` for the
-      real transport — `StubTransport` overrides every method without `super()`, so status precedence
-      and the `errors[]` rule were dead code under the suite and both survived mutation.
+- [x] **Flip the repository public** — already public (`Averyy/rtings-mcp`).
+- [x] **Nest `data.results` by hierarchy** — done, and MEASURED as a shape win rather than a byte
+      one: the breadcrumb is 26.6% of a real TV review but nesting recovers only 1.8%, because it
+      adds two indent levels to 243 rows (`docs/rules/tools-and-responses.md`). Kept for the
+      addressable `group_id`, which is what the new budget warning tells a caller to use.
+- [x] **A bare `rt_ratings("tv")` now answers something numeric.** Measured: it was 33 usage
+      scores with ZERO visible. When every score is withheld it projects the category's public
+      tests (6 on tv, 4 on mattress); when scores are visible nothing changes.
+- [x] **Template drift has an automated check** — `rtings-mcp drift`, diffed against
+      `docs/recommendation-template-snapshot.json`. Baseline: 28/28 ok, 26 props / 2 static.
 
-- [x] Confirm `rtings-mcp` is free on PyPI before publishing. It was, and it now holds this
-      project: v0.2.1 published 2026-09-07 via trusted publishing (`publish.yml`, environment
-      `pypi`). Releasing is `gh release create vX.Y.Z --generate-notes` after a version bump.
-- [ ] Decide whether `rt_ratings` should default to projecting the category's public tests, so a
-      bare `rt_ratings("tv")` returns something numeric rather than catalog-plus-gated-scores.
+### Found while working, not on the list (2)
+
+- [x] **`rt_product` never bounded its response.** A TV review is 77,407 characters against the
+      40,000 budget, with no warning and no trimming, while `rt_ratings` has always bounded.
+      Now drops whole sections from the tail and names them in `groups_omitted`.
+- [x] **A legacy-bench review URL was unresolvable** (`RECON.md` §13.8) — the same product
+      resolved by numeric id, under an error reading "no such product". Found while measuring the
+      member legacy-bench path, which it was blocking.
+
+### Research answered by measurement (7)
+
+- [x] **q16** (`RECON.md` §12.21) — enforcement holds on legacy benches and is kind-agnostic,
+      **with one per-test counterexample that falsifies the stated blur invariant**.
+- [x] **q7** (§12.23) — a product is on exactly one bench; the recent set is a partition.
+- [x] **q6** (§12.22) — a second passive sample: 193 requests, 0 non-200, no rate-limit headers
+      of any kind, 13.7 req/min sustained.
+- [x] **q15** — still not answerable from the API; it is a business decision, tracked so nobody
+      re-derives the falsified "maturity" story. This is a conclusion, not a gap.
+- [x] **Usage ratings on the other 15 metered silos** (§12.20) — 3,006 rows, perfectly bimodal:
+      0% on the 12 that enforce, 100% on the 15 metered ones with usages. No separate map needed.
+- [x] **The 9 orphan TV products** (§12.2b) — gone. 551 ids in `test_results`, 551 catalogued,
+      0 orphans. A transient population, as inferred.
+- [x] **Both best-of template gaps** (§12.17) — "Notable Mentions" IS extractable on the
+      server-rendered template and is now surfaced as `mentions` on both; and the featured
+      `target_id` join is by (`target_label`, `target_type`), not by id — 0 of 9 target_ids are
+      schema ids, all 9 labels resolve.
 
 ## Decisions (human judgment — not measurable)
 

@@ -1,0 +1,236 @@
+{
+  "_comment": "Best-of template drift (see docs/rules/release.md and RECON.md \u00a712.17). One list per silo. A silo that moves from 'props' to 'static', or lands on a non-ok status, is a SPEC CHANGE.",
+  "scanned_at": "2026-09-08",
+  "totals": {
+    "silos": 28,
+    "ok": 28,
+    "props_template": 26,
+    "static_template": 2
+  },
+  "silos": {
+    "air-conditioner": {
+      "lists": 5,
+      "brand_lists": 0,
+      "sampled": "portable",
+      "template": "props",
+      "picks": 4,
+      "status": "ok"
+    },
+    "air-fryer": {
+      "lists": 9,
+      "brand_lists": 0,
+      "sampled": "air-fryers",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "air-purifier": {
+      "lists": 12,
+      "brand_lists": 0,
+      "sampled": "air-purifiers",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "blender": {
+      "lists": 15,
+      "brand_lists": 3,
+      "sampled": "blenders",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "camera": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "camera",
+      "template": "props",
+      "picks": 8,
+      "status": "ok"
+    },
+    "dehumidifier": {
+      "lists": 5,
+      "brand_lists": 0,
+      "sampled": "basement",
+      "template": "props",
+      "picks": 4,
+      "status": "ok"
+    },
+    "headphones": {
+      "lists": 20,
+      "brand_lists": 1,
+      "sampled": "headphones",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "humidifier": {
+      "lists": 3,
+      "brand_lists": 0,
+      "sampled": "bedrooms",
+      "template": "props",
+      "picks": 4,
+      "status": "ok"
+    },
+    "keyboard": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "by-usage/gaming",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "keyboard-switch": {
+      "lists": 5,
+      "brand_lists": 0,
+      "sampled": "switches",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "laptop": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "by-usage/gaming",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "mattress": {
+      "lists": 20,
+      "brand_lists": 0,
+      "sampled": "mattress",
+      "template": "static",
+      "picks": 6,
+      "status": "ok"
+    },
+    "microwave": {
+      "lists": 5,
+      "brand_lists": 0,
+      "sampled": "microwaves",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "monitor": {
+      "lists": 20,
+      "brand_lists": 0,
+      "sampled": "by-usage/gaming",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "mouse": {
+      "lists": 18,
+      "brand_lists": 4,
+      "sampled": "by-usage/gaming",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "printer": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "by-usage/home",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "projector": {
+      "lists": 10,
+      "brand_lists": 0,
+      "sampled": "projector",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "refrigerator": {
+      "lists": 6,
+      "brand_lists": 0,
+      "sampled": "brands",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "robot-vacuum": {
+      "lists": 6,
+      "brand_lists": 1,
+      "sampled": "robot",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "router": {
+      "lists": 16,
+      "brand_lists": 3,
+      "sampled": "wifi-router",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "running-shoes": {
+      "lists": 20,
+      "brand_lists": 9,
+      "sampled": "running",
+      "template": "static",
+      "picks": 5,
+      "status": "ok"
+    },
+    "soundbar": {
+      "lists": 20,
+      "brand_lists": 6,
+      "sampled": "soundbar",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "speaker": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "by-feature/bluetooth",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "toaster": {
+      "lists": 6,
+      "brand_lists": 0,
+      "sampled": "toasters",
+      "template": "props",
+      "picks": 5,
+      "status": "ok"
+    },
+    "toaster-oven": {
+      "lists": 3,
+      "brand_lists": 0,
+      "sampled": "toaster-ovens",
+      "template": "props",
+      "picks": 6,
+      "status": "ok"
+    },
+    "tv": {
+      "lists": 20,
+      "brand_lists": 3,
+      "sampled": "tvs-on-the-market",
+      "template": "props",
+      "picks": 7,
+      "status": "ok"
+    },
+    "vacuum": {
+      "lists": 20,
+      "brand_lists": 2,
+      "sampled": "cordless",
+      "template": "props",
+      "picks": 4,
+      "status": "ok"
+    },
+    "vpn": {
+      "lists": 14,
+      "brand_lists": 0,
+      "sampled": "vpn",
+      "template": "props",
+      "picks": 3,
+      "status": "ok"
+    }
+  }
+}

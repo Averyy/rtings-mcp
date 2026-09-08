@@ -13,7 +13,7 @@ runs locally. Nothing is hosted and nothing is shared.
 RTINGS' JSON API is keyless and public, and a lot comes back anonymously. Signing in adds data on
 the 12 categories that gate.
 
-> **Status: working, anonymous and signed in.** All seven data tools run against the live API, and
+> **Status: working, anonymous and signed in.** All eight data tools run against the live API, and
 > two more connect a membership.
 > **A membership cookie does unblur the JSON API** — measured 2026-09-06 on a bought membership:
 > 588 of 588 withheld rows came back with real values where anonymous got none
@@ -97,17 +97,19 @@ No configuration is needed to start. Anonymous is the default and never an error
 | `rt_silos(silos?)` | the 28 categories with **observed** paywall enforcement |
 | `rt_schema(silo, bench?, group?, find?)` | test/usage definitions: name, kind, unit, hierarchy, `insider_only`; `find` searches the bench by name |
 | `rt_ratings(silo, tests?, usages?, filters?, sort?, limit?)` | catalog + 0–10 usage scores, with an optional scalar projection; `filters.product_ids` for a head-to-head |
-| `rt_product(product, group?, tests?)` | one review: test results (bounded by `group` or `tests`), plus RTINGS' verdicts and pros/cons with `include_verdicts` (`include_results=false` for the words alone) |
+| `rt_product(product, group?, tests?)` | one review: test results **grouped by section**, each section's `group_id` re-fetching it alone (bounded by `group` or `tests`), plus RTINGS' verdicts and pros/cons with `include_verdicts` (`include_results=false` for the words alone) |
 | `rt_graph(product, test)` | one test's measurement curve, resampled by selecting shipped points |
-| `rt_search(query)` | model name/number → candidates across all categories |
-| `rt_recommendations(silo, list?, limit?)` | the category's best-of lists, or one ranked list with reasoning |
+| `rt_search(query, silo?)` | model name/number → candidates, across all categories or one |
+| `rt_recommendations(silo, list?, limit?)` | the category's best-of lists — the `/best/` ones **and** the per-brand pages ("Best TCL TVs") — or one ranked list with reasoning |
+| `rt_article(article, section?)` | one RTINGS `learn` page as prose (brand lineups, explainers); `sections` lists its headings and `section=` returns just one |
 | `rt_sign_in(force?)` | opens a browser window on RTINGS' sign-in page and stores the resulting cookie |
 | `rt_auth_status(wait_s?)` | what credential is stored, and how a sign-in in progress is going |
 
 Results are compared within a **test bench**, RTINGS' version of its methodology. Cross-bench
 results come back nested in separate groups and `limit` applies within each.
 
-`filters` and `sort` take a test's id or its name, plus `brand`, `name_contains`, `published` and
+`filters` and `sort` take a test's id or its name, plus `brand`, `name_contains`, `published`,
+`sold_in` (the sizes a product is **sold** in, `{"sold_in": ">=83"}`) and
 `variant`. `variant` is the size RTINGS tested, which is how you ask for 65-inch TVs, since most
 categories have no "Size" test. A field you filter or sort on is fetched for you. When one can't be
 compared the predicate is **not applied** and the response names why: gated for this session,

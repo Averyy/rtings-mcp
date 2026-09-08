@@ -1465,6 +1465,11 @@ Mattresses of 2026", picks and prose all present.
 | Vue parts | one monolithic component | islands: `RecommendationPagePrices`, `BookmarkControls`, `DistributionTooltip` |
 | bundle | `recommendation-page-*.js` | `recommendation-page-**static**-*.js` |
 
+**Re-measured 2026-09-08 across ALL 28 silos** (`rtings-mcp drift`, now the automated gate —
+`docs/recommendation-template-snapshot.json`): **28 / 28 extract, 26 props / 2 static**. The split
+is unchanged from the 14-silo sample below: mattress and running-shoes are server-rendered, the
+other 26 are `RecommendationVuePage`. This is no longer a manual checklist step.
+
 **Scope (14 silos sampled, one best-of list each):** only **mattress** and **running-shoes** are on
 the new template. tv, headphones, monitor, soundbar, camera, laptop, blender, refrigerator,
 air-conditioner, vpn, air-purifier and toaster-oven are still on the old one. All four mattress
@@ -1499,10 +1504,217 @@ tell them apart here), but for "Side Sleeping" `target_id` is **38309** while th
 **36553**. Emitting it as an `original_id` would be a confidently wrong join key; a null id with a
 real name is the honest pair.
 
+**Resolved 2026-09-08: the join is (`target_label`, `target_type`), not `target_id`.** Measured on
+the live mattress list: **0 of 9 `target_id`s are schema ids** (they form their own block,
+38303–38311 + 40163 + 40192), while every one of the 9 `target_label`s resolves against the schema
+by name once `target_type` picks the namespace — which matters, because "Cooling" is *both* a test
+(26886) and a usage (33364) and the label alone is ambiguous. `_featured_ratings` now does for
+usages what `_featured_results` already did for tests: a name unique on the silo gets its real
+`original_id`, a repeated one keeps a null id and lists the candidates. Verified live: Side
+Sleeping → 36553, Back Sleeping → 36554, Stomach Sleeping → 36555, Cooling → 33364.
+
+**Also resolved 2026-09-08: "Notable Mentions" IS extractable on the server-rendered template.**
+It is a real section (`<a id="mentions">`, `<h2>Notable Mentions</h2>`, a
+`recommendation_vue_page-mentions` block, and an entry in the page's own table of contents), and
+`recommendation_mentions` came back `[]` only because nothing parsed it. Each item is
+`<strong>Name:&nbsp;</strong>` + a rich-content span + a "See our review" link; `<li>` is often
+unclosed here too, so items are cut at the next `<li`. Both templates now emit the props shape
+(`{description, sku, product:{fullname, page:{url}}}`), and `rt_recommendations` surfaces it as
+`mentions` — it had reached no caller on either template. Verified live: 2 on the static mattress
+list, 5 on the props TV list.
+
 Both migrated silos are **open** silos, so no blurred sample of this template was observed and its
 blur marker (if any) is unknown. A featured item that renders neither a score nor a value is
 therefore `unknown_row_status`, never `tested_gated` — claiming a paywall nobody measured is the
 project's core failure mode.
+
+### 12.18 The Best nav carries per-BRAND pages one segment above `/best/`
+
+Measured 2026-09-08, anonymously, on `/tv`.
+
+`silo_layout.best` has 20 entries on TV and they are **two URL shapes**, not one:
+
+| shape | count | example | `type` | `group_id` |
+| --- | --- | --- | --- | --- |
+| `/{silo}/reviews/best/{slug}` | 17 | `/tv/reviews/best/by-size/65-inch` | `Recommendation` | 1–48 |
+| `/{silo}/reviews/{brand}` | 3 | `/tv/reviews/tcl` ("Best TCL TVs") | `Recommendation` | 50 |
+
+**RTINGS' own `type` does not distinguish them** — both are `Recommendation` — so the URL shape
+is the only discriminator. `group_id: 50` correlates but is not a rule: `/tv/reviews/best/roku`
+is also 50 while living under `/best/`.
+
+Discovery kept only the `/best/` shape, so `list="tcl"` guessed `/tv/reviews/best/tcl` and
+reported `unknown_list` for a page that exists. Both shapes are now kept, tagged `kind`
+(`"best"` / `"brand"`), and `/{silo}/reviews/{slug}` is tried when no template matched the
+first — RTINGS answers an unknown best-of slug with a 200 landing page, not a 404, so
+"the GET succeeded" is not the same as "the list is there". The brand form is offered **only
+for a single-segment slug**; see §14.7 for why that is a paywall guard and not tidiness.
+
+Verified live: `/tv/reviews/tcl` extracts through the ordinary props template — picks
+`TCL X11L`, `TCL QM8K`.
+
+### 12.19 `learn` articles: a second page-extraction path, prose only
+
+Measured 2026-09-08, anonymously.
+
+`/{silo}/learn/{slug}` pages answer what no measurement can ("does Sony sell a bigger OLED this
+year" → `/tv/learn/2026-lineup`, "2026 TV Lineup: The Year Of RGB Mini LED"). They are **not
+discoverable from `silo_layout`** — it has exactly three keys, `best`, `popular` and `tools`,
+and no `learn` — but RTINGS' own search index carries them: `rt_search("2026 TV lineup")`
+returns `/tv/learn/2026-lineup` as hit #1, which is why `rt_article` takes the `url` search
+hands back rather than trying to enumerate them.
+
+The body is at `page.article`: `title`, `introduction`, `text` (26,838 chars on the 2026
+lineup), `text_with_anchors` (27,567 — the same prose carrying the headings the table of
+contents links to, and what `section=` is sliced out of), `toc_items` (nested `name`/`url`),
+`latest_update_date`, `meta_description`; the authors are at `page.authors[].name`.
+
+The headings in `text_with_anchors` carry **no `id` attribute** — the anchor is a slugified
+form of the heading text — so sectioning matches on heading TEXT, not on the anchor.
+
+Nothing on these pages is gated: no `unblurred` bit, no test row, no `insider_only`. They are
+cached at `ANONYMOUS` like the best-of index. `/{silo}/learn` with no slug **redirects to
+`/research`**, and an unknown slug is answered with some other page rather than a 404 — so "no
+`page.article` object" is the only honest signal that the page asked for does not exist.
+
+### 12.23 q7 ANSWERED — a product is on exactly ONE bench, so the recent set is a partition
+
+Measured 2026-09-08. §10 q7 asked whether minor benches (v2.0.1 / v2.1 / v2.2) are **rescored or
+additive**, to decide whether the default comparable population is one bench or the set. The data
+answers it before the scoring question arises: **the catalogs are disjoint.**
+
+| silo | recent benches (with a schema) | catalog sizes | products in common |
+| --- | --- | --- | --- |
+| tv | 227, 210, 197 | 98 / 1 / 20 | **0** |
+| laptop | 242, 194 | 41 / 40 | **0** |
+| mouse | 233, 199 | 110 / 85 | **0** |
+| monitor | 238, 221 | 117 / 3 | **0** |
+
+**6 bench pairs across 4 silos, 0 sharing a single product.** headphones, soundbar and mattress
+render one recent bench with a published schema, so they have no pair at all.
+
+Confirmed on a member session too: across bench 227 and 210, with three shared usages and every
+score unblurred, there is **no (product, usage) scored on both** — because there is no product on
+both. "Rescored vs additive" is therefore unanswerable *and moot*: no cross-bench comparison exists
+in the data to be right or wrong about.
+
+**So the default population is the recent SET, partitioned by bench** — which is what the server
+already does. Grouping by bench loses nothing and duplicates nothing, each product falls in exactly
+one group, and `limit`/`offset` within a group is the honest paging unit. The rule "rank and
+compare within a `test_bench`" is not a conservative choice against a cost; it is the only thing
+the data supports.
+
+### 12.22 q6 — sustained volume, a second passive sample: still no limit, no rate headers
+
+Measured 2026-09-08 from `telemetry/requests.jsonl` on a scratch cache, over the day's research
+(enforcement re-scan, the 28-silo drift check, the usage sweep, the legacy-bench sweep):
+
+| | |
+| --- | --- |
+| requests | **193** |
+| non-200 | **0** |
+| `Retry-After` seen | **0** |
+| `x-ratelimit-*` ever present | **none** |
+| `x-cache` / `age` ever present | **none** (origin, not a CDN edge, on these paths) |
+| window | 843 s → **13.7 req/min** sustained |
+
+Consistent with the first sample (~140 requests over ~3.5 min). RTINGS ships **no rate-limit
+headers at all** on these endpoints, so there is nothing to honour and nothing to read: the
+server's own token bucket is the only limiter, and `Retry-After` handling remains a
+never-exercised safety branch (covered by tests, not by observation). q6 stays answered
+**passively** — this is not evidence of where the limit is, only that ~14 req/min for 14 minutes
+does not reach it.
+
+### 12.2b The 9 orphan TV products are GONE — the population is transient
+
+Re-measured 2026-09-08, anonymously. §12.2 recorded 9 product ids that returned `test_results`
+rows while appearing in no `products_list`, and the standing reading was "almost certainly reviews
+in progress that the catalog filters out" — an inference, not a measurement.
+
+Re-run across all **14** TV benches with a published schema, 2 leaf tests each: **551 ids in
+`test_results`, 551 in the catalog, 0 orphans.** Four days on, the set is empty and the two
+populations match exactly.
+
+That does not prove the mechanism, but it rules out the alternative that mattered: a permanently
+uncatalogued population would still be uncatalogued. A set that empties on its own is what a
+review-in-progress does. The server's handling is unchanged and stays right either way — an
+uncatalogued id is served as its own `coverage: "uncatalogued"` group with no invented name.
+
+### 12.20 Usage ratings gate EXACTLY with the enforcement map — all 28 silos, no partials
+
+Measured 2026-09-08, anonymously (fresh scratch cache, no cookie), 2 top-level usages per silo on
+each silo's current bench, `published:false` products excluded. §12.3 had falsified "assume usage
+ratings are gated everywhere" from a single mattress observation (`Side Sleeping` = 7.7,
+unblurred); the open question was whether that generalised. It does, and the result is **perfectly
+bimodal over 3,006 rows**:
+
+| | silos | rows sampled | unblurred |
+| --- | --- | --- | --- |
+| the 12 that enforce | 12 | 2,104 | **0 (0.0%)** |
+| the 16 metered | 15 + keyboard-switch | 902 | **902 (100%)** |
+
+Not one silo came back partial, and not one row contradicted its silo. `keyboard-switch` defines
+**no usages at all** on its current bench, which is why it is neither — an absence, not a gate.
+
+So the usage surface needs no separate map: `scores_available.usage_ratings` and the insider-test
+boundary are the same boundary, derived per (silo, bench) from observed `unblurred` exactly as
+before. This is a measurement of today's business decisions and it can move like any other — the
+release-gate scan covers the test surface, and this table is the dated baseline for the usage one.
+
+### 12.21 q16 ANSWERED — and a counterexample to the blur rule, on a legacy bench
+
+Measured 2026-09-08, anonymously. §10 q16 asked whether enforcement holds on **legacy benches**,
+on the **review path**, and for **non-leaf kinds** — both earlier sweeps covered only each silo's
+current bench and its first 40–50 `number`/`word` leaves.
+
+**Legacy benches (10 silos, oldest bench with a published schema):** the boundary follows the
+silo, with one exception.
+
+| silo | legacy bench | rows | unblurred | current |
+| --- | --- | --- | --- | --- |
+| tv | 1 | 96 | 0% | enforces ✓ |
+| monitor | 8 | 292 | 0% | enforces ✓ |
+| mouse | 84 | 910 | 0% | enforces ✓ |
+| soundbar | 86 | 390 | 0% | enforces ✓ |
+| printer | 82 | 290 | 0% | enforces ✓ |
+| **headphones** | **4** | **119** | **13.4%** | enforces ✗ |
+| vacuum / camera / air-purifier | 34 / 120 / 254 | 128 | 100% | metered ✓ |
+
+**Non-leaf kinds are not a separate mechanism.** On tv, `picture` (384 rows) and `video` (288) are
+0% unblurred; on headphones, `graph` (808 rows) is 0%; on the metered mattress, `picture`, `graph`
+and `video` are 100%. The boundary is kind-agnostic. (A `graph` test's table row being blurred is
+not the curve being withheld — `rt_graph` serves curves anonymously; the row's cell and the
+`graph_data_url` payload are different surfaces.)
+
+**The headphones exception is per TEST, and that breaks the stated invariant.** All 16 unblurred
+rows are one test:
+
+| test | kind | unblurred | |
+| --- | --- | --- | --- |
+| 287 `Transducer` | word | **16 / 16** | `insider_only: true`, served to everyone |
+| 307 `Weight`, 539 `Clamping Force`, 292 `Call/Music Control`, 294 `Volume Control`, 652–654 | number/word | 0 / 16 (0 / 13) | withheld |
+
+Every one of the 16 products is "mixed" at exactly 1 of 8 — the signature of a per-**test**
+exception, not the per-**product** unblurring a gift link or a preview produces. Re-checked across
+headphones/tv/monitor on both their current and legacy benches, 25 insider tests each: **this is
+the only case in 6 bench-samples.**
+
+So the rule recorded as an invariant —
+`blurred ⟺ published:false ∨ (insider_only ∧ silo enforces)` — is **not exact**, and
+"gating within a silo is per-product, never per-test" is **falsified** as stated. Both are good
+approximations with at least one known counterexample on a legacy bench.
+
+**This changes nothing in the server, and that is the point.** The boundary is derived from
+OBSERVED `unblurred` per row, never from the `insider_only` flag and never from a map
+(`SPEC.md` §5) — so `Transducer` is simply reported as `tested_visible`, which is what it is. A
+build that had trusted the flag would have reported a value RTINGS served as `tested_gated`, which
+is the project's core failure mode pointed the other way.
+
+**Consequence for the release gate:** `enforces_paywall` is derived as `ratio == 0.0` over a
+sample of insider tests, so a bench whose sample contains such a test reads as `partial` rather
+than `ENFORCES`. No current bench does today (the 2026-09-08 scan is 12/16 with no partials), and
+the scan only ever samples current benches — but a future `partial` is to be investigated per-test
+before it is believed to be a paywall change.
 
 ## 13. Member session, 2026-09-06 — Phase 0 measured
 
@@ -1594,6 +1806,23 @@ depends on nothing unmeasured.
 returned **the same CDN path** (`graph-pqeotf.json`) for the member and for anonymous, and the
 fetched curve JSON was **byte-identical**. The design assumption that `graphs/` needs no
 `cache_tier` is confirmed, and the CDN still needs no cookie.
+
+### 13.8 The review path on a LEGACY bench unblurs for a member (the other half of q16)
+
+Measured 2026-09-08 on the real membership, scratch cache. `rt_product` on a bench-1 TV review
+(Panasonic S60, the oldest bench tv publishes a schema for) returned **8 / 8 rows
+`tested_visible`**, with `session: member` and `data_tier: unblurred`.
+
+So the membership lifts the paywall on the **review** path and on **legacy** benches, not only on
+the table path and the current bench. Together with §12.21 (enforcement holds on legacy benches
+anonymously, one per-test exception) and §12.20 (usage ratings follow the same map), q16 is
+answered on every axis it named: legacy benches, the review path, and non-leaf kinds.
+
+**This measurement was blocked by a real defect, found in the attempt** (see
+`docs/rules/tools-and-responses.md`, 2026-09-08): `_product_from_url` scanned only the RECENT
+benches, so every legacy-bench review was unresolvable by URL — while the same product resolved
+by its numeric id — under an error that read as "no such product". Fixed by widening the
+exact-match scan to every bench with a published schema, after the recent set misses.
 
 ### 13.7 What a membership CANNOT settle — q2 and capture (o) need a FREE account
 
@@ -1731,3 +1960,24 @@ Signed in a free (non-Insider) account in a browser on 2026-09-07 and walked the
 `free` session behaves like `anonymous` (which it is) and the guard re-arms by itself if
 RTINGS ever meters the API. The `free` cache tier on `reviews/` stays as a harmless label —
 its bytes are anonymous bytes.
+
+### 14.7 Two more HTML pages measured against the meter, 2026-09-08: neither spends
+
+Two page shapes were added to the server (the brand best-of page, §12.18, and the `learn`
+article, §12.19), and both are HTML GETs, so each was measured against the meter before it
+shipped. Method: a **fresh** anonymous jar, the meter read from a **metered** silo's landing
+page (`/mattress/tools/table` — `tv` reports `access_limit: null` and would have shown
+nothing either way), then re-read after each fetch.
+
+| after | `access_level` | `access_limit` | `previewed_products` |
+| --- | --- | --- | --- |
+| fresh jar | 2 | 3 | `[]` |
+| `GET /tv/reviews/tcl` (brand best-of) | 2 | 3 | `[]` |
+| `GET /tv/learn/2026-lineup` (article) | 2 | 3 | `[]` |
+
+Consistent with §14.2: the unit is a **product review page**, `/{silo}/reviews/{brand}/{model}`,
+and neither shape is one — a brand page is one segment where a review is two, and `/learn/` is
+a different branch entirely. Both are guarded structurally rather than by intent:
+`recommendation_paths` offers the one-segment brand form **only for a slug with no slash**, and
+`rt_article` accepts `/{silo}/learn/{slug}` and nothing else. Neither guard can be satisfied by
+a review URL, whatever a caller passes.
