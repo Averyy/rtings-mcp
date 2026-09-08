@@ -179,3 +179,11 @@
   were the HTML session probe**, most of them the forced write-time probe that precedes every
   tier-keyed write. All 129 returned 200 from CloudFront; no limit was hit. The forcing rule
   stands (a write must never be labelled from a stale answer); the cost is now a number.
+- **`validate_cookie` had no test coverage at all until 2026-09-08.** Every sign-in test injected
+  `validate`, so the function that turns a probe into `member` / `expired` / `could_not_check` —
+  and which `rtings-mcp auth` calls too — was never exercised. Five tests now cover it against the
+  stub transport, and the one that matters most is the **negative** one: it must never write to
+  the real cache or the stored credential. It runs on a throwaway cache dir (an `AuthManager`
+  persists its probe under the cache root, so an `anonymous` probe written there would clobber the
+  real one), removes that dir afterwards, and asserts the stored credential is untouched. A crash
+  or an `unknown` probe returns `could_not_check:<reason>` — no verdict on the cookie either way.

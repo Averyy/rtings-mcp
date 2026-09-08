@@ -959,8 +959,10 @@ Nothing else. This accounts for every row in both sweeps, with zero exceptions.
 | dehumidifier | 100 | 21 | 1 | 2024-07-03 | home |
 | humidifier | 100 | 20 | 1 | 2024-11-22 | home |
 
-**The three "partial" silos are not partial.** Their gating is **100% per-product**, never per-test —
-0 of 36/31/37 tests are partially blurred, while 3/3/1 products are *entirely* blurred. Cross-tabbed
+**The three "partial" silos are not partial.** Their gating is **100% per-product** here — 0 of
+36/31/37 tests are partially blurred, while 3/3/1 products are *entirely* blurred. (Read as a
+statement about *these three silos on their current bench*, which is what was measured. It does
+not generalise: §12.21 found a per-**test** exception on a headphones legacy bench.) Cross-tabbed
 against the catalog's `published` flag:
 
 | Silo | `published:false` | `published:true` |
@@ -1115,6 +1117,9 @@ marked. The 28-silo enforcement re-scan run at the end of the build reproduced
 | `app/product_vue_page__page_body` | **`data.page`** | the review is at `data.page.product.review`; **corrects** any assumption of a `data.page_body` key |
 
 ### 12.2 `test_results` has a WIDER product population than `products_list`
+
+> **Re-measured 2026-09-08 (§12.24): the orphan set is now EMPTY** — 551 ids in
+> `test_results`, 551 in the catalog. The population is transient, as inferred below.
 
 Requesting TV benches `[227,210,197]` returns **118** products from `products_list` but rows
 for **127** distinct products from `test_results`. The 9 extra ids (`108448`, `125243`,
@@ -1577,69 +1582,6 @@ cached at `ANONYMOUS` like the best-of index. `/{silo}/learn` with no slug **red
 `/research`**, and an unknown slug is answered with some other page rather than a 404 — so "no
 `page.article` object" is the only honest signal that the page asked for does not exist.
 
-### 12.23 q7 ANSWERED — a product is on exactly ONE bench, so the recent set is a partition
-
-Measured 2026-09-08. §10 q7 asked whether minor benches (v2.0.1 / v2.1 / v2.2) are **rescored or
-additive**, to decide whether the default comparable population is one bench or the set. The data
-answers it before the scoring question arises: **the catalogs are disjoint.**
-
-| silo | recent benches (with a schema) | catalog sizes | products in common |
-| --- | --- | --- | --- |
-| tv | 227, 210, 197 | 98 / 1 / 20 | **0** |
-| laptop | 242, 194 | 41 / 40 | **0** |
-| mouse | 233, 199 | 110 / 85 | **0** |
-| monitor | 238, 221 | 117 / 3 | **0** |
-
-**6 bench pairs across 4 silos, 0 sharing a single product.** headphones, soundbar and mattress
-render one recent bench with a published schema, so they have no pair at all.
-
-Confirmed on a member session too: across bench 227 and 210, with three shared usages and every
-score unblurred, there is **no (product, usage) scored on both** — because there is no product on
-both. "Rescored vs additive" is therefore unanswerable *and moot*: no cross-bench comparison exists
-in the data to be right or wrong about.
-
-**So the default population is the recent SET, partitioned by bench** — which is what the server
-already does. Grouping by bench loses nothing and duplicates nothing, each product falls in exactly
-one group, and `limit`/`offset` within a group is the honest paging unit. The rule "rank and
-compare within a `test_bench`" is not a conservative choice against a cost; it is the only thing
-the data supports.
-
-### 12.22 q6 — sustained volume, a second passive sample: still no limit, no rate headers
-
-Measured 2026-09-08 from `telemetry/requests.jsonl` on a scratch cache, over the day's research
-(enforcement re-scan, the 28-silo drift check, the usage sweep, the legacy-bench sweep):
-
-| | |
-| --- | --- |
-| requests | **193** |
-| non-200 | **0** |
-| `Retry-After` seen | **0** |
-| `x-ratelimit-*` ever present | **none** |
-| `x-cache` / `age` ever present | **none** (origin, not a CDN edge, on these paths) |
-| window | 843 s → **13.7 req/min** sustained |
-
-Consistent with the first sample (~140 requests over ~3.5 min). RTINGS ships **no rate-limit
-headers at all** on these endpoints, so there is nothing to honour and nothing to read: the
-server's own token bucket is the only limiter, and `Retry-After` handling remains a
-never-exercised safety branch (covered by tests, not by observation). q6 stays answered
-**passively** — this is not evidence of where the limit is, only that ~14 req/min for 14 minutes
-does not reach it.
-
-### 12.2b The 9 orphan TV products are GONE — the population is transient
-
-Re-measured 2026-09-08, anonymously. §12.2 recorded 9 product ids that returned `test_results`
-rows while appearing in no `products_list`, and the standing reading was "almost certainly reviews
-in progress that the catalog filters out" — an inference, not a measurement.
-
-Re-run across all **14** TV benches with a published schema, 2 leaf tests each: **551 ids in
-`test_results`, 551 in the catalog, 0 orphans.** Four days on, the set is empty and the two
-populations match exactly.
-
-That does not prove the mechanism, but it rules out the alternative that mattered: a permanently
-uncatalogued population would still be uncatalogued. A set that empties on its own is what a
-review-in-progress does. The server's handling is unchanged and stays right either way — an
-uncatalogued id is served as its own `coverage: "uncatalogued"` group with no invented name.
-
 ### 12.20 Usage ratings gate EXACTLY with the enforcement map — all 28 silos, no partials
 
 Measured 2026-09-08, anonymously (fresh scratch cache, no cookie), 2 top-level usages per silo on
@@ -1715,6 +1657,69 @@ sample of insider tests, so a bench whose sample contains such a test reads as `
 than `ENFORCES`. No current bench does today (the 2026-09-08 scan is 12/16 with no partials), and
 the scan only ever samples current benches — but a future `partial` is to be investigated per-test
 before it is believed to be a paywall change.
+
+### 12.22 q6 — sustained volume, a second passive sample: still no limit, no rate headers
+
+Measured 2026-09-08 from `telemetry/requests.jsonl` on a scratch cache, over the day's research
+(enforcement re-scan, the 28-silo drift check, the usage sweep, the legacy-bench sweep):
+
+| | |
+| --- | --- |
+| requests | **193** |
+| non-200 | **0** |
+| `Retry-After` seen | **0** |
+| `x-ratelimit-*` ever present | **none** |
+| `x-cache` / `age` ever present | **none** (origin, not a CDN edge, on these paths) |
+| window | 843 s → **13.7 req/min** sustained |
+
+Consistent with the first sample (~140 requests over ~3.5 min). RTINGS ships **no rate-limit
+headers at all** on these endpoints, so there is nothing to honour and nothing to read: the
+server's own token bucket is the only limiter, and `Retry-After` handling remains a
+never-exercised safety branch (covered by tests, not by observation). q6 stays answered
+**passively** — this is not evidence of where the limit is, only that ~14 req/min for 14 minutes
+does not reach it.
+
+### 12.23 q7 ANSWERED — a product is on exactly ONE bench, so the recent set is a partition
+
+Measured 2026-09-08. §10 q7 asked whether minor benches (v2.0.1 / v2.1 / v2.2) are **rescored or
+additive**, to decide whether the default comparable population is one bench or the set. The data
+answers it before the scoring question arises: **the catalogs are disjoint.**
+
+| silo | recent benches (with a schema) | catalog sizes | products in common |
+| --- | --- | --- | --- |
+| tv | 227, 210, 197 | 98 / 1 / 20 | **0** |
+| laptop | 242, 194 | 41 / 40 | **0** |
+| mouse | 233, 199 | 110 / 85 | **0** |
+| monitor | 238, 221 | 117 / 3 | **0** |
+
+**6 bench pairs across 4 silos, 0 sharing a single product.** headphones, soundbar and mattress
+render one recent bench with a published schema, so they have no pair at all.
+
+Confirmed on a member session too: across bench 227 and 210, with three shared usages and every
+score unblurred, there is **no (product, usage) scored on both** — because there is no product on
+both. "Rescored vs additive" is therefore unanswerable *and moot*: no cross-bench comparison exists
+in the data to be right or wrong about.
+
+**So the default population is the recent SET, partitioned by bench** — which is what the server
+already does. Grouping by bench loses nothing and duplicates nothing, each product falls in exactly
+one group, and `limit`/`offset` within a group is the honest paging unit. The rule "rank and
+compare within a `test_bench`" is not a conservative choice against a cost; it is the only thing
+the data supports.
+
+### 12.24 The 9 orphan TV products are GONE — the population is transient (re-measures §12.2)
+
+Re-measured 2026-09-08, anonymously. §12.2 recorded 9 product ids that returned `test_results`
+rows while appearing in no `products_list`, and the standing reading was "almost certainly reviews
+in progress that the catalog filters out" — an inference, not a measurement.
+
+Re-run across all **14** TV benches with a published schema, 2 leaf tests each: **551 ids in
+`test_results`, 551 in the catalog, 0 orphans.** Four days on, the set is empty and the two
+populations match exactly.
+
+That does not prove the mechanism, but it rules out the alternative that mattered: a permanently
+uncatalogued population would still be uncatalogued. A set that empties on its own is what a
+review-in-progress does. The server's handling is unchanged and stays right either way — an
+uncatalogued id is served as its own `coverage: "uncatalogued"` group with no invented name.
 
 ## 13. Member session, 2026-09-06 — Phase 0 measured
 

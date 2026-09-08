@@ -375,8 +375,9 @@ cookie through the same interface — deferred until proven necessary (§13).
 ## 7. Tool surface
 
 Designed around questions, not endpoints. **One tool set, 28 silos** — silo and bench are parameters,
-never tool names. **Seven data tools** (down from a first-draft nine; the fold is justified
-below), plus **two that connect a membership** rather than serve data.
+never tool names. **Eight data tools** (seven at first, down from a
+first-draft nine — both folds are justified below — plus `rt_article`, added 2026-09-08),
+plus **two that connect a membership** rather than serve data.
 
 | Tool | Returns | Anonymous |
 |---|---|---|
@@ -398,6 +399,21 @@ These two carry their **own lean envelope**, not `BaseEnvelopeOut`: `data_tier`,
 `scores_available` and `test_benches` describe served measurement rows, and a sign-in serves
 none, so filling them in would be a claim about data nobody fetched. `session` is the one shared
 field that means the same thing on both.
+
+**The tool surface has a hard 2048-character budget, and it binds** (measured 2026-09-08). The
+client cuts **both** a tool's `description` and the server's `instructions` at exactly 2048
+characters and appends "… [truncated]". This is a design constraint, not a formatting note:
+`rt_ratings` was 4,229 characters with its filter vocabulary at ~1,540, so an agent filtered by
+`name_contains` and hand-scanned sizes for an answer the tool already had; and `instructions` were
+4,314, so half the routing prose — *including "NEVER call rt_sign_in unasked"* — reached nobody.
+
+Three rules follow. **Order by what a caller cannot work without**: vocabulary, then the
+not-applied rule, then the `status` domain, then paging; rationale and shape notes may fall past
+the cut. **Put per-tool detail in the tool, cross-cutting rules in `instructions`** — each tool's
+description is delivered separately with its own 2048, so duplication is pure loss. **Normalise the
+text**: descriptions are `inspect.cleandoc`ed at registration, because CPython 3.13 strips
+docstring indentation at compile time and 3.12 does not, which silently changed how much survived.
+Three tests hold the line (`docs/rules/testing.md`).
 
 **Why eight data tools.** `rt_article` was added 2026-09-08 (`RECON.md` §12.19): RTINGS' `learn`
 pages answer questions no measurement can ("does Sony sell a bigger OLED this year"), they are
@@ -1594,9 +1610,16 @@ paywall map from observed `unblurred` and diffs it against `docs/enforcement-sna
 a spec change, not a test failure** — enforcement
 tracks category maturity and moves silently, so a stale map makes the server misdescribe what
 anonymous gets, which is the product's central claim. It also re-checks the invariants the normalizer
-rests on: blur is still exactly `published:false ∨ (insider_only ∧ enforcing)`, gating within a silo
-is still per-product never per-test, `status` is still `{tested, na, untested}`, and usage defs still
-carry no `insider_only`. See CLAUDE.md > Release.
+rests on: blur still **approximately** `published:false ∨ (insider_only ∧ enforcing)`, gating within
+a silo still **usually** per-product, `status` still `{tested, na, untested}`, and usage defs still
+carrying no `insider_only`.
+
+**Those first two are approximations, not identities — corrected 2026-09-08 (`RECON.md` §12.21).**
+headphones **legacy** bench 4 serves test 287 `Transducer` unblurred on all 16 products while its
+`insider_only` is `true`: a per-**test** exception, one counterexample in six bench-samples. It
+changes nothing at runtime, because the boundary is derived from the observed `unblurred` bit and
+never from the flag (§5) — but a `partial` scan result must now be broken down per test before it
+is read as a paywall change. See CLAUDE.md > Release.
 
 ## 11. Risks
 
@@ -1661,10 +1684,13 @@ carry no `insider_only`. See CLAUDE.md > Release.
   control, and under `max_rotations=0` it returns a 429 without sleeping. The flat `2.0 s` floor was
   also justified as camouflage, which is wrong — cadence is not what rate rules score.
 - **The anonymous surface does not wait on Phase 0 (§10).** Only member-tier selection does.
-- **Seven tools (§7)**, folding `rt_products`/`rt_results` into `rt_ratings`+`rt_product`; keeping
-  `rt_graph` and the isolated page-extracted `rt_recommendations`.
-- **The paywall model was corrected 2026-09-03 (§5, `RECON.md` §11).** Blur = `published:false` OR
-  (`insider_only` AND the silo enforces). Enforcement is per-silo and binary — 12 of 28 enforce.
+- **Eight tools (§7)**, folding `rt_products`/`rt_results` into `rt_ratings`+`rt_product`; keeping
+  `rt_graph` and the isolated page-extracted `rt_recommendations`; and adding `rt_article`
+  (2026-09-08) for the `learn` pages, which answer what no measurement can.
+- **The paywall model was corrected 2026-09-03 (§5, `RECON.md` §11), and refined twice since.**
+  Blur ≈ `published:false` OR (`insider_only` AND the silo enforces). Enforcement is per-silo and
+  binary — 12 of 28 enforce. It is an **approximation**: `RECON.md` §12.21 found a per-test
+  counterexample on a legacy bench, and §14 showed the other 16 are **metered**, not open.
   `insider_only` marks a test gate-*able*, never gated; `has_paywall` is `true` on all 28 and is
   useless. The 12/16 split is **never hardcoded** — it tracks category maturity and will change.
 - **`rt_silos()` is a routing tool, not a listing tool (§7).** It reports observed

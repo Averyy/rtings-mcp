@@ -111,7 +111,9 @@ results come back nested in separate groups and `limit` applies within each.
 `filters` and `sort` take a test's id or its name, plus `brand`, `name_contains`, `published`,
 `sold_in` (the sizes a product is **sold** in, `{"sold_in": ">=83"}`) and
 `variant`. `variant` is the size RTINGS tested, which is how you ask for 65-inch TVs, since most
-categories have no "Size" test. A field you filter or sort on is fetched for you. When one can't be
+categories have no "Size" test; `sold_in` asks the other question — which sizes a model is actually
+sold in — and each entry in a product's `variants` carries that SKU's manufacturer model number
+(`XR-83A80L`), which is what a retailer is searched by. A field you filter or sort on is fetched for you. When one can't be
 compared the predicate is **not applied** and the response names why: gated for this session,
 absent from the bench queried, or measured-but-empty. Otherwise an empty result reads as "no
 product qualifies" when the truth is "you can't see it". Rows with no comparable value sort last in

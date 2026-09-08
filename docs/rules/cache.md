@@ -145,3 +145,9 @@
   without bound. A re-entrant `ContextVar` scope is opened by both the server wrapper (so the
   error path keeps the warnings that explain the failure) and each service body (so a direct
   call still collects).
+- **`articles/<silo>/<slug>.json` is untiered, like `recs/<silo>/_lists.json` (2026-09-08).** A
+  `learn` page is prose: measured (`RECON.md` §12.19) it carries no `unblurred` bit, no test row
+  and no `insider_only`, so there is nothing for a tier to distinguish and tiering it would store
+  two identical copies. It shares `TTL_RECS` (7 days) with the best-of surfaces, which is the same
+  kind of editorial content on the same refresh rhythm. Note the contrast with `recs/<silo>/<list>`
+  — that one **is** tier-keyed, because a best-of page's featured rows do carry gated values.

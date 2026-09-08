@@ -5,6 +5,13 @@ together touch every tool and every honesty rule the server makes. Anonymous sce
 40 times across all 28 categories during the 2026-09-06 shopper round; this is the signed-in
 half, and it is the acceptance test for "the tools work for a paying member".
 
+**S1–S15 were run 2026-09-07 against the real membership (14 PASS, 1 FAIL, every finding
+fixed). S16–S19 were added 2026-09-08** for the surfaces that arrived with v0.3.0 —
+`rt_article`, `sold_in`, variant model numbers, brand best-of lists, `mentions`, the nested
+and budget-bounded `rt_product`, and legacy-bench URL resolution — and have not yet been run
+as a full member round; their mechanics are covered by the offline suite and by a live stdio
+MCP session.
+
 ## Ground rules
 
 - **The credential is the real one** at `~/.config/rtings-mcp/session.json` (mode `0600`). It
@@ -123,6 +130,32 @@ advanced, mode `0600`, and `~/.config/rtings-mcp/session.json` is the only file 
 Run S1 twice in two fresh processes against the same scratch cache.
 Pass: the second run reports `from_cache: true`, the same `fetched_at`, no network fetch of
 `tests/` (the telemetry log shows only the probe), and still `session: member`.
+
+### S16 — "Does Sony sell a bigger OLED this year?" (tv, prose, no measurement)
+Tools: `rt_search(query="2026 TV lineup", silo="tv")` → `rt_article(article=<the /learn/ url>,
+section="Sony")`.
+Pass: search returns the `/tv/learn/` page scoped to tv only (`silo_matches` reported); the
+article returns `sections` and just the requested one; `previews_remaining` unchanged. **A
+review URL passed to `rt_article` is refused** — only `/{silo}/learn/{slug}` is fetchable
+(`RECON.md` §14.7).
+
+### S17 — "Which Sony OLED comes at 83 inches or bigger, and what's the model number?" (tv)
+Tools: one `rt_ratings(silo="tv", filters={"brand":"Sony","sold_in":">=83"})`.
+Pass: it is ONE call, not a full-table hand scan; every row's `variants[]` carries a
+`model`; a size nobody sells warns rather than returning a bare 0.
+
+### S18 — "The 4 Best Sony TVs" and the runners-up (tv, brand list + mentions)
+Tools: `rt_recommendations(silo="tv")` → pick an entry with `kind: "brand"` →
+`rt_recommendations(silo="tv", list=<that slug>)`.
+Pass: brand pages appear in the index tagged `kind`, the ranking parses, and `mentions`
+carries RTINGS' notable-mention runners-up with their reasoning. Featured `usage_scores`
+carry a real `original_id` joined by name, or a null id with `candidates` — never a wrong one.
+
+### S19 — A LEGACY-bench review, by URL and by id
+Tools: `rt_product(product="/tv/reviews/samsung/tu7000")` and the same by numeric id.
+Pass: **both resolve** (the URL path scans every bench, not just the recent set), values come
+back `tested_visible` for a member, and the response fits the budget — a trimmed one names
+its dropped sections in `groups_omitted`, each re-fetchable with `group=<its group_id>`.
 
 ## Running it
 

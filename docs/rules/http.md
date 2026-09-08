@@ -91,3 +91,14 @@
 - **Telemetry lines carry `pid` (member round S15, 2026-09-07).** Several processes append to
   one `telemetry/requests.jsonl`; without it a line could only be attributed by cross-referencing
   cache-file timestamps. Still never a body, a cookie or `set-cookie`.
+- **Two more HTML GET shapes, both shape-guarded against the preview meter (2026-09-08).**
+  `/{silo}/reviews/{brand}` (a brand best-of page, `RECON.md` §12.18) and `/{silo}/learn/{slug}`
+  (an article, §12.19). Neither moves `previewed_products` — measured on a fresh anonymous jar
+  against a **metered** silo's landing page, since `tv` reports `access_limit: null` and would
+  have shown nothing either way (§14.7). The guards are structural, not intentional: the brand
+  form is offered **only for a single-segment slug**, and `rt_article` accepts `/{silo}/learn/{slug}`
+  and nothing else — a product review is `/{silo}/reviews/{brand}/{model}`, and no path either
+  builder can produce has that shape.
+- **An unknown best-of slug answers 200 with a landing page, not 404 (2026-09-08).** So "the GET
+  succeeded" is not "the list is there": the fetch loop only stops when a template actually
+  matches, which is what lets the brand shape be tried after the `/best/` one misses.

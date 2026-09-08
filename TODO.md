@@ -365,7 +365,7 @@ Every item below carries where the evidence landed. Nothing here is outstanding.
       re-derives the falsified "maturity" story. This is a conclusion, not a gap.
 - [x] **Usage ratings on the other 15 metered silos** (§12.20) — 3,006 rows, perfectly bimodal:
       0% on the 12 that enforce, 100% on the 15 metered ones with usages. No separate map needed.
-- [x] **The 9 orphan TV products** (§12.2b) — gone. 551 ids in `test_results`, 551 catalogued,
+- [x] **The 9 orphan TV products** (§12.24) — gone. 551 ids in `test_results`, 551 catalogued,
       0 orphans. A transient population, as inferred.
 - [x] **Both best-of template gaps** (§12.17) — "Notable Mentions" IS extractable on the
       server-rendered template and is now surfaced as `mentions` on both; and the featured
