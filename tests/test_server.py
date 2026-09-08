@@ -255,3 +255,29 @@ async def test_no_description_wastes_the_budget_on_indentation(tools):
             f"{name}: description carries source indentation; every leading space is a "
             "character the client's 2048-char cut spends on nothing"
         )
+
+
+async def test_the_instructions_fit_the_client_budget():
+    """The server's own routing prose is cut at 2048 characters, the same limit as a tool
+    description (both measured 2026-09-08). It was 4,314: steps 3-8 and the whole sign-in
+    section — including "NEVER call rt_sign_in unasked", which stops the server opening a
+    browser window on the user's screen — never reached the calling LLM at all."""
+    text = server.mcp.instructions or ""
+    assert len(text) <= CLIENT_DESCRIPTION_LIMIT, (
+        f"instructions are {len(text)} chars; everything past "
+        f"{CLIENT_DESCRIPTION_LIMIT} is silently dropped"
+    )
+    # Per-tool detail belongs in each tool's own description. These are the things no
+    # single tool can say, so losing any of them has no fallback.
+    for phrase in (
+        "rt_silos() FIRST",
+        "tested_gated",
+        "NEVER report a gated null",
+        "grouped by bench",
+        "rt_recommendations",
+        "include_verdicts=true",
+        "rt_article",
+        "NO PRICES",
+        "NEVER call rt_sign_in unasked",
+    ):
+        assert phrase in text, f"instructions no longer say {phrase!r}"

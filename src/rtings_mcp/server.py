@@ -54,72 +54,51 @@ SiloParam = Annotated[
     ),
 ]
 
+#: The routing prose the calling LLM reads. **The client cuts this at 2048 characters**, the
+#: same limit it applies to a tool description (both measured 2026-09-08) — and it used to be
+#: 4,314, so steps 3-8 and the whole sign-in section, including "NEVER call rt_sign_in
+#: unasked", never reached anyone. Per-tool detail belongs in each tool's own description,
+#: which is delivered separately; this file is for what no single tool can say: the gate, the
+#: status domain, bench scoping, which tool to reach for, and the sign-in guard.
+#: `test_the_instructions_fit_the_client_budget` fails if it grows past the cut again.
+INSTRUCTIONS = (
+    "RTINGS.com test data as structured tools.\n\n"
+    "GATING IS PER CATEGORY: the flagship ones (tv, headphones, monitor, mouse, keyboard, "
+    "soundbar, speaker, printer, laptop, robot-vacuum, projector, router) withhold "
+    "measurements without a membership; the other 16 serve them. Call rt_silos() FIRST — "
+    "that split is RTINGS' business decision and it moves. If any envelope says session: "
+    "'member', every category is full.\n\n"
+    "A gated value is null with status 'tested_gated': RTINGS MEASURED it and withholds it. "
+    "NOT 'not_tested' (never measured), 'not_applicable', 'review_unpublished' (Early "
+    "Access; a membership lifts it) or 'coverage_unknown'. NEVER report a gated null as "
+    "'not tested'.\n\n"
+    "A test bench is RTINGS' methodology version; a product sits on exactly one. Results are "
+    "grouped by bench, never flattened.\n\n"
+    "ROUTING:\n"
+    "1. Shopping -> rt_recommendations(silo) FIRST: RTINGS' own best-of lists by use, size, "
+    "budget and BRAND, with reasoning — usually the ranking you'd derive. A list "
+    "answers ONE angle: confirm a multi-attribute ask with one rt_ratings "
+    "filters={'product_ids': [the picks' ids]}.\n"
+    "2. Compare/rank -> rt_ratings. Keep it small: a few tests, limit<=10.\n"
+    "3. One product -> rt_product; on a GATED category include_verdicts=true is the "
+    "substantive answer — verdict and pros/cons are served even where every number is "
+    "withheld, and rt_graph's curves are published anyway.\n"
+    "4. Which test is it? -> rt_schema(silo, find='input lag'). Find a model -> "
+    "rt_search(query, silo=).\n"
+    "5. Not a measurement (lineups, 'what changed this year') -> rt_article.\n\n"
+    "RTINGS publishes NO PRICES, and specs they don't measure (IP rating, burn-in) appear "
+    "only in prose — say so rather than guess at either.\n\n"
+    "They test ONE size per model: `tested_variant` is the SKU the numbers describe — a "
+    "'Best 65-inch' pick may have been measured at 77.\n\n"
+    "NEVER call rt_sign_in unasked — it opens a browser window on the user's screen, and a "
+    "gated category is no reason to sign someone in. If they DO ask: rt_sign_in() then "
+    "rt_auth_status(wait_s=45), repeating while 'waiting'."
+)
+
 mcp = MCPServer(
     name="rtings",
     version=__version__,
-    instructions=(
-        "RTINGS.com test data as structured tools.\n\n"
-        "READ THIS FIRST: RTINGS gates some measurements server-side, and enforcement is "
-        "PER CATEGORY. On 16 categories a session without a membership gets a three-review "
-        "preview budget, and while it is unspent (this server never spends it) their full "
-        "measurements and 0-10 scores are served; the flagship ones (tv, headphones, monitor, "
-        "mouse, keyboard, soundbar, speaker, printer, laptop, robot-vacuum, projector, router) "
-        "withhold them without a membership. Call rt_silos() first to see which is which right "
-        "now — the split is a snapshot of RTINGS' business decisions and it changes.\n\n"
-        "A gated value comes back null with status 'tested_gated'. That means RTINGS "
-        "MEASURED it and is withholding it. It is NOT the same as 'not_tested' (RTINGS did "
-        "not measure this product on this test), 'not_applicable' (the test does not apply), "
-        "'review_unpublished' (an Early Access review: RTINGS has the data and publishes it "
-        "to Insiders, but withheld it from this session), or 'coverage_unknown' (the server "
-        "cannot show its cached data covers this product). Never report a gated null as "
-        "'not tested'.\n\n"
-        "Comparisons are scoped to a test bench, RTINGS' methodology version. Results are "
-        "nested by bench and never flattened into one cross-bench ranking.\n\n"
-        "HOW TO ANSWER A QUESTION:\n"
-        "1. rt_silos() -> is this category 'full' or 'gated'? If any envelope says "
-        "session: 'member', the user is a signed-in Insider and EVERY category is full for "
-        "them — skip the gated branch entirely.\n"
-        "2. rt_recommendations(silo) FIRST for a shopping question: RTINGS publishes "
-        "best-of lists by use, size and budget (pet-hair, by-size/65-inch, side-sleepers, "
-        "budget…) with their reasoning — usually the ranking you were about to derive by "
-        "hand. A list answers ONE angle: for a multi-attribute ask (quiet AND wireless AND "
-        "low-profile) take candidates from the lists and confirm every attribute with ONE "
-        "rt_ratings(filters={'product_ids': [the picks' product_id values]}) call, since a "
-        "list's #1 can fail the attribute the list is not about.\n"
-        "3. Need a test's id? rt_schema(silo) gives the category tree; "
-        "rt_schema(silo, group=<id>) gives that group's tests with their original_ids. A "
-        "group with leaf_test_count 0 is scored as a usage or described only in prose.\n"
-        "4. FULL category: rt_ratings(silo, tests=[ids], sort=<id or name>, filters=...) "
-        "ranks and compares. Keep it small: a few tests, limit<=10. The default bench set "
-        "is every bench RTINGS still renders together (2 on mouse, 10 on running-shoes); "
-        "narrowing with bench=[...] drops products tested on the other recent benches, so "
-        "do it only when the warning that names a product's bench tells you to. "
-        "Responses over ~40K characters are trimmed per group with a `response_truncated` "
-        "warning — page with offset. To compare specific products use "
-        "filters={'product_ids': [...]}.\n"
-        "5. GATED category, not signed in: the numbers are withheld, so use "
-        "rt_product(product=<url>, include_verdicts=true) for RTINGS' written verdict, pros "
-        "and cons on one product, "
-        "rt_recommendations(silo) for their ranking with reasoning, and rt_graph for the "
-        "curves that are published anyway.\n"
-        "6. filters and sort accept a test's original_id OR its name; `variant` filters by "
-        "the size RTINGS tested. Each sort ranks ONE field; blend two by calling twice.\n"
-        "7. RTINGS publishes no prices. Nothing here can answer 'cheapest' or 'under $X'; "
-        "say so rather than guess. The one measured exception is running cost: printer "
-        "'Black-Only Printing Cost' (US$/print) is a test, found with find='cost'. "
-        "Spec-sheet facts RTINGS does not measure (IP/water rating, OLED burn-in/longevity, "
-        "warranty) are not tests either: they appear only in verdict/recommendation prose, "
-        "if at all.\n"
-        "8. RTINGS tests ONE size per model: `tested_variant` on every product row is the "
-        "SKU the numbers describe. A 'Best 65-inch' pick may have been measured at 77 "
-        "inches; say so when it matters.\n\n"
-        "SIGNING IN: rt_auth_status() reports what credential is stored and whether it is "
-        "live. If the user ASKS to sign in or connect their membership, call rt_sign_in() and "
-        "then rt_auth_status(wait_s=45), repeating while sign_in is 'waiting' — a human takes "
-        "longer than one tool call. NEVER call rt_sign_in unasked: it opens a browser window "
-        "on the user's screen. A gated category is not a reason to sign them in; say what is "
-        "withheld and let them decide."
-    ),
+    instructions=INSTRUCTIONS,
 )
 
 

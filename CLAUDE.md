@@ -30,7 +30,7 @@ annotation** — every tool returns a declared Pydantic model for that reason.
 
 ## Status
 
-Built, working, signed in, published (v0.3.0). Member mode is on by default; a member cookie
+Built, working, signed in, published (v0.3.1). Member mode is on by default; a member cookie
 unblurs the API (`RECON.md` §13.1). **The paywall model was corrected 2026-09-07 (`RECON.md`
 §14):** the 16 silos the docs called "open" give an anonymous session a **three-product review
 preview budget**, and while it is unspent the table tool serves everything. The budget is

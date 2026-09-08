@@ -206,7 +206,16 @@ uv pip install -e ".[browser]"             # only to run the browser sign-in its
 .venv/bin/pytest -m live -q                # live, anonymous, against the real API
 .venv/bin/pytest -m "live and slow" -q -s  # + the 28-category enforcement re-scan
 .venv/bin/ruff check src/ tests/
+
+# The two release gates. RTINGS' paywall map and its best-of page templates both change
+# silently, so each is re-derived live and diffed against a committed snapshot.
+.venv/bin/rtings-mcp scan  --out docs/enforcement-snapshot.json
+.venv/bin/rtings-mcp drift --out docs/recommendation-template-snapshot.json
 ```
+
+Run the tests on **Python 3.12** as well as your own before releasing — that is what CI pins,
+and 3.13+ strips docstring indentation at compile time while 3.12 does not, which changes how
+much of a tool description survives the client's 2048-character cut.
 
 ## Legal
 

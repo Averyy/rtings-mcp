@@ -6,10 +6,10 @@ can consult RTINGS test data the way it consults any other data source.
 Status: **The anonymous server is built and working (2026-09-05).** All eight data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 481 offline tests and 9 live anonymous tests pass, and **both** release
+`rtings-mcp auth`). 483 offline tests and 9 live anonymous tests pass, and **both** release
 gates reproduce their snapshots exactly — `rtings-mcp scan` the 12-enforcing / 16-open map,
 `rtings-mcp drift` 28 / 28 best-of extraction (26 props / 2 static). **Published on PyPI as
-`rtings-mcp` 0.3.0 (2026-09-08)** through GitHub-Actions trusted publishing; the install is
+`rtings-mcp` 0.3.1 (2026-09-08)** through GitHub-Actions trusted publishing; the install is
 `uvx rtings-mcp`. **Member mode is ON by default**
 (`RTINGS_MEMBER_MODE`) since Phase 0 settled q1 on 2026-09-06 (`RECON.md` §13.1). Facts the build
 measured are in `RECON.md` §12, the member session in §13; the corrections they forced are marked
@@ -406,7 +406,7 @@ its own extractor, its own drift signal — and its accepted path shape (`/{silo
 nothing else) is what makes it structurally incapable of opening a product review page, whose HTML
 GET spends a preview (`RECON.md` §14.7). Discovery is `rt_search`, which indexes these pages.
 
-**Why seven data tools, not nine.** `rt_products` folded into `rt_ratings` — anonymously they are the same
+**Why the original seven were seven, not nine.** `rt_products` folded into `rt_ratings` — anonymously they are the same
 catalog list, and CR did exactly this (catalog into `cr_ratings`). `rt_results` folded into
 `rt_ratings(tests=[…])` for a silo-wide scalar projection and `rt_product` for the per-product full
 set — the `ratings` vs `test_results` API split is a fetch detail, not a question an agent asks.
@@ -1472,9 +1472,10 @@ per-silo `is_recent` bench probe feeding `bench/{silo}.json` (§7, §8).
 `value`, review `rendered_value`); the two-source auth join (§6); **`scores_available` derived per
 (silo, bench)** (§7), never hardcoded.
 
-**Anonymous tools — DONE (2026-09-04).** the seven per §7, the local catalog-filter engine (with
-the gated-field filter/sort guard) and response shaping. All seven verified against the live
-API; the corrections the build forced are in `RECON.md` §12 and marked **(corrected)** above.
+**Anonymous tools — DONE (2026-09-04; `rt_article` added 2026-09-08).** the eight per §7, the
+local catalog-filter engine (with the gated-field filter/sort guard) and response shaping. All
+eight verified against the live API, and over a real stdio MCP session; the corrections the
+build forced are in `RECON.md` §12 and marked **(corrected)** above.
 
 **Phase 0 — DONE 2026-09-06 (`RECON.md` §13).** q1 answered YES on the first attempt, plus
 captures a, c, d, f, g and p; only the metered-preview questions remain and they need a **free**
@@ -1576,7 +1577,8 @@ a process holding a stale baseline would otherwise overwrite a rotation another 
 declines to overwrite a newer record, keeping its own value in memory instead. A user-driven paste
 passes no baseline and always wins: it is the newest fact by definition.
 
-**Tests — DONE (2026-09-07): 436 offline, 9 live.** `pytest` runs offline by default; live
+**Tests — DONE (2026-09-08): 483 offline, 9 live**, run on both the local Python and the
+3.12 that CI pins (they differ: see the docstring note in `docs/rules/tools-and-responses.md`). `pytest` runs offline by default; live
 tests are opt-in (`-m live`) and anonymous by construction. Fixtures are synthetic or from
 **anonymous fetches only, never containing unblurred member values** (CLAUDE.md), and the one
 `GLOBALS.session` fixture with a logged-in shape has every value replaced by a placeholder.
@@ -1629,8 +1631,8 @@ carry no `insider_only`. See CLAUDE.md > Release.
 
 ## 12. Decisions taken
 
-- **Name: `rtings-mcp`**, matching the directory. Published on PyPI under that name as v0.2.1
-  (2026-09-07); there is no npm package and none is planned.
+- **Name: `rtings-mcp`**, matching the directory. Published on PyPI under that name, latest
+  v0.3.1 (2026-09-08); there is no npm package and none is planned.
 - **Auth cookie-only in v1 (§6).** HttpOnly `_rtings_session` makes cURL the *only* capture gesture —
   no console fallback, unlike CR. Never a password/login/CAPTCHA.
 - **Auth is a two-source join (§6)** because the API carries no marker (`RECON.md` §1). New vs CR;

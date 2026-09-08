@@ -274,6 +274,22 @@
   paging, all inside the window; Size/Shape/Uncatalogued are reference and may fall past it.
   `test_every_tool_description_fits_or_front_loads_the_client_budget` asserts each essential
   phrase is inside the first 2048 characters, so a future edit cannot push one out silently.
+- **The server's `instructions` are cut at 2048 characters too, and were 4,314 (2026-09-08).**
+  The same limit as a tool description, measured the same way — this session's own system prompt
+  showed the rtings instructions ending mid-sentence at "3. Need a test's id… [truncated]", which
+  is character 2048 exactly. **Half the routing prose reached nobody**: steps 3-8 of "HOW TO
+  ANSWER A QUESTION" and the entire sign-in section, *including "NEVER call rt_sign_in unasked"*
+  — the line that stops the server opening a browser window on the user's screen. Rewritten to
+  2,033 characters. What belongs here is only what no single tool can say — the gate, the status
+  domain, bench scoping, which tool to reach for, the price/size caveats and the sign-in guard;
+  per-tool detail belongs in each tool's own description, which is delivered separately with its
+  own 2048. `test_the_instructions_fit_the_client_budget` fails if it grows back.
+- **The named gated list stays in `instructions` despite the budget.** It costs ~180 of 2048 and
+  a live `rt_silos()` is the real source, so dropping it was tempting — but it is authoritative
+  routing prose with **no runtime fallback**, and
+  `test_the_instructions_gated_list_matches_the_enforcement_snapshot` exists because a paywall
+  shift would otherwise leave it confidently wrong. Cut per-tool detail instead; that has a
+  fallback in the tool's own description.
 - **Every tool description is `inspect.cleandoc`ed at registration (2026-09-08).** CPython 3.13
   strips a docstring's common leading indentation at compile time and **3.12 does not**, so the
   same source shipped a description ~4 characters per line longer on the older runtime — 3,633

@@ -9,7 +9,7 @@ Built, below), the anonymous shopper round (40 scenarios), the member round (15 
 on **2026-09-08 the whole open list was worked through**: 3 confirmed defects fixed, 6
 discoverability gaps closed, `rt_article` added (8 data tools now), and **7 research questions
 answered by measurement** — q6, q7, q15, q16, the usage-rating map, the orphan products and both
-best-of template gaps. **481 offline + 9 live tests pass**, lint is clean, and both release gates
+best-of template gaps. **483 offline + 9 live tests pass**, lint is clean, and both release gates
 (`rtings-mcp scan`, `rtings-mcp drift`) reproduce their snapshots. What the build measured is in
 `RECON.md` §12; the membership in §13; the preview meter in §14.
 
@@ -53,7 +53,8 @@ and member/anonymous curves are byte-identical. `RTINGS_MEMBER_MODE` defaults to
 Sign-in end to end (window → cookie → validate → store → in-process adopt, browser reaped, no PII
 stored); Phase-0 q1 and captures a, c, d, f, g, p (`RECON.md` §13); the release scan's anonymity
 guard with a real cookie on disk (12/16, zero drift); the write guard live on tv and mattress in
-both flag states; member-tier writes and cache hits; **436 offline + 9 live tests**, the offline
+both flag states; member-tier writes and cache hits; **436 offline + 9 live tests** (483 as of
+2026-09-08), the offline
 suite hermetic even under a hostile environment.
 
 ### Verified 2026-09-06 over the MCP wire (a fresh stdio server per run, scratch cache)
@@ -204,7 +205,7 @@ Nothing on the original list. All three closed 2026-09-08:
   break a `partial` scan result down per test before calling it a paywall change.
 
 ```bash
-.venv/bin/pytest tests/ -q                 # 481 offline, ~5 s
+.venv/bin/pytest tests/ -q                 # 483 offline, ~5 s
 .venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
 .venv/bin/ruff check src/ tests/
 .venv/bin/rtings-mcp auth --status         # what credential is stored, and its session
