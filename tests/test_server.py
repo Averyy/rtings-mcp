@@ -242,3 +242,16 @@ async def test_every_tool_description_fits_or_front_loads_the_client_budget(tool
                 f"{name}: {phrase!r} is past the client's {CLIENT_DESCRIPTION_LIMIT}-char "
                 "cut, so no caller will ever read it"
             )
+
+
+async def test_no_description_wastes_the_budget_on_indentation(tools):
+    """CPython 3.13 strips a docstring's leading indentation at compile time and 3.12 does
+    not, so the same source shipped a longer description on the older runtime — and the
+    client's cut is at a fixed 2048 characters. Caught in CI 2026-09-08: `rt_ratings`'
+    paging sat inside the window on 3.14 and outside it on 3.12."""
+    for name, tool in tools.items():
+        lines = (tool.description or "").splitlines()
+        assert not any(line.startswith((" ", "\t")) for line in lines[:3]), (
+            f"{name}: description carries source indentation; every leading space is a "
+            "character the client's 2048-char cut spends on nothing"
+        )

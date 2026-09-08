@@ -11,6 +11,7 @@ Logs go to **stderr**: stdout is the protocol channel.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from typing import Annotated, Any
@@ -122,6 +123,27 @@ mcp = MCPServer(
 )
 
 
+def tool(*args: Any, **kwargs: Any) -> Any:
+    """Register a tool with a **Python-version-independent** description.
+
+    CPython 3.13 strips a docstring's common leading indentation at compile time; 3.12 does
+    not. The same source therefore shipped a description ~4 characters per line longer on
+    3.12 — and the client cuts a description at exactly 2048 characters, so on the older
+    runtime those leading spaces pushed real content off the end (measured 2026-09-08 in
+    CI: `rt_ratings`' paging fell outside the window on 3.12 and inside it on 3.14).
+
+    `inspect.cleandoc` here makes the wire description identical on every supported Python
+    and spends the whole window on words rather than indentation.
+    """
+
+    def register(fn: Any) -> Any:
+        if fn.__doc__:
+            fn.__doc__ = inspect.cleandoc(fn.__doc__)
+        return mcp.tool(*args, **kwargs)(fn)
+
+    return register
+
+
 def _ctx() -> Context:
     return get_context()
 
@@ -166,7 +188,7 @@ async def _run(model: Any, coro: Any) -> Any:
             )
 
 
-@mcp.tool()
+@tool()
 async def rt_silos(silos: list[str] | None = None, refresh: bool = False) -> SilosEnvelope:
     """List RTINGS' categories and, per category, whether its numbers are answerable now.
 
@@ -182,7 +204,7 @@ async def rt_silos(silos: list[str] | None = None, refresh: bool = False) -> Sil
     return await _run(SilosEnvelope, services.rt_silos(_ctx(), silos=silos, refresh=refresh))
 
 
-@mcp.tool()
+@tool()
 async def rt_schema(
     silo: SiloParam,
     bench: str | None = None,
@@ -216,7 +238,7 @@ async def rt_schema(
     )
 
 
-@mcp.tool()
+@tool()
 async def rt_ratings(
     silo: SiloParam,
     bench: list[str] | None = None,
@@ -300,7 +322,7 @@ async def rt_ratings(
     )
 
 
-@mcp.tool()
+@tool()
 async def rt_product(
     product: str,
     silo: str | None = None,
@@ -368,7 +390,7 @@ async def rt_product(
     )
 
 
-@mcp.tool()
+@tool()
 async def rt_graph(
     product: str,
     test: str,
@@ -395,7 +417,7 @@ async def rt_graph(
     )
 
 
-@mcp.tool()
+@tool()
 async def rt_search(
     query: str, count: int = 10, silo: SiloParam | None = None
 ) -> SearchEnvelope:
@@ -414,7 +436,7 @@ async def rt_search(
     )
 
 
-@mcp.tool()
+@tool()
 async def rt_article(
     article: str,
     silo: SiloParam | None = None,
@@ -449,7 +471,7 @@ async def rt_article(
     )
 
 
-@mcp.tool(name="rt_recommendations")
+@tool(name="rt_recommendations")
 async def rt_recommendations(
     silo: SiloParam,
     list: str | None = None,
@@ -488,7 +510,7 @@ async def rt_recommendations(
     )
 
 
-@mcp.tool(name="rt_sign_in")
+@tool(name="rt_sign_in")
 async def rt_sign_in(force: bool = False) -> SignInEnvelope:
     """Connect the user's RTINGS membership by signing in, in a real browser window.
 
@@ -523,7 +545,7 @@ async def rt_sign_in(force: bool = False) -> SignInEnvelope:
         )
 
 
-@mcp.tool(name="rt_auth_status")
+@tool(name="rt_auth_status")
 async def rt_auth_status(wait_s: int = 0) -> AuthStatusEnvelope:
     """What credential is stored, and how a sign-in in progress is going.
 

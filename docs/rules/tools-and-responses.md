@@ -274,6 +274,13 @@
   paging, all inside the window; Size/Shape/Uncatalogued are reference and may fall past it.
   `test_every_tool_description_fits_or_front_loads_the_client_budget` asserts each essential
   phrase is inside the first 2048 characters, so a future edit cannot push one out silently.
+- **Every tool description is `inspect.cleandoc`ed at registration (2026-09-08).** CPython 3.13
+  strips a docstring's common leading indentation at compile time and **3.12 does not**, so the
+  same source shipped a description ~4 characters per line longer on the older runtime — 3,633
+  characters against 3,457 for `rt_ratings`, 176 of them pure indentation. Against a fixed
+  2048-character cut that is real content lost: caught in CI, `rt_ratings`' paging sat inside the
+  window on 3.14 and outside it on 3.12. Register through `server.tool()`, never `mcp.tool()`
+  directly, and the wire description is identical on every supported Python.
 - **`sold_in` filters on the sizes a product is SOLD in (2026-09-08).** `variant` matches the
   TESTED sku only, and "which Sony OLED comes at 83 inches or bigger" had no filter at all —
   one session took the whole brand's table and scanned by eye. It takes the same comparators
