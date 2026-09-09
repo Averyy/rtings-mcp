@@ -494,6 +494,13 @@ class SearchHitOut(LeanRow):
     kind: str | None = None
     title: str | None = None
     url: str | None = None
+    read_with: str | None = Field(
+        default=None,
+        description=(
+            "Which tool takes this `url`, or null if none does. RTINGS' own `kind` is "
+            "'page' for a review, a best-of list, a brand page and an article alike."
+        ),
+    )
     product_id: str | None = None
     silo: str | None = None
     thumbnail: str | None = None
@@ -530,6 +537,13 @@ class ArticleData(Permissive):
 
     silo: str | None = None
     article: str | None = None
+    branch: str | None = Field(
+        default=None,
+        description=(
+            "`learn` (lineups, explainers) or `tests` (methodology and the multi-year "
+            "investigations, such as the 100-TV longevity and burn-in test)."
+        ),
+    )
     title: str | None = None
     url: str | None = None
     updated_at: str | None = None

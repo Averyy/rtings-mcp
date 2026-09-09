@@ -91,8 +91,11 @@ Each of these has a longer entry, with the evidence, in `docs/rules/`.
   by what a caller cannot work without — vocabulary before rationale. A test asserts the
   essentials are inside the window.
 - **Two page-extraction paths now, and both are shape-guarded against the meter.** A best-of
-  brand page is tried only for a single-segment slug; `rt_article` accepts `/{silo}/learn/{slug}`
-  and nothing else. Neither can name `/{silo}/reviews/{brand}/{model}` (`RECON.md` §14.7).
+  brand page is tried only for a single-segment slug; `rt_article` accepts a fixed
+  `learn|tests` branch alternation and nothing else. Neither can name
+  `/{silo}/reviews/{brand}/{model}` (`RECON.md` §14.7, §14.8). A `/tests/` page's prose may
+  live entirely in `introduction` with `text` empty, and the two branches never share a cache
+  key.
 
 ## Development
 

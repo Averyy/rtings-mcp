@@ -3297,6 +3297,36 @@ def _axis_bounds(points: list[Any]) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------------
 
 
+def _read_with(url: str) -> str | None:
+    """Which tool takes this search hit's `url`, or null if none does.
+
+    A caller following the documented flow used to discover by error that rt_article
+    refuses most hits: every hit is `kind: "page"` whatever it points at (filed
+    2026-09-09). Derived from the path shape only — it names no tool it cannot back up.
+    """
+    parts = [p for p in str(url or "").strip("/").split("/") if p]
+    # An Early Access review is `/early-access/{silo}/reviews/...`, so the silo is not the
+    # first segment there — `resolve_product` reads that shape and so does this.
+    if parts and parts[0] == "early-access":
+        parts = parts[1:]
+    if len(parts) < 2:
+        return None
+    branch = parts[1]
+    if branch in _ARTICLE_BRANCHES:
+        return "rt_article"
+    if branch != "reviews":
+        return None
+    # `/{silo}/reviews/best/{slug}` is a list and `/{silo}/reviews/{brand}` alone is a
+    # brand page — both are what `recommendation_paths` reads. `/{silo}/reviews/
+    # {brand}/{model}` is a product. Anything deeper is a review SUB-page (`/settings`),
+    # which the catalog does not carry, so nothing here reads it.
+    if len(parts) >= 4 and parts[2] == "best":
+        return "rt_recommendations"
+    if len(parts) == 3:
+        return "rt_recommendations" if parts[2] != "best" else None
+    return "rt_product" if len(parts) == 4 else None
+
+
 @collects_warnings
 async def rt_search(
     ctx: Context, query: str, *, count: int = 10, silo: str | None = None
@@ -3333,6 +3363,10 @@ async def rt_search(
                 "kind": hit.get("kind"),
                 "title": hit.get("title"),
                 "url": url,
+                # RTINGS' own `kind` is "page" for a review, a best-of list, a brand page,
+                # a learn article and a test page alike (measured 2026-09-09), so it does
+                # not say which tool takes the url. This does.
+                "read_with": _read_with(url),
                 "product_id": _str_or_none(hit.get("product_id")),
                 "silo": hit_silo,
                 "thumbnail": hit.get("thumbnail"),
@@ -3375,33 +3409,64 @@ async def rt_search(
 # ---------------------------------------------------------------------------------
 
 
-#: `/{silo}/learn/{slug}` and nothing else. A product review page is
-#: `/{silo}/reviews/{brand}/{model}` and fetching one as HTML spends a preview
-#: (RECON.md §14.2), so the shape this tool accepts is the guard: no accepted input can
-#: name one, whatever the caller passes.
+#: The two prose branches, `/{silo}/learn/{slug}` and `/{silo}/tests/{slug}`, and nothing
+#: else. A product review page is `/{silo}/reviews/{brand}/{model}` and fetching one as
+#: HTML spends a preview (RECON.md §14.2), so the shape this tool accepts is the guard:
+#: the branch is a fixed alternation, so no accepted input can name one, whatever the
+#: caller passes. `/tests/` was measured against the meter before it shipped and does not
+#: spend one (RECON.md §14.8).
+_ARTICLE_BRANCHES = ("learn", "tests")
 _ARTICLE_PATH_RE = re.compile(
-    r"^/?(?P<silo>[a-z0-9][a-z0-9-]*)/learn/(?P<slug>[a-z0-9][a-z0-9/-]*?)/?$"
+    r"^/?(?P<silo>[a-z0-9][a-z0-9-]*)/(?P<branch>learn|tests)/"
+    r"(?P<slug>[a-z0-9][a-z0-9/-]*?)/?$"
 )
 _HEADING_RE = re.compile(r"<(h[1-6])\b[^>]*>(.*?)</\1>", re.I | re.S)
 
 
-def _parse_article_ref(article: str, silo: str | None) -> tuple[str, str]:
-    """Accept the `url` rt_search hands back, or a silo plus a slug."""
+def _parse_article_ref(article: str, silo: str | None) -> tuple[str, str, str]:
+    """Accept the `url` rt_search hands back, or a silo plus a slug.
+
+    Returns the silo, the branch (`learn` or `tests`) and the slug. A bare slug means
+    `learn`: that is the branch whose slugs are single-segment, and a `/tests/` page is
+    reached by passing the `url` rt_search returned.
+    """
     text = str(article or "").strip().lower()
     if not text:
         raise RtingsError(errors.UNKNOWN_PRODUCT, "article is empty")
     match = _ARTICLE_PATH_RE.match(text)
     if match:
-        return match.group("silo"), match.group("slug")
+        return match.group("silo"), match.group("branch"), match.group("slug")
     if silo and "/" not in text.strip("/"):
-        return str(silo).strip().lower(), text.strip("/")
+        return str(silo).strip().lower(), "learn", text.strip("/")
+    branch = text.strip("/").split("/")
+    named = branch[1] if len(branch) > 1 else ""
+    hint = (
+        " That is a product review page — rt_product reads those, and this tool never "
+        "opens one as HTML."
+        if named == "reviews"
+        else ""
+    )
     raise RtingsError(
         errors.UNKNOWN_LIST,
-        f"{article!r} is not a learn-article path. Pass the `url` rt_search returned for "
-        "a /learn/ page (e.g. '/tv/learn/2026-lineup'), or a bare slug with silo=. Only "
-        "/{silo}/learn/{slug} is fetchable here: a review page is a different shape and "
-        "this tool never opens one.",
+        f"{article!r} is not a prose-page path.{hint} Pass the `url` rt_search returned "
+        "for a /learn/ or /tests/ page (e.g. '/tv/learn/2026-lineup', "
+        "'/tv/tests/longevity-test'), or a bare /learn/ slug with silo=. Only "
+        "/{silo}/learn/{slug} and /{silo}/tests/{slug} are fetchable here.",
     )
+
+
+def _cut_prose(prose: str, budget: int) -> str:
+    """Cut prose to `budget` characters, at a sentence end when one is near enough.
+
+    `budget` may be 0 — an over-budget response is cut to nothing rather than served
+    whole, because "bound every response on the wire" has no exception for prose.
+    """
+    if budget <= 0:
+        return ""
+    if len(prose) <= budget:
+        return prose
+    cut = prose.rfind(". ", 0, budget)
+    return prose[: cut + 1] if cut > budget // 2 else prose[:budget]
 
 
 def _article_sections(body: str) -> list[tuple[str, str]]:
@@ -3425,14 +3490,22 @@ async def rt_article(
     include_body: bool = True,
     refresh: bool = False,
 ) -> dict[str, Any]:
-    """One RTINGS `learn` article as prose: lineups, explainers, methodology write-ups."""
-    silo_key, slug = _parse_article_ref(article, silo)
+    """One RTINGS prose page: lineups, explainers, methodology and longevity write-ups."""
+    silo_key, branch, slug = _parse_article_ref(article, silo)
     repo = ctx.repo
     probe = await ctx.auth.ensure_session()
     await repo.resolve_silo(silo_key)
-    envelope = await repo.article(silo_key, slug, refresh=refresh)
+    envelope = await repo.article(silo_key, branch, slug, refresh=refresh)
     payload = envelope.payload or {}
     body = str(payload.get("text") or "")
+    intro_html = str(payload.get("introduction") or "")
+    # A `/tests/` page often ships the WHOLE article in `introduction` with `text` empty —
+    # /tv/tests/longevity-burn-in-test-updates-and-results is 54,291 characters of
+    # introduction, 0 of text, and its 32 dated headings are the month-by-month results
+    # (measured 2026-09-09). Reading only `text` returned an empty body for it.
+    body_is_intro = not body.strip() and bool(intro_html.strip())
+    if body_is_intro:
+        body = intro_html
     sections = _article_sections(body)
     warnings: list[str] = []
 
@@ -3453,9 +3526,23 @@ async def rt_article(
         scored.sort(key=lambda item: item[:2])
         selected = (scored[0][2], scored[0][3])
 
+    # Bounded like any other field on the wire: a `/tests/` page's introduction can be the
+    # whole article, and an unbounded one crowds out the body it is supposed to preface.
+    intro_text = None if (selected or body_is_intro) else strip_html(intro_html)
+    intro_budget = max(ctx.config.max_response_chars // 4, 0)
+    if intro_text and len(intro_text) > intro_budget:
+        intro_text = _cut_prose(intro_text, intro_budget)
+        warnings.append(
+            "introduction_truncated: this page's introduction is longer than a quarter of "
+            f"the {ctx.config.max_response_chars}-character budget "
+            "(RTINGS_MAX_RESPONSE_CHARS); the rest of it is under the headings in "
+            "`sections`."
+        )
+
     data: dict[str, Any] = {
         "silo": silo_key,
         "article": slug,
+        "branch": branch,
         "title": payload.get("title"),
         "url": payload.get("url"),
         "updated_at": _date_only(payload.get("updated_at")),
@@ -3464,7 +3551,7 @@ async def rt_article(
         # character page instead of the whole thing.
         "sections": [name for name, _ in sections],
         "section": selected[0] if selected else None,
-        "introduction": strip_html(payload.get("introduction")) if not selected else None,
+        "introduction": intro_text,
         "body": None,
         "notice": (
             "RTINGS' editorial prose, not measurements: nothing here is a test result, "
@@ -3475,11 +3562,12 @@ async def rt_article(
     if include_body:
         prose = strip_html(selected[1] if selected else body)
         budget = ctx.config.max_response_chars - _wire_size(data)
-        if prose and len(prose) > budget > 0:
+        if prose and len(prose) > budget:
             # Prose is one string, so the row-cutting budget does not apply; cut at a
-            # sentence and say exactly what was dropped and how to get the rest.
-            cut = prose.rfind(". ", 0, budget)
-            prose = prose[: cut + 1 if cut > budget // 2 else budget]
+            # sentence and say exactly what was dropped and how to get the rest. A
+            # NEGATIVE budget still cuts — `> budget > 0` let an oversized response
+            # through untrimmed, which is the one thing the wire bound exists to stop.
+            prose = _cut_prose(prose, max(budget, 0))
             warnings.append(
                 f"response_truncated: this article is longer than the "
                 f"{ctx.config.max_response_chars}-character budget "

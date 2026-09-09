@@ -9,6 +9,6 @@ is a different fact from ``not_tested``, ``not_applicable``, ``review_unpublishe
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 __all__ = ["__version__"]

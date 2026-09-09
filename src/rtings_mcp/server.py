@@ -85,7 +85,7 @@ INSTRUCTIONS = (
     "withheld, and rt_graph's curves are published anyway.\n"
     "4. Which test is it? -> rt_schema(silo, find='input lag'). Find a model -> "
     "rt_search(query, silo=).\n"
-    "5. Not a measurement (lineups, 'what changed this year') -> rt_article.\n\n"
+    "5. Not a measurement (lineups, burn-in, how a test works) -> rt_article.\n\n"
     "RTINGS publishes NO PRICES, and specs they don't measure (IP rating, burn-in) appear "
     "only in prose — say so rather than guess at either.\n\n"
     "They test ONE size per model: `tested_variant` is the SKU the numbers describe — a "
@@ -400,10 +400,14 @@ async def rt_graph(
 async def rt_search(
     query: str, count: int = 10, silo: SiloParam | None = None
 ) -> SearchEnvelope:
-    """Find a product across every RTINGS category by model name or number.
+    """Find a product, article or test page across every RTINGS category.
 
     Uses RTINGS' own live search index, so an empty result means the index has no match —
     it is not evidence that a product was never tested.
+
+    Every hit comes back `kind: "page"` whatever it points at, so each carries `read_with`:
+    the tool that takes its `url` (`rt_product`, `rt_article`, `rt_recommendations`), or
+    null when nothing here reads that page.
 
     `silo` keeps only that category's hits. RTINGS' index is cross-silo and its query takes
     no category, so the filter is applied here, over the top hits scanned (`scanned`, with
@@ -423,19 +427,24 @@ async def rt_article(
     include_body: bool = True,
     refresh: bool = False,
 ) -> ArticleEnvelope:
-    """RTINGS' `learn` articles as prose: brand lineups, explainers, buying guidance.
+    """RTINGS' prose pages: brand lineups, explainers, test methodology, longevity results.
 
-    For the questions no measurement answers — "what is Sony launching this year", "what
-    changed between mini-LED generations". Nothing here is a test result and nothing here
-    is gated; cite it as RTINGS' writing.
+    Two branches, both fetchable here. `/{silo}/learn/{slug}` is lineups and explainers —
+    "what is Sony launching this year", "what changed between mini-LED generations".
+    `/{silo}/tests/{slug}` is how a test is run (`/tv/tests/picture-quality/contrast-ratio`)
+    and the multi-year investigations no measurement row carries — the 100-TV accelerated
+    longevity and burn-in test. **Burn-in and long-term panel wear live only here**: there
+    is no burn-in test on the current bench, so this prose is the whole answer.
 
-    Find one with `rt_search(query, silo=...)` and pass the `url` it returns
-    (`/tv/learn/2026-lineup`), or a bare slug with `silo=`. Only `/{silo}/learn/{slug}` is
-    fetchable here.
+    Nothing on either branch is a test result and nothing is gated; cite it as RTINGS'
+    writing.
 
-    `sections` lists the article's headings. A lineup article runs past 25,000 characters,
-    so pass `section="Sony"` to read one heading instead of the whole page;
-    `include_body=false` returns the outline alone.
+    Find one with `rt_search(query, silo=...)` and pass the `url` it returns — its
+    `read_with` says whether this is the tool. A bare slug with `silo=` means `/learn/`.
+
+    `sections` lists the article's headings. A longevity page runs past 50,000 characters
+    with a heading per dated update, so pass `section="March 16"` to read one instead of
+    the whole page; `include_body=false` returns the outline alone.
     """
     return await _run(
         ArticleEnvelope,

@@ -388,7 +388,7 @@ plus **two that connect a membership** rather than serve data.
 | `rt_graph(product, test)` | one test's **curve**, resampled | **full** |
 | `rt_search(query, silo?)` | model name/number → candidates, across all silos or one | full |
 | `rt_recommendations(silo, list?)` | the silo's best-of lists (`/best/` **and** per-brand), or one ranked list with reasoning | ranking + prose free; scalars gated |
-| `rt_article(article, section?)` | one `/{silo}/learn/{slug}` page as prose — lineups, explainers | **full** (nothing there is gated) |
+| `rt_article(article, section?)` | one `/{silo}/learn/{slug}` or `/{silo}/tests/{slug}` page as prose — lineups, explainers, test methodology, the longevity and burn-in results | **full** (nothing there is gated) |
 
 | Membership tool | Does | Anonymous |
 |---|---|---|
@@ -418,7 +418,8 @@ Three tests hold the line (`docs/rules/testing.md`).
 **Why eight data tools.** `rt_article` was added 2026-09-08 (`RECON.md` §12.19): RTINGS' `learn`
 pages answer questions no measurement can ("does Sony sell a bigger OLED this year"), they are
 prose only and never gated, and nothing surfaced them. It shares `rt_recommendations`' isolation —
-its own extractor, its own drift signal — and its accepted path shape (`/{silo}/learn/{slug}`, and
+its own extractor, its own drift signal — and its accepted path shape (`/{silo}/learn/{slug}` or
+`/{silo}/tests/{slug}` since 2026-09-09, `RECON.md` §14.8, and
 nothing else) is what makes it structurally incapable of opening a product review page, whose HTML
 GET spends a preview (`RECON.md` §14.7). Discovery is `rt_search`, which indexes these pages.
 

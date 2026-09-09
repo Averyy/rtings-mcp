@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from rtings_mcp import models, services
+from rtings_mcp import models, repository, services
 from rtings_mcp.auth import AuthManager
 from rtings_mcp.cache import Cache
 from rtings_mcp.config import load_config
@@ -197,6 +197,106 @@ ARTICLE_HTML = f"""
 """
 
 
+def _test_page_props(url: str, title: str, *, intro: str, text: str = "") -> str:
+    """A `/{silo}/tests/{slug}` page: `page.type` is `TestPage` and the prose may live
+    ENTIRELY in `introduction` with `text` empty. Shape copied from
+    /tv/tests/longevity-burn-in-test-updates-and-results, measured 2026-09-09."""
+    return _props(
+        {
+            "page_data": {
+                "page": {
+                    "url": url,
+                    "type": "TestPage",
+                    "updated_at": "2026-03-16 10:59:15 -0400",
+                    "authors": [{"name": "A Tester", "author_url": "/authors/a-tester"}],
+                    "article": {
+                        "title": title,
+                        "introduction": intro,
+                        "text": text,
+                        "text_with_anchors": text,
+                        "latest_update_date": "2026-03-16 10:59:15 -0400",
+                        "created_at": "2026-01-09 00:00:00 -0400",
+                        "toc_items": [{"name": "Intro", "url": "#page-top"}],
+                        "meta_description": "how long a TV lasts",
+                    },
+                }
+            }
+        }
+    )
+
+
+#: The longevity shape: 0 characters of `text`, the whole article in `introduction`, one
+#: heading per dated update. Reading only `text` returned an empty body for this page.
+LONGEVITY_PROPS = _test_page_props(
+    "/tv/tests/alpha-longevity",
+    "Longevity Burn-In Test: Updates And Results",
+    intro=(
+        "<p>The lead paragraph.</p>"
+        "<h2>March 16, 2026 - Final Update</h2><p>Four panels failed outright.</p>"
+        "<h2>August 28, 2025 - Alpha X90J</h2><p>Uniform dimming after 9,000 hours.</p>"
+    ),
+)
+LONGEVITY_HTML = f"""
+<html><head><title>Longevity - RTINGS.com</title></head><body>
+{LONGEVITY_PROPS}
+</body></html>
+"""
+
+#: A nested `/tests/` slug — the methodology pages `rt_schema` describes numerically.
+CONTRAST_TEST_PROPS = _test_page_props(
+    "/tv/tests/picture-quality/alpha-contrast",
+    "Contrast Ratio",
+    intro="<p>What contrast is.</p>",
+    text="<h2>Our Test</h2><p>We measure a checkerboard.</p>",
+)
+CONTRAST_TEST_HTML = f"""
+<html><head><title>Contrast Ratio - RTINGS.com</title></head><body>
+{CONTRAST_TEST_PROPS}
+</body></html>
+"""
+
+#: A real preface AND a body, with the preface long enough to crowd the body out.
+LONG_INTRO_HTML = f"""
+<html><head><title>Long Intro - RTINGS.com</title></head><body>
+{_test_page_props(
+    "/tv/tests/long-intro",
+    "A Page With A Long Preface",
+    intro="<p>" + ("Sentence number one. " * 500) + "</p>",
+    text="<h2>Results</h2><p>" + ("A body sentence. " * 400) + "</p>",
+)}
+</body></html>
+"""
+
+#: A page whose OUTLINE alone is past the budget — `sections` names every heading, so the
+#: data dict can spend the budget before the prose is measured at all.
+MANY_SECTIONS_HTML = f"""
+<html><head><title>Many Sections - RTINGS.com</title></head><body>
+{_test_page_props(
+    "/tv/tests/many-sections",
+    "A Page With A Very Long Outline",
+    intro="<p>Short.</p>",
+    text="".join(
+        f"<h2>Update number {n} of the accelerated longevity test</h2><p>Body {n}.</p>"
+        for n in range(400)
+    ),
+)}
+</body></html>
+"""
+
+#: Same SLUG as the learn article above, different branch — the two must not share a
+#: cache entry.
+TESTS_ALPHA_LINEUP_HTML = f"""
+<html><head><title>Alpha Lineup Test - RTINGS.com</title></head><body>
+{_test_page_props(
+    "/tv/tests/alpha-lineup",
+    "How We Test Alpha Lineups",
+    intro="<p>Not the learn article.</p>",
+    text="<h2>Method</h2><p>A test page, not a lineup.</p>",
+)}
+</body></html>
+"""
+
+
 REC_HTML = f"""
 <html><head><title>The 7 Best TVs - RTINGS.com</title></head><body>
 {REC_PROPS}
@@ -302,8 +402,18 @@ class StubTransport(Transport):
             html = REC_HTML
         elif path == "/tv/learn/alpha-lineup":
             html = ARTICLE_HTML
-        elif "/learn/" in path:
-            # RTINGS answers an unknown learn slug with another page, never a 404.
+        elif path == "/tv/tests/alpha-longevity":
+            html = LONGEVITY_HTML
+        elif path == "/tv/tests/picture-quality/alpha-contrast":
+            html = CONTRAST_TEST_HTML
+        elif path == "/tv/tests/alpha-lineup":
+            html = TESTS_ALPHA_LINEUP_HTML
+        elif path == "/tv/tests/long-intro":
+            html = LONG_INTRO_HTML
+        elif path == "/tv/tests/many-sections":
+            html = MANY_SECTIONS_HTML
+        elif "/learn/" in path or "/tests/" in path:
+            # RTINGS answers an unknown learn or tests slug with another page, never a 404.
             html = PAGE_HTML
         elif self.session_page == "member":
             html = MEMBER_HTML
@@ -3626,7 +3736,65 @@ async def test_rt_article_can_return_the_outline_alone(ctx):
     assert out["data"]["body"] is None and out["data"]["sections"]
 
 
-async def test_rt_article_refuses_any_path_that_is_not_a_learn_page(ctx):
+async def test_rt_article_reads_a_tests_page(ctx):
+    """rt_search's top hit for "OLED burn-in longevity" is /tv/tests/…, rt_article refused
+    it, and there is no burn-in test on the bench to fall back on (filed 2026-09-09).
+    The meter does not move for a /tests/ GET (RECON.md §14.8)."""
+    out = await services.rt_article(ctx, "/tv/tests/alpha-longevity")
+    data = out["data"]
+    assert out["error"] is None
+    assert data["branch"] == "tests"
+    assert data["title"] == "Longevity Burn-In Test: Updates And Results"
+    assert "GET /tv/tests/alpha-longevity" in ctx.transport.calls
+
+
+async def test_a_tests_page_whose_whole_article_is_the_introduction_still_has_a_body(ctx):
+    """/tv/tests/longevity-burn-in-test-updates-and-results ships 54,291 characters of
+    `introduction` and 0 of `text` (measured 2026-09-09). Reading only `text` returned an
+    empty body and no sections for the one page an OLED buyer actually wants."""
+    out = await services.rt_article(ctx, "/tv/tests/alpha-longevity")
+    data = out["data"]
+    assert data["sections"] == [
+        "March 16, 2026 - Final Update",
+        "August 28, 2025 - Alpha X90J",
+    ]
+    assert "Four panels failed outright." in data["body"]
+    # The introduction IS the body here, so it is not also served as a separate field.
+    assert data["introduction"] is None
+
+    one = await services.rt_article(ctx, "/tv/tests/alpha-longevity", section="March 16")
+    assert one["data"]["section"] == "March 16, 2026 - Final Update"
+    assert one["data"]["body"] == "Four panels failed outright."
+
+
+async def test_rt_article_reads_a_nested_tests_slug(ctx):
+    """The methodology pages `rt_schema` describes numerically are two segments deep."""
+    out = await services.rt_article(ctx, "/tv/tests/picture-quality/alpha-contrast")
+    assert out["data"]["title"] == "Contrast Ratio"
+    assert out["data"]["sections"] == ["Our Test"]
+    # `text` is present here, so the introduction is a real preface and is served as one.
+    assert out["data"]["introduction"] == "What contrast is."
+    assert "We measure a checkerboard." in out["data"]["body"]
+
+
+async def test_the_two_branches_do_not_share_a_cache_entry(ctx):
+    """/tv/learn/alpha-lineup and /tv/tests/alpha-lineup are different pages; an
+    unprefixed cache key would serve one as the other."""
+    learn = await services.rt_article(ctx, "/tv/learn/alpha-lineup")
+    tests = await services.rt_article(ctx, "/tv/tests/alpha-lineup")
+    assert learn["data"]["title"] == "2026 Alpha Lineup"
+    assert tests["data"]["title"] == "How We Test Alpha Lineups"
+    files = sorted(p.name for p in (ctx.config.cache_dir / "articles" / "tv").iterdir())
+    assert files == ["learn__alpha-lineup.json", "tests__alpha-lineup.json"], files
+
+
+async def test_a_bare_slug_still_means_learn(ctx):
+    out = await services.rt_article(ctx, "alpha-lineup", silo="tv")
+    assert out["data"]["branch"] == "learn"
+    assert out["data"]["title"] == "2026 Alpha Lineup"
+
+
+async def test_rt_article_refuses_any_path_that_is_not_a_prose_page(ctx):
     """A product review page is /{silo}/reviews/{brand}/{model} and fetching one as HTML
     spends a preview (RECON.md §14.2). No accepted input may name one."""
     for bad in (
@@ -3634,11 +3802,129 @@ async def test_rt_article_refuses_any_path_that_is_not_a_learn_page(ctx):
         "/tv/reviews/best/tvs-on-the-market",
         "tv/reviews/sony/a80l",
         "/tv/learn",
+        "/tv/tests",
+        "/tv/discussions/abc",
     ):
         with pytest.raises(RtingsError) as excinfo:
             await services.rt_article(ctx, bad)
         assert excinfo.value.code == "unknown_list", bad
     assert not [c for c in ctx.transport.calls if "/reviews/" in c]
+
+
+async def test_no_accepted_input_can_build_a_review_path(ctx):
+    """The guard is STRUCTURAL, not intentional: the branch is a fixed `learn|tests`
+    alternation and `article_path` re-validates it, so no `article`, `silo` or slug a
+    caller can pass may reach `/{silo}/reviews/{brand}/{model}` — whose HTML GET spends a
+    preview (RECON.md §14.2)."""
+    hostile = [
+        ("/tv/reviews/sony/a95l-oled", None),
+        ("/tv/learn/../reviews/sony/a95l", None),
+        ("/tv/learn/%2e%2e/reviews/sony/a95l", None),
+        ("/TV/REVIEWS/SONY/A95L", None),
+        ("/tv//reviews/sony/a95l", None),
+        ("a95l-oled", "tv/reviews/sony"),
+        ("a95l-oled", "../tv"),
+        ("sony/a95l-oled", "tv"),
+        ("/tv/tests/../../reviews/sony/a95l", None),
+        ("/tv/learn/sony/a95l-oled/../../../reviews/x/y", None),
+    ]
+    for article, silo in hostile:
+        with pytest.raises(RtingsError):
+            await services.rt_article(ctx, article, silo=silo)
+    assert not [c for c in ctx.transport.calls if "/reviews/" in c], ctx.transport.calls
+
+    # And the path builder itself refuses a branch it was not given by the regex.
+    for branch in ("reviews", "REVIEWS", "", "../reviews", "learn/../reviews"):
+        with pytest.raises(RtingsError):
+            repository.article_path("tv", branch, "a95l")
+    assert repository.article_path("tv", "tests", "picture-quality/contrast-ratio") == (
+        "/tv/tests/picture-quality/contrast-ratio"
+    )
+
+
+async def test_the_refusal_names_what_was_actually_passed(ctx):
+    """It said "a review page is a different shape" to a caller who passed a /tests/ page,
+    sending them after a review-page problem that did not exist (filed 2026-09-09)."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_article(ctx, "/tv/reviews/alpha/alpha-one")
+    assert "product review page" in excinfo.value.message
+    assert "rt_product" in excinfo.value.message
+
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_article(ctx, "/tv/discussions/abc")
+    assert "review" not in excinfo.value.message
+    assert "/tests/" in excinfo.value.message
+
+
+async def test_an_article_over_budget_is_cut_even_when_the_budget_is_already_negative(ctx):
+    """`len(prose) > budget > 0` served an oversized response WHOLE once the rest of the
+    envelope had already spent the budget — the one thing the wire bound exists to stop."""
+    ctx.config.max_response_chars = 4_000  # the configured floor, not a contrived value
+
+    # `sections` names every heading, so a 400-heading outline spends the budget before
+    # the prose is measured at all. The prose then gets nothing — it is not served whole.
+    out = await services.rt_article(ctx, "/tv/tests/many-sections")
+    assert len(out["data"]["sections"]) == 400
+    assert out["data"]["body"] == "", "served whole against a spent budget"
+    assert any("response_truncated" in w for w in out["warnings"])
+
+    # And where the budget leaves room, the cut lands inside the prose, not past it.
+    out = await services.rt_article(ctx, "/tv/tests/long-intro")
+    body = out["data"]["body"]
+    assert 0 < len(body) < 400 * len("A body sentence. ")
+    assert any("response_truncated" in w for w in out["warnings"])
+
+
+async def test_a_giant_introduction_is_bounded_too(ctx):
+    """A /tests/ introduction can be the whole article; an unbounded one crowds out the
+    body it is supposed to preface."""
+    ctx.config.max_response_chars = 4_000
+    out = await services.rt_article(ctx, "/tv/tests/picture-quality/alpha-contrast")
+    assert out["data"]["introduction"] == "What contrast is.", "short intro is untouched"
+
+    out = await services.rt_article(ctx, "/tv/tests/long-intro")
+    assert len(out["data"]["introduction"]) <= 1_000
+    assert any("introduction_truncated" in w for w in out["warnings"])
+    assert "A body sentence." in out["data"]["body"], "the body still got its budget"
+
+
+async def test_search_hits_say_which_tool_takes_their_url(ctx):
+    """Every hit is `kind: "page"` whatever it points at, so a caller discovered by error
+    that rt_article refuses most of them (filed 2026-09-09)."""
+    ctx.transport.payloads["app/search__search_results"] = {
+        "data": {
+            "search_results": {
+                "query": "alpha",
+                "total_count": 9,
+                "results": [
+                    {"kind": "page", "title": "L", "url": "/tv/tests/longevity-test"},
+                    {"kind": "page", "title": "A", "url": "/tv/learn/2026-lineup"},
+                    {"kind": "page", "title": "P", "url": "/tv/reviews/sony/a95l-oled"},
+                    {"kind": "page", "title": "S", "url": "/tv/reviews/sony/a95l/settings"},
+                    {"kind": "page", "title": "B", "url": "/tv/reviews/best/mini-led"},
+                    {"kind": "page", "title": "N", "url": "/monitor/reviews/best/by/ultra"},
+                    {"kind": "page", "title": "R", "url": "/tv/reviews/sony"},
+                    {"kind": "page", "title": "E", "url": "/early-access/tv/reviews/lg/b6"},
+                    {"kind": "discussion", "title": "D", "url": "/discussions/abc/x"},
+                    {"kind": "page", "title": "Z", "url": "/brands/sony"},
+                ],
+            }
+        }
+    }
+    out = await services.rt_search(ctx, "alpha", count=10)
+    got = {h["title"]: h["read_with"] for h in out["data"]["results"]}
+    assert got == {
+        "L": "rt_article",
+        "A": "rt_article",
+        "P": "rt_product",
+        "S": None,
+        "B": "rt_recommendations",
+        "N": "rt_recommendations",
+        "R": "rt_recommendations",
+        "E": "rt_product",
+        "D": None,
+        "Z": None,
+    }
 
 
 async def test_a_learn_slug_that_does_not_exist_is_not_a_plausible_empty_article(ctx):

@@ -323,6 +323,30 @@
   `section=` — a lineup article is past 25,000 characters, so one heading is the readable
   unit. Prose only, never a measurement, and never gated. See `RECON.md` §12.19, and §14.7
   for the meter measurement that let it ship.
+- **`rt_article` reads the `/tests/` branch too, and refusing it cost the burn-in answer
+  (2026-09-09).** `rt_search`'s top hit for "OLED burn-in longevity" is
+  `/tv/tests/longevity-test`; passing it back exactly as returned raised `unknown_list`, and
+  `rt_schema(find="burn-in, image retention, vignetting, banding")` has no test to fall back
+  on — the prose is the whole answer. `/tests/` was measured against the meter and does not
+  spend a preview (`RECON.md` §14.8); the guard stays structural, a fixed `learn|tests`
+  alternation that `article_path` re-validates, so no caller value becomes `reviews`. The
+  cache key carries the branch: `/tv/learn/foo` and `/tv/tests/foo` are different pages.
+- **A prose page's body is not always in `text` (2026-09-09).** A `/tests/` page is
+  `page.type: TestPage`, and on the longevity page `text` is **0 characters** while
+  `introduction` holds all 54,291 and one heading per dated update. Reading `text` alone
+  returned an empty body and no sections. When `text` is empty the introduction IS the body,
+  and is then not also served as a separate field — one copy, not two.
+- **The article wire bound had a hole, and a `/tests/` page found it (2026-09-09).**
+  `len(prose) > budget > 0` served the prose **whole** whenever the rest of the envelope had
+  already spent the budget — precisely the case the bound exists for. It now cuts at
+  `max(budget, 0)`, and the introduction is bounded too (a quarter of the budget), because an
+  unbounded preface crowds out the body it prefaces.
+- **`rt_search` says which tool takes each hit (2026-09-09).** RTINGS' `kind` is `"page"` for
+  a review, a best-of list, a brand page and an article alike, so a caller following the
+  documented flow discovered by error that `rt_article` refuses most hits. `read_with` is
+  derived from the path shape — `rt_article`, `rt_product`, `rt_recommendations`, or null when
+  nothing here reads that page (a review sub-page such as `/settings`, a discussion, a
+  `/brands/` page). It names no tool it cannot back up.
 - **`rt_product`'s results are nested by section, and MEASURED 2026-09-08 that is a shape
   win, not a byte win.** The flat rows repeated `hierarchy` on every one — on a real TV
   review (Sony BRAVIA 9 II, 243 results) that breadcrumb is **18,589 of 69,852 characters,

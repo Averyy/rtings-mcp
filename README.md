@@ -101,7 +101,7 @@ No configuration is needed to start. Anonymous is the default and never an error
 | `rt_graph(product, test)` | one test's measurement curve, resampled by selecting shipped points |
 | `rt_search(query, silo?)` | model name/number → candidates, across all categories or one |
 | `rt_recommendations(silo, list?, limit?)` | the category's best-of lists — the `/best/` ones **and** the per-brand pages ("Best TCL TVs") — or one ranked list with reasoning |
-| `rt_article(article, section?)` | one RTINGS `learn` page as prose (brand lineups, explainers); `sections` lists its headings and `section=` returns just one |
+| `rt_article(article, section?)` | one RTINGS prose page as text — `/{silo}/learn/` (brand lineups, explainers) or `/{silo}/tests/` (test methodology, the 100-TV longevity and burn-in results); `sections` lists its headings and `section=` returns just one |
 | `rt_sign_in(force?)` | opens a browser window on RTINGS' sign-in page and stores the resulting cookie |
 | `rt_auth_status(wait_s?)` | what credential is stored, and how a sign-in in progress is going |
 

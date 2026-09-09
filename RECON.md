@@ -1984,5 +1984,56 @@ Consistent with §14.2: the unit is a **product review page**, `/{silo}/reviews/
 and neither shape is one — a brand page is one segment where a review is two, and `/learn/` is
 a different branch entirely. Both are guarded structurally rather than by intent:
 `recommendation_paths` offers the one-segment brand form **only for a slug with no slash**, and
-`rt_article` accepts `/{silo}/learn/{slug}` and nothing else. Neither guard can be satisfied by
-a review URL, whatever a caller passes.
+`rt_article` accepts a fixed set of branches and nothing else (`/learn/` here; `/tests/` was
+added 2026-09-09, §14.8). Neither guard can be satisfied by a review URL, whatever a caller
+passes.
+
+### 14.8 The `/tests/` branch measured against the meter, 2026-09-09: it does not spend
+
+`rt_article` refused `/{silo}/tests/{slug}` until now, and that cost a real answer: RTINGS'
+100-TV accelerated longevity and burn-in test lives at `/tv/tests/longevity-test` and
+`/tv/tests/longevity-burn-in-test-updates-and-results`, `rt_search` ranks both on page one of
+an OLED burn-in question, and `rt_schema(silo="tv", find="burn-in, image retention,
+vignetting, banding")` returns `terms_with_no_matches` for all four — there is no burn-in test
+on the bench to fall back on. The prose IS the answer.
+
+Measured by §14.7's method — a **fresh** anonymous jar, the meter read from `/mattress/tools/table`
+before and after, `tv` and `headphones` both chosen because they report `access_limit: null`
+and would have hidden a change:
+
+| after | `access_level` | `access_limit` | `previewed_products` |
+| --- | --- | --- | --- |
+| fresh jar | 2 | 3 | `[]` |
+| `GET /tv/tests/longevity-burn-in-test-updates-and-results` | 2 | 3 | `[]` |
+| `GET /tv/tests/picture-quality/contrast-ratio` (nested slug) | 2 | 3 | `[]` |
+| `GET /headphones/tests/sound-quality/frequency-response-consistency` | 2 | 3 | `[]` |
+
+Consistent with §14.2 and §14.7: the unit is a **product review page**,
+`/{silo}/reviews/{brand}/{model}`, and `/tests/` is a different branch, exactly as `/learn/` is.
+The guard stays structural rather than intentional — the branch in `_ARTICLE_PATH_RE` is a
+fixed `learn|tests` alternation and `article_path` re-validates it against the same pair, so no
+caller-supplied value can become `reviews`.
+
+**The page shape is `page.type: TestPage`, and its prose does not always live where a `/learn/`
+page's does.** `page.article` is the same object, but on the longevity page `text` and
+`text_with_anchors` are **empty** and the whole article — 54,291 characters, one `<h2>` per
+dated update — is in `introduction`:
+
+| page | `introduction` | `text` | `conclusion_with_anchors` | `toc_items` |
+| --- | --- | --- | --- | --- |
+| `/tv/tests/longevity-burn-in-test-updates-and-results` | **54,291** | **0** | 0 | 2 |
+| `/tv/tests/picture-quality/contrast-ratio` | 827 | 2,150 | 3,490 | 7 |
+| `/headphones/tests/sound-quality/frequency-response-consistency` | 1,932 | 3,130 | 872 | 6 |
+| `/tv/learn/oled-burn-in-not-improved-as-expected` (for contrast) | 1,319 | 16,611 | 0 | 7 |
+
+So reading `text` alone returns an **empty body and no sections** for the one page an OLED
+buyer wants. `rt_article` falls back to `introduction` when `text` is empty, and then does not
+also serve it as a separate `introduction` field — it is the body, not a preface to one. Note
+that `toc_items` is **not** the outline there (it lists "Intro" and "Comments"); the headings
+come from the prose, as they already did for `/learn/`.
+
+**`kind` does not distinguish these pages.** RTINGS' search index returns `kind: "page"` for a
+review, a best-of list, a brand page, a `/learn/` article and a `/tests/` page alike (measured
+over three queries, 2026-09-09: 65 `reviews`, 11 `learn`, 5 `tests`, 7 rootless, 1 `discussion`).
+A caller could only learn which hits `rt_article` takes by getting an error, which is what was
+filed. `rt_search` now derives `read_with` per hit from the path shape.

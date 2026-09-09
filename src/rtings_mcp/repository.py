@@ -1885,21 +1885,31 @@ class Repository:
 
         return await self._flight.run(f"recs:{key}", do_fetch)
 
-    async def article(self, silo: str, slug: str, *, refresh: bool = False) -> Envelope:
-        """One ``/{silo}/learn/{slug}`` prose page.
+    async def article(
+        self, silo: str, branch: str, slug: str, *, refresh: bool = False
+    ) -> Envelope:
+        """One ``/{silo}/learn/{slug}`` or ``/{silo}/tests/{slug}`` prose page.
 
         The second page-extraction path, and the only other one. RTINGS' lineup and
         explainer articles answer questions no measurement can ("does Sony sell a bigger
-        OLED this year"), and nothing here is gated — the page carries no ``unblurred``
-        bit and no test row, so it is cached at ``ANONYMOUS`` like the best-of index.
+        OLED this year"); the ``/tests/`` branch holds the methodology write-ups and the
+        multi-year investigations no measurement row carries (the 100-TV accelerated
+        longevity and burn-in test). Nothing on either is gated — the page carries no
+        ``unblurred`` bit and no test row, so it is cached at ``ANONYMOUS`` like the
+        best-of index.
 
-        ``/learn/`` is required by :func:`article_path`, and that is a paywall guard:
+        The branch is required by :func:`article_path`, and that is a paywall guard:
         a product review page is ``/{silo}/reviews/{brand}/{model}`` and fetching one as
         HTML spends a preview (RECON.md §14.2). No path this builds can name one.
+
+        The cache key carries the branch. ``/tv/learn/foo`` and ``/tv/tests/foo`` are
+        different pages and an unprefixed key would serve one as the other.
         """
         key = validate_silo(silo)
         clean = validate_slug(slug)
-        file_key = slug_to_key(clean)
+        if branch not in ARTICLE_BRANCHES:
+            raise RtingsError(errors.UNKNOWN_LIST, f"not a prose-page branch: {branch!r}")
+        file_key = f"{branch}__{slug_to_key(clean)}"
         cached = self.cache.get("articles", key, f"{file_key}.json")
         if cached is not None and not refresh and not cached.is_stale(TTL_RECS):
             return cached
@@ -1909,7 +1919,7 @@ class Repository:
                 again = self.cache.get("articles", key, f"{file_key}.json")
                 if again is not None and not refresh and not again.is_stale(TTL_RECS):
                     return again
-                path = article_path(key, clean)
+                path = article_path(key, branch, clean)
                 try:
                     result = await self.transport.api_get_html(path)
                 except RtingsError:
@@ -1922,8 +1932,8 @@ class Repository:
                     raise RtingsError(
                         errors.RECOMMENDATIONS_MISSING,
                         f"no article body found at {result.url} — RTINGS answers an "
-                        "unknown learn slug with another page, so this is most likely a "
-                        "slug that does not exist",
+                        f"unknown {branch} slug with another page, so this is most likely "
+                        "a slug that does not exist",
                     )
                 envelope = Envelope(
                     fetched_at=time.time(),
@@ -2117,11 +2127,21 @@ def _extract_best_lists(html: str, silo: str) -> list[dict[str, Any]]:
     return out
 
 
-def article_path(silo: str, slug: str) -> str:
-    """Where a ``learn`` article lives. The ``/learn/`` segment is not decoration: it is
-    what makes this path incapable of naming a product review page, whose HTML GET spends
-    a preview (RECON.md §14.2)."""
-    return f"/{silo}/learn/{slug}"
+ARTICLE_BRANCHES = ("learn", "tests")
+
+
+def article_path(silo: str, branch: str, slug: str) -> str:
+    """Where a prose page lives: ``/{silo}/learn/{slug}`` or ``/{silo}/tests/{slug}``.
+
+    The branch segment is not decoration: it is what makes this path incapable of naming a
+    product review page, whose HTML GET spends a preview (RECON.md §14.2). It is validated
+    against a fixed pair here rather than trusted, so a caller-supplied branch can never
+    become ``reviews``. ``/tests/`` was measured against the meter and does not spend one
+    (RECON.md §14.8).
+    """
+    if branch not in ARTICLE_BRANCHES:
+        raise RtingsError(errors.UNKNOWN_LIST, f"not a prose-page branch: {branch!r}")
+    return f"/{silo}/{branch}/{slug}"
 
 
 def _extract_article(html: str) -> dict[str, Any] | None:
