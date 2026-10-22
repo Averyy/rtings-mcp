@@ -11,14 +11,21 @@ seam that leaves ``_perform``, the cooldown, the token bucket and the JSON handl
 
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
+from wafer import AsyncSession
 
 from rtings_mcp import errors
-from rtings_mcp.config import load_config
+from rtings_mcp.auth import load_credential
+from rtings_mcp.auth_tools import SignInFlow
+from rtings_mcp.config import BASE_URL, SESSION_COOKIE_NAME, load_config
+from rtings_mcp.context import Context
 from rtings_mcp.errors import RtingsError
-from rtings_mcp.http import Transport
+from rtings_mcp.http import CredentialState, Transport
 
 pytestmark = pytest.mark.asyncio
 
@@ -251,3 +258,139 @@ async def test_the_cdn_cap_clears_the_largest_curve_rtings_actually_publishes():
     assert largest_observed < CDN_MAX_RESPONSE_BYTES, (
         "a curve RTINGS publishes must not be unfetchable; re-measure before lowering this"
     )
+
+
+# -- browser sign-in updates the real wafer cookie jar -----------------------------
+
+
+def session_response(url, session):
+    user = {"is_insider": session == "member"} if session in {"member", "free"} else None
+    globals_obj = {"session": {"current_user": user}}
+    if session == "unknown":
+        globals_obj = {}
+    return SimpleNamespace(
+        status_code=200,
+        text=f"<script>var GLOBALS = {json.dumps(globals_obj)};</script>",
+        headers={},
+        url=url,
+        challenge_type=None,
+        retry_after=None,
+    )
+
+
+async def capture(**kwargs):
+    return "new-signed-in-cookie"
+
+
+async def validate(config, cookie):
+    return "member"
+
+
+@pytest.mark.parametrize("override", [None, "anonymous"])
+@pytest.mark.parametrize("signed_in", ["member", "free"])
+async def test_signin_replaces_stale_cookie_in_running_transport(
+    config, monkeypatch, signed_in, override
+):
+    ctx = Context.build(replace(config, rate_interval_s=0, session_override=override))
+    ctx.transport.credential = CredentialState(configured="expired-cookie")
+    old_session = await ctx.transport.api_session()
+    cdn_session = await ctx.transport.cdn_session()
+
+    async def request(self, method, url, **kwargs):
+        cookie = self.get_cookie(SESSION_COOKIE_NAME, url)
+        return session_response(url, signed_in if cookie == "new-signed-in-cookie" else "expired")
+
+    monkeypatch.setattr(AsyncSession, "request", request)
+    signin = SignInFlow(ctx, capture=capture, validate=validate)
+    try:
+        await signin._capture_and_store()
+        assert (await signin.status())["session"] == (override or signed_in)
+        assert signin.phase == "active"
+        assert load_credential(config).configured == "new-signed-in-cookie"
+        assert await ctx.transport.api_session() is old_session
+        assert await ctx.transport.cdn_session() is cdn_session
+    finally:
+        await old_session.__aexit__(None, None, None)
+        await cdn_session.__aexit__(None, None, None)
+
+
+@pytest.mark.parametrize("override", [None, "member"])
+@pytest.mark.parametrize("verdict", ["expired", "unknown"])
+async def test_signin_does_not_report_active_when_live_probe_fails(
+    config, monkeypatch, verdict, override
+):
+    ctx = Context.build(replace(config, rate_interval_s=0, session_override=override))
+
+    async def request(self, method, url, **kwargs):
+        return session_response(url, verdict)
+
+    monkeypatch.setattr(AsyncSession, "request", request)
+    signin = SignInFlow(ctx, capture=capture, validate=validate)
+    try:
+        await signin._capture_and_store()
+        assert signin.phase == "failed"
+        assert (await signin.status())["session"] == (override or verdict)
+        assert load_credential(config).configured == "new-signed-in-cookie"
+    finally:
+        await (await ctx.transport.api_session()).__aexit__(None, None, None)
+
+
+async def test_queued_request_uses_new_cookie_after_inflight_request_finishes(config, monkeypatch):
+    ctx = Context.build(replace(config, rate_interval_s=0, concurrency=2))
+    transport = ctx.transport
+    transport.credential = CredentialState(configured="expired-cookie")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    tasks = []
+
+    async def request(self, method, url, **kwargs):
+        if url.endswith("/inflight"):
+            started.set()
+            await release.wait()
+            self.add_cookie(
+                f"{SESSION_COOKIE_NAME}=old-response-cookie; Domain=.rtings.com; Path=/",
+                BASE_URL,
+            )
+        result = session_response(url, "member")
+        result.text = self.get_cookie(SESSION_COOKIE_NAME, url)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "request", request)
+    try:
+        inflight = asyncio.create_task(transport.api_get_html("/inflight"))
+        tasks.append(inflight)
+        await started.wait()
+        replacing = asyncio.create_task(
+            transport.replace_credential(CredentialState(configured="new-signed-in-cookie"))
+        )
+        tasks.append(replacing)
+        await asyncio.sleep(0)
+        queued = asyncio.create_task(transport.api_get_html("/queued"))
+        tasks.append(queued)
+        await asyncio.sleep(0)
+        assert not replacing.done(), "a pending response can still rotate the old cookie"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+        assert queued.result().text == "new-signed-in-cookie"
+        assert await transport.current_jar_cookie() == "new-signed-in-cookie"
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await (await transport.api_session()).__aexit__(None, None, None)
+
+
+async def test_replacing_credential_preserves_preview_meter_and_unrelated_cookies(config):
+    transport = Context.build(config).transport
+    session = await transport.api_session()
+    session.add_cookie(
+        "product-previews=already-spent; Domain=.rtings.com; Path=/; Secure", BASE_URL
+    )
+    session.add_cookie("other-cookie=unchanged; Path=/tv; Secure", BASE_URL + "/tv/tools/table")
+    try:
+        await transport.replace_credential(CredentialState(configured="new-signed-in-cookie"))
+        current = await transport.api_session()
+        assert current is session
+        assert current.get_cookie("product-previews", BASE_URL) == "already-spent"
+        assert current.get_cookie("other-cookie", BASE_URL + "/tv/tools/table") == "unchanged"
+    finally:
+        await session.__aexit__(None, None, None)

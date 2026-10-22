@@ -360,6 +360,11 @@ class SignInFlow:
                 f"The sign-in hit an unexpected error ({r.split(':', 1)[1]}). rt_auth_status "
                 "reports what is stored; call rt_sign_in again to retry."
             )
+        if r == "stored_session_not_active":
+            return (
+                "The new session was stored, but the running server could not confirm it. "
+                "Check rt_auth_status before using member data."
+            )
         if r == "cancelled":
             return "The sign-in was cancelled by server shutdown; nothing changed."
         return f"The sign-in failed ({r or 'unknown'}); nothing changed."
@@ -449,11 +454,16 @@ class SignInFlow:
         # Adopt it in this process too, or the running transport keeps using the old
         # credential until a restart, and rt_auth_status would report a session the data path
         # is not actually using.
-        ctx.transport.credential = load_credential(ctx.config)
-        ctx.transport.adopt_rotated_cookie(cookie_value)
-        await ctx.auth.session_probe(force=True)
-        self.session_after = outcome
-        log.info("sign-in: %s session stored at %s", outcome, ctx.config.session_file)
+        await ctx.transport.replace_credential(
+            replace(load_credential(ctx.config), configured=cookie_value, jar_mismatch=False)
+        )
+        probe = await ctx.auth.session_probe(force=True)
+        self.session_after = probe.session
+        # A configured session override is not evidence that the server accepted the cookie.
+        if not probe.logged_in:
+            self._set("failed", "stored_session_not_active")
+            return
+        log.info("sign-in: %s session stored at %s", probe.session, ctx.config.session_file)
         self._set("active")
 
     # --- rt_auth_status ---------------------------------------------------------------

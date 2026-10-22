@@ -180,6 +180,7 @@ class Transport:
         self._api_session: AsyncSession | None = None
         self._cdn_session: AsyncSession | None = None
         self._session_lock = asyncio.Lock()
+        self._credential_lock = asyncio.Lock()
         self._telemetry_path = config.cache_dir / "telemetry" / "requests.jsonl"
 
     # -- sessions -------------------------------------------------------------------
@@ -242,6 +243,16 @@ class Transport:
         matched = jar_value == self.credential.configured
         self.credential.jar_mismatch = not matched
         return matched
+
+    async def replace_credential(self, credential: CredentialState) -> None:
+        """Replace an explicit login after draining requests using the previous cookie."""
+        async with self._credential_lock, contextlib.AsyncExitStack() as stack:
+            for _ in range(self.config.concurrency):
+                await stack.enter_async_context(self._semaphore)
+            self.credential = credential
+            if self._api_session is not None:
+                # Keep unrelated cookies, including the product preview meter.
+                self._inject_credential(self._api_session)
 
     def adopt_rotated_cookie(self, value: str) -> None:
         """Adopt a server-rotated credential.

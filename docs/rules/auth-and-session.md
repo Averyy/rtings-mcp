@@ -187,3 +187,9 @@
   persists its probe under the cache root, so an `anonymous` probe written there would clobber the
   real one), removes that dir afterwards, and asserts the stored credential is untouched. A crash
   or an `unknown` probe returns `could_not_check:<reason>` — no verdict on the cookie either way.
+
+- **Browser sign-in must update the running API cookie jar (2026-10-22).** Updating only
+  credential metadata leaves requests using the previous cookie. Drain in-flight requests,
+  inject the new `_rtings_session` into the existing session, and preserve unrelated cookies,
+  including `product-previews`. Report `active` only after the running session's probe confirms
+  `member` or `free`. The regression cases in `tests/test_http.py` use wafer's real cookie jar.
