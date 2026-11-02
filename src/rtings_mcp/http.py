@@ -180,6 +180,9 @@ class Transport:
         self._api_session: AsyncSession | None = None
         self._cdn_session: AsyncSession | None = None
         self._session_lock = asyncio.Lock()
+        #: Serialises `replace_credential`: two replacements each draining half the
+        #: semaphore would wait on each other for ever.
+        self._credential_lock = asyncio.Lock()
         self._telemetry_path = config.cache_dir / "telemetry" / "requests.jsonl"
 
     # -- sessions -------------------------------------------------------------------
@@ -242,6 +245,33 @@ class Transport:
         matched = jar_value == self.credential.configured
         self.credential.jar_mismatch = not matched
         return matched
+
+    async def replace_credential(self, credential: CredentialState) -> None:
+        """Make a new credential the one the running API session actually sends.
+
+        Assigning ``self.credential`` is not enough, and was the whole of the sign-in
+        defect (2026-10-22, PR #1): the jar is seeded once, when the session is built, and
+        every request sends what the jar holds. A process that had made any request before
+        the sign-in kept sending the previous cookie, or RTINGS' anonymous re-mint of it,
+        until a restart, while ``rt_sign_in`` reported ``active``.
+
+        The jar is updated **in place**, never rebuilt: a new session would also drop
+        ``product-previews``, the anonymous preview meter this server must never reset, and
+        the TLS identity with it. RTINGS scopes ``_rtings_session`` to ``Domain=rtings.com;
+        Path=/`` (measured 2026-11-02), the same scope ``_inject_credential`` writes, so the
+        injection replaces the jar's copy rather than sitting beside it.
+
+        In-flight requests are drained first, by holding every semaphore slot. A response
+        still on the wire carries a ``Set-Cookie`` for the previous session, and landing
+        after the injection it would overwrite the new cookie. Requests that arrive while
+        this waits queue behind it and go out with the new one.
+        """
+        async with self._credential_lock, contextlib.AsyncExitStack() as drained:
+            for _ in range(self.config.concurrency):
+                await drained.enter_async_context(self._semaphore)
+            self.credential = credential
+            if self._api_session is not None:
+                self._inject_credential(self._api_session)
 
     def adopt_rotated_cookie(self, value: str) -> None:
         """Adopt a server-rotated credential.

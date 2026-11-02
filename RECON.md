@@ -355,6 +355,15 @@ A plain anonymous GET sets, among others:
 `_rtings_session` is **HttpOnly**, so `document.cookie` cannot read it — capture is **"Copy as cURL"
 only**, never a console one-liner. (Opposite of CR, whose durable cookie was not HttpOnly.)
 
+**Its jar scope (measured 2026-11-02, one anonymous GET of `/tv/tools/table` through wafer 0.5.0
+and again through 0.7.10, read back with the value-free `cookie_scope_summary`):** domain `rtings.com`, path `/`, and **not
+`Secure`**. That is the same (domain, path, name) identity `Transport._inject_credential` writes
+(`Domain=.rtings.com; Path=/; Secure; HttpOnly`). So an injected credential **replaces** RTINGS'
+copy in the jar rather than sitting beside it, and so does RTINGS' re-issue replace ours. The jar
+held exactly one `_rtings_session` after each step. This is what makes re-injecting into a live
+session (the sign-in adoption, `docs/rules/auth-and-session.md`) sound. A host-only or
+differently-pathed cookie from RTINGS would put two copies on the wire.
+
 ### The auth markers — HTML `GLOBALS.session` only (confirmed)
 
 Server-rendered inline in the HTML, seen by a plain GET with no JavaScript:
@@ -1188,6 +1197,13 @@ on those silos falls to the 30-day legacy TTL instead of the 7-day current-bench
 is the named mitigation for the coverage hole that has no other signal (§11.6). **"Current
 bench" must be derived as the newest bench that is both rendered by the site and has a
 published schema**, not read off `latest_test_bench_id`.
+
+**Confirmed by the 2026-11-02 re-scan:** three of those five were benches under development,
+and they shipped. air-conditioner's current bench is now 258, air-fryer's 265 and router's
+269. laptop's is 307 rather than the 285 it named, and toaster-oven's is still 247. The derived rule picked up all
+three without a code change, which is the point of it. That re-scan moved the current bench on
+9 silos in all (`docs/enforcement-snapshot.json` `scan_note`) and did not change enforcement on
+any of them.
 
 The per-page bench list lives at **`GLOBALS.static.silo`** (verified: `/mouse/tools/table`
 → latest 233, recent `[233,199]`). Its entries are `{id, is_recent, major}` and carry **no

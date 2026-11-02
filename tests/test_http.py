@@ -11,14 +11,24 @@ seam that leaves ``_perform``, the cooldown, the token bucket and the JSON handl
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+from dataclasses import replace
 
 import pytest
+from wafer import AsyncSession
 
 from rtings_mcp import errors
-from rtings_mcp.config import load_config
+from rtings_mcp.auth import load_credential, store_credential
+from rtings_mcp.auth_tools import SignInFlow, _close_transport
+from rtings_mcp.config import BASE_URL, SESSION_COOKIE_NAME, load_config
+from rtings_mcp.context import Context
 from rtings_mcp.errors import RtingsError
-from rtings_mcp.http import Transport
+from rtings_mcp.http import CredentialState, Transport
+
+# The probe pages the offline tool tests already classify; one copy, not a second that drifts.
+from test_tools_offline import FREE_HTML, MEMBER_HTML, PAGE_HTML
 
 pytestmark = pytest.mark.asyncio
 
@@ -251,3 +261,321 @@ async def test_the_cdn_cap_clears_the_largest_curve_rtings_actually_publishes():
     assert largest_observed < CDN_MAX_RESPONSE_BYTES, (
         "a curve RTINGS publishes must not be unfetchable; re-measure before lowering this"
     )
+
+
+# -- a sign-in must reach the jar the running session sends (2026-10-22, PR #1) ------------
+#
+# `StubTransport` has no jar: its `current_jar_cookie` returns `credential.configured`, so
+# "the running transport adopted the cookie" was asserted against the metadata, and passed,
+# while every real request kept sending the previous cookie until a restart. These drive
+# wafer's REAL cookie jar; only `AsyncSession.request` — the wire — is replaced.
+
+
+class FakeRtings:
+    """RTINGS' session behaviour, read off the cookie the jar actually sends.
+
+    It answers the probe page signed in only for a cookie it accepts, and re-issues
+    `_rtings_session` on every response — rotated when signed in, an anonymous re-mint
+    otherwise (`RECON.md` §5, §12.15) — at RTINGS' own scope, `Domain=rtings.com; Path=/`
+    (measured 2026-11-02, the same scope `_inject_credential` writes).
+    """
+
+    def __init__(self, accepts=(), page=MEMBER_HTML):
+        self.accepts = set(accepts)
+        self.page = page
+        self.sent: list[str | None] = []
+
+    def install(self, monkeypatch):
+        rtings = self
+
+        async def request(session, method, url, **kwargs):
+            return rtings.answer(session, url)
+
+        monkeypatch.setattr(AsyncSession, "request", request)
+
+    def answer(self, session, url):
+        cookie = session.get_cookie(SESSION_COOKIE_NAME, url)
+        self.sent.append(cookie)
+        n = len(self.sent)
+        if cookie in self.accepts:
+            reissued, text = f"rotated-{n}", self.page
+            self.accepts.add(reissued)
+        else:
+            reissued, text = f"anonymous-{n}", PAGE_HTML
+        session.add_cookie(
+            f"{SESSION_COOKIE_NAME}={reissued}; Domain=.rtings.com; Path=/; HttpOnly", BASE_URL
+        )
+        return FakeResponse(200, text=text, url=url)
+
+
+@pytest.fixture
+async def live_ctx(config):
+    """A real Context over the real Transport; the caller stores a credential first if any."""
+    built: list[Context] = []
+
+    def build(**overrides):
+        ctx = Context.build(replace(config, rate_interval_s=0, **overrides))
+        built.append(ctx)
+        return ctx
+
+    yield build
+    for ctx in built:
+        await _close_transport(ctx.transport)
+
+
+def signin(ctx, captured="new-cookie", opened=None, validate=None):
+    async def capture(timeout_s=300, on_launch=None):
+        if opened is not None:
+            opened.append(True)
+        if on_launch:
+            on_launch("chrome")
+        return captured
+
+    async def accepted(config, cookie):
+        return "member"  # the throwaway check accepted it; the point is what happens next
+
+    return SignInFlow(ctx, capture=capture, validate=validate or accepted, launch_wait_s=2.0)
+
+
+@pytest.mark.parametrize(("page", "expected"), [(MEMBER_HTML, "member"), (FREE_HTML, "free")])
+async def test_a_sign_in_reaches_the_jar_the_running_session_sends(
+    live_ctx, monkeypatch, config, page, expected
+):
+    """The reported defect, end to end: a process that had already made a request kept
+    sending the old cookie (or RTINGS' anonymous re-mint of it) after a sign-in, while
+    `rt_sign_in` said `active`."""
+    store_credential(config, "expired-cookie")
+    ctx = live_ctx()
+    rtings = FakeRtings(accepts={"new-cookie"}, page=page)
+    rtings.install(monkeypatch)
+    assert (await ctx.auth.session_probe(force=True)).session == "expired"
+    session = await ctx.transport.api_session()
+    session.add_cookie("product-previews=spent; Domain=.rtings.com; Path=/", BASE_URL)
+
+    flow = signin(ctx)
+    await flow._capture_and_store()
+
+    assert flow.phase == "active", flow.reason
+    assert rtings.sent[-1] == "new-cookie", "the confirming probe must go out on the new cookie"
+    assert ctx.auth.cached_probe().session == expected
+    assert await ctx.transport.api_session() is session, "the jar is updated, never rebuilt"
+    assert session.get_cookie("product-previews", BASE_URL) == "spent"
+    # RTINGS re-issued it on that probe; the proven-logged-in rotation is what gets kept.
+    jar = await ctx.transport.current_jar_cookie()
+    assert jar.startswith("rotated-")
+    assert ctx.transport.credential.configured == jar
+    assert load_credential(config).configured == jar
+
+
+@pytest.mark.parametrize("override", [None, "member"])
+async def test_a_sign_in_the_running_connection_cannot_confirm_is_not_active(
+    live_ctx, monkeypatch, config, override
+):
+    """`validate_cookie` checks on a throwaway transport. If the connection the tools use
+    then reads logged out, `active` is the old lie — and an `RTINGS_SESSION_OVERRIDE` must
+    not paper over it, because it rewrites `session` and leaves `logged_in` as RTINGS said."""
+    ctx = live_ctx(session_override=override)
+    FakeRtings(accepts=()).install(monkeypatch)
+
+    flow = signin(ctx)
+    await flow._capture_and_store()
+
+    assert flow.phase == "failed"
+    assert flow.reason == "stored_session_not_active"
+    assert flow.snapshot()["session"] == (override or "expired")
+    # RTINGS accepted it on the check, so it stays stored for the next start to load.
+    assert load_credential(config).configured == "new-cookie"
+    assert "new-cookie" not in flow._failure_text(flow.reason)
+
+
+async def test_a_cookie_stored_behind_the_running_server_is_adopted_before_it_is_called_live(
+    live_ctx, monkeypatch, config
+):
+    """`rtings-mcp auth` stored a cookie while the server ran anonymously. `rt_sign_in`'s
+    guard validated it and answered `session_active` — "RTINGS confirmed it live in this
+    process" — while this process never sent it. Now it is adopted and probed first."""
+    ctx = live_ctx()
+    rtings = FakeRtings(accepts={"pasted-cookie"})
+    rtings.install(monkeypatch)
+    await ctx.transport.api_get_html("/tv/tools/table")  # anonymous use builds the jar
+    store_credential(config, "pasted-cookie")  # the CLI, in another terminal
+    opened: list[bool] = []
+
+    flow = signin(ctx, opened=opened)
+    await flow.start()
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(asyncio.shield(flow._task), 5)
+
+    assert (flow.phase, flow.reason) == ("refused", "session_active")
+    assert opened == [], "no window may open for a cookie RTINGS still accepts"
+    assert rtings.sent[-1] == "pasted-cookie"
+    assert ctx.auth.cached_probe().logged_in
+
+
+async def settle(flow):
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(asyncio.shield(flow._task), 5)
+
+
+@pytest.mark.parametrize("override", [None, "member"])
+async def test_the_verify_path_never_answers_session_active_for_a_logged_out_connection(
+    live_ctx, monkeypatch, config, override
+):
+    """The guard's `session_active` says "RTINGS confirmed it live in this process". A stored
+    cookie the throwaway check accepts but this connection reads logged out must not get it,
+    and an override must not supply it."""
+    store_credential(config, "stored-cookie")
+    ctx = live_ctx(session_override=override)
+    FakeRtings(accepts=()).install(monkeypatch)
+    opened: list[bool] = []
+
+    flow = signin(ctx, opened=opened)
+    await flow.start()
+    await settle(flow)
+
+    assert (flow.phase, flow.reason) == ("failed", "stored_session_not_active")
+    assert opened == []
+    assert load_credential(config).configured == "stored-cookie"
+
+
+@pytest.mark.parametrize("path", ["capture", "verify"])
+async def test_a_connection_that_cannot_reach_rtings_is_no_verdict_on_the_cookie(
+    live_ctx, monkeypatch, config, path
+):
+    """The throwaway check has its own cooldown dir, so it can accept a cookie while this
+    connection is still cooling down from a 429. The probe then never reaches RTINGS and
+    reads `unknown`. Calling that "not signed in" and advising a restart would blame the
+    cookie for a transport fact."""
+    from rtings_mcp.config import API_HOST
+
+    if path == "verify":
+        store_credential(config, "new-cookie")
+    ctx = live_ctx()
+    rtings = FakeRtings(accepts={"new-cookie"})
+    rtings.install(monkeypatch)
+    ctx.transport.cooldown.record_backoff(API_HOST, retry_after=60.0, reason="rate_limited")
+    opened: list[bool] = []
+
+    flow = signin(ctx, opened=opened)
+    if path == "capture":
+        await flow._capture_and_store()
+    else:
+        await flow.start()
+        await settle(flow)
+        assert opened == []
+
+    assert flow.phase == "failed"
+    assert flow.reason.startswith("could_not_confirm:"), flow.reason
+    assert "cooldown_active" in flow.reason
+    assert rtings.sent == [], "a cooling host gets no request"
+    text = flow._failure_text(flow.reason)
+    assert "no verdict" in text and "new-cookie" not in text
+    assert load_credential(config).configured == "new-cookie"
+
+
+async def test_adopting_a_cookie_never_borrows_a_newer_files_baseline(
+    live_ctx, monkeypatch, config
+):
+    """The verify path read the stored cookie before `validate_cookie` went to the network.
+    If another process stores a different one meanwhile, adopting ours with THAT file's
+    `stored_at` would let our next rotation write-back overwrite the newer cookie."""
+    store_credential(config, "cookie-a")
+    ctx = live_ctx()
+    FakeRtings(accepts={"cookie-a"}).install(monkeypatch)
+
+    async def validate_while_another_process_writes(cfg, cookie):
+        assert cookie == "cookie-a"
+        store_credential(config, "cookie-b")  # e.g. `rtings-mcp auth` in another terminal
+        return "member"
+
+    opened: list[bool] = []
+    flow = signin(ctx, opened=opened, validate=validate_while_another_process_writes)
+    await flow.start()
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(asyncio.shield(flow._task), 5)
+
+    assert (flow.phase, flow.reason) == ("refused", "session_active")
+    assert opened == []
+    assert (await ctx.transport.current_jar_cookie()).startswith("rotated-")
+    assert load_credential(config).configured == "cookie-b", "the newer file must survive"
+
+
+async def test_a_response_still_in_flight_cannot_overwrite_the_new_cookie(config, monkeypatch):
+    """A response on the wire carries a `Set-Cookie` for the previous session. Landing after
+    the injection it would overwrite the new cookie, so the swap drains first, and a request
+    that arrives meanwhile queues behind it and goes out with the new one."""
+    transport = Transport(
+        replace(config, rate_interval_s=0, concurrency=2),
+        credential=CredentialState(configured="old-cookie", source="file"),
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    sent: dict[str, str | None] = {}
+
+    async def request(session, method, url, **kwargs):
+        sent[url.rsplit("/", 1)[-1]] = session.get_cookie(SESSION_COOKIE_NAME, url)
+        if url.endswith("/slow"):
+            started.set()
+            await release.wait()
+            session.add_cookie(
+                f"{SESSION_COOKIE_NAME}=old-rotated; Domain=.rtings.com; Path=/", BASE_URL
+            )
+        return FakeResponse(200, text="<html></html>", url=url)
+
+    monkeypatch.setattr(AsyncSession, "request", request)
+    tasks: list[asyncio.Task] = []
+    try:
+        tasks.append(asyncio.create_task(transport.api_get_html("/slow")))
+        await started.wait()
+        swap = asyncio.create_task(
+            transport.replace_credential(CredentialState(configured="new-cookie", source="file"))
+        )
+        tasks.append(swap)
+        await asyncio.sleep(0)
+        tasks.append(asyncio.create_task(transport.api_get_html("/queued")))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not swap.done(), "the swap must wait for the response still on the wire"
+        assert "queued" not in sent, "a request arriving during the swap queues behind it"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+        assert sent == {"slow": "old-cookie", "queued": "new-cookie"}
+        assert await transport.current_jar_cookie() == "new-cookie"
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await _close_transport(transport)
+
+
+async def test_replacing_the_credential_keeps_the_jar_and_the_preview_meter(config):
+    """Rebuilding the session would reset `product-previews`, which this server must never
+    do, so the new cookie goes into the existing jar — over RTINGS' copy, not beside it."""
+    transport = Transport(config, credential=CredentialState(configured="old-cookie"))
+    session = await transport.api_session()
+    session.add_cookie(
+        f"{SESSION_COOKIE_NAME}=anonymous-remint; Domain=.rtings.com; Path=/; HttpOnly", BASE_URL
+    )
+    session.add_cookie("product-previews=spent; Domain=.rtings.com; Path=/", BASE_URL)
+    session.add_cookie("other=kept; Path=/tv", BASE_URL + "/tv/tools/table")
+    try:
+        await transport.replace_credential(CredentialState(configured="new-cookie"))
+        assert await transport.api_session() is session
+        assert session.get_cookie(SESSION_COOKIE_NAME, BASE_URL) == "new-cookie"
+        assert session.get_cookie("product-previews", BASE_URL) == "spent"
+        assert session.get_cookie("other", BASE_URL + "/tv/tools/table") == "kept"
+        copies = [
+            c for c in session.cookie_scope_summary(BASE_URL) if c["name"] == SESSION_COOKIE_NAME
+        ]
+        assert len(copies) == 1, "two copies would both go out, and RTINGS picks one"
+    finally:
+        await _close_transport(transport)
+
+
+async def test_a_credential_replaced_before_any_request_is_what_the_session_is_built_with(
+    config,
+):
+    transport = Transport(config)
+    await transport.replace_credential(CredentialState(configured="new-cookie"))
+    try:
+        assert await transport.current_jar_cookie() == "new-cookie"
+    finally:
+        await _close_transport(transport)

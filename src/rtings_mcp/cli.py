@@ -254,8 +254,14 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
     if args.out:
         document = {
             "_comment": (
+                # Kept word-for-word with the committed snapshot's comment: the metered caveat
+                # (RECON.md section 14) was added there by hand, and a re-scan written from the
+                # older text dropped it.
                 "Baseline for the release-time enforcement re-scan (see docs/rules/release.md). "
-                "Anonymous data only. 'enforces_paywall' is DERIVED from observed "
+                "Anonymous data only, measured on a fresh session whose three-review preview "
+                "budget is unspent (RECON.md section 14): 'enforces_paywall: false' means the "
+                "silo serves everything to such a session, not that it has no paywall. "
+                "'enforces_paywall' is DERIVED from observed "
                 "unblurred on insider_only rows, excluding published:false products. "
                 "Re-scan and diff before every version bump; a change here is a spec "
                 "change, not a test failure."

@@ -28,7 +28,8 @@ So, as a release gate, before every version bump:
    per silo, `column_options` + `products_list` + one `test_results` over the current bench's leaf
    tests, anonymous, no cookie.
 2. **Diff against `docs/enforcement-snapshot.json`** (the committed baseline: `scanned_at`
-   2026-09-04, re-verified 2026-09-06 with no diff — 12 enforcing / 16 open).
+   2026-11-02, re-scanned for v0.3.4 — 12 enforcing / 16 open, the same split as the 2026-09-04
+   baseline; 9 silos moved to a new current bench, which is data, not a spec change).
 3. **A diff is a SPEC CHANGE, not a test failure.** Do not "fix" the test to match. Update the
    snapshot, `RECON.md` §11.1, and the framing in `SPEC.md` §5 / this file's preamble, and say so in
    the release notes — the honest description of what anonymous gets is the product's main claim.
@@ -59,7 +60,8 @@ So, as a release gate, before every version bump:
      **This is no longer a manual step (2026-09-08): `rtings-mcp drift` is that check**, one
      list per silo, and it diffs against `docs/recommendation-template-snapshot.json` the way
      `scan` diffs against the enforcement snapshot. Baseline `scanned_at` 2026-09-08:
-     **28 / 28 ok, 26 props / 2 static**, reproducing §12.17 exactly. It exits non-zero on any
+     **28 / 28 ok, 26 props / 2 static**, reproducing §12.17 exactly; re-scanned 2026-11-02 on
+     the same templates, with only RTINGS' own pick and list counts moved. It exits non-zero on any
      silo that is not `ok`, so CI can run it. It also counts each silo's discovered
      `brand_lists`, which catches the other half of a nav change — lists that vanish rather
      than picks that fail to parse.

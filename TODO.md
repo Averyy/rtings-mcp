@@ -9,9 +9,9 @@ Built, below), the anonymous shopper round (40 scenarios), the member round (15 
 on **2026-09-08 the whole open list was worked through**: 3 confirmed defects fixed, 6
 discoverability gaps closed, `rt_article` added (8 data tools now), and **7 research questions
 answered by measurement** — q6, q7, q15, q16, the usage-rating map, the orphan products and both
-best-of template gaps. **483 offline + 9 live tests pass**, lint is clean, and both release gates
-(`rtings-mcp scan`, `rtings-mcp drift`) reproduce their snapshots. What the build measured is in
-`RECON.md` §12; the membership in §13; the preview meter in §14.
+best-of template gaps. **512 offline + 9 live tests pass** (as of 2026-11-02), lint is clean,
+and both release gates (`rtings-mcp scan`, `rtings-mcp drift`) reproduce their snapshots. What
+the build measured is in `RECON.md` §12; the membership in §13; the preview meter in §14.
 
 **Two findings from that round change what the docs may claim:**
 
@@ -247,7 +247,7 @@ Nothing on the original list. All three closed 2026-09-08:
   break a `partial` scan result down per test before calling it a paywall change.
 
 ```bash
-.venv/bin/pytest tests/ -q                 # 483 offline, ~5 s
+.venv/bin/pytest tests/ -q                 # 512 offline, ~8 s
 .venv/bin/pytest -m live -q                # 9 live, anonymous, ~4 min
 .venv/bin/ruff check src/ tests/
 .venv/bin/rtings-mcp auth --status         # what credential is stored, and its session

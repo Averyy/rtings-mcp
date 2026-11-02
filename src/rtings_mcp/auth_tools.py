@@ -44,9 +44,11 @@ from .browser_auth import (
     extra_installed,
 )
 from .config import SESSION_COOKIE_NAME, Config
+from .http import CredentialState
 
 if TYPE_CHECKING:
     from .context import Context
+    from .htmlprobe import SessionProbe
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +159,9 @@ class SignInFlow:
         self._changed = asyncio.Event()
         self._version = 0
         self._captured = False
+        #: Whether THIS run wrote the credential file. A cancellation after the write must not
+        #: say "nothing changed": the next start loads what was stored.
+        self._stored = False
 
     # --- state ---------------------------------------------------------------------
     @property
@@ -219,6 +224,7 @@ class SignInFlow:
         self.browser = None
         self._deadline = None
         self._captured = False
+        self._stored = False
         self.session_after = None
 
         credential = load_credential(ctx.config)
@@ -360,7 +366,28 @@ class SignInFlow:
                 f"The sign-in hit an unexpected error ({r.split(':', 1)[1]}). rt_auth_status "
                 "reports what is stored; call rt_sign_in again to retry."
             )
+        if r == "stored_session_not_active":
+            return (
+                "RTINGS accepted the session cookie and it is stored, but this server's own "
+                "connection did not read as signed in when it checked (rt_auth_status shows "
+                "what it read). Do not treat its data as member data yet. Call rt_sign_in "
+                "again to re-check; if it still fails, restart the MCP server, which loads "
+                "the stored cookie fresh."
+            )
+        if r.startswith("could_not_confirm:"):
+            return (
+                "RTINGS accepted the session cookie and it is stored, but this server could not "
+                "reach RTINGS to confirm it on its own connection "
+                f"({r.split(':', 1)[1]}), so it is not claimed as active. That is no verdict "
+                "on the cookie. Call rt_sign_in again once the network is back or any cooldown "
+                "has passed; it re-checks the stored cookie before opening any window."
+            )
         if r == "cancelled":
+            if self._stored:
+                return (
+                    "The sign-in was cancelled by server shutdown after the session cookie was "
+                    "stored; the next server start loads it."
+                )
             return "The sign-in was cancelled by server shutdown; nothing changed."
         return f"The sign-in failed ({r or 'unknown'}); nothing changed."
 
@@ -382,8 +409,22 @@ class SignInFlow:
         log.info("sign-in: a session is stored but unproven; checking it before any window")
         outcome = await self._validate(self.ctx.config, cookie_value)
         if outcome in SIGNED_IN:
+            # `validate_cookie` checks on a throwaway transport, so "live" so far means live
+            # for RTINGS, not for this process. The stored cookie can differ from the one
+            # the running connection sends (`rtings-mcp auth` pasted one while the server
+            # ran), and `session_active` says "confirmed it live in this process" — so it
+            # is adopted and probed here before that is claimed.
+            probe = await self._adopt(cookie_value)
+            self.session_after = probe.session
+            if not probe.logged_in:
+                log.warning(
+                    "sign-in: RTINGS accepts the stored session but this process's own probe "
+                    "read %s",
+                    probe.session,
+                )
+                self._set("failed", self._not_adopted_reason(probe))
+                return False
             log.info("sign-in: the stored session is live; no window opened, nothing changed")
-            self.session_after = outcome
             self._set("refused", "session_active")
             return False
         if outcome in DECLINED:
@@ -446,15 +487,64 @@ class SignInFlow:
             )
             self._set("failed", f"save_failed:{type(exc).__name__}")
             return
-        # Adopt it in this process too, or the running transport keeps using the old
-        # credential until a restart, and rt_auth_status would report a session the data path
-        # is not actually using.
-        ctx.transport.credential = load_credential(ctx.config)
-        ctx.transport.adopt_rotated_cookie(cookie_value)
-        await ctx.auth.session_probe(force=True)
-        self.session_after = outcome
-        log.info("sign-in: %s session stored at %s", outcome, ctx.config.session_file)
+        self._stored = True
+        probe = await self._adopt(cookie_value)
+        self.session_after = probe.session
+        if not probe.logged_in:
+            # Stored, and RTINGS accepted it on the throwaway check, but the connection the
+            # tools actually use did not come back signed in. `active` would be the old lie.
+            log.warning(
+                "sign-in: the session was stored at %s but this process's own probe read %s",
+                ctx.config.session_file,
+                probe.session,
+            )
+            self._set("failed", self._not_adopted_reason(probe))
+            return
+        log.info("sign-in: %s session stored at %s", probe.session, ctx.config.session_file)
         self._set("active")
+
+    @staticmethod
+    def _not_adopted_reason(probe: SessionProbe) -> str:
+        """Why the running connection did not confirm the cookie: a verdict, or none.
+
+        `unknown` means the probe never got an answer — a cooldown, a 429, a challenge, a
+        timeout, a page with no `GLOBALS` — and `_run_probe` returns it before any override
+        is applied. `validate_cookie`'s throwaway transport has its own cooldown dir, so it
+        can say `member` while this connection is still cooling. Reading that as "not signed
+        in" would blame the cookie for a transport fact, so it gets the `could_not_check`
+        treatment instead.
+        """
+        if probe.session == "unknown":
+            return f"could_not_confirm:{probe.note or 'probe_unavailable'}"
+        return "stored_session_not_active"
+
+    async def _adopt(self, cookie_value: str) -> SessionProbe:
+        """Put a cookie RTINGS just accepted into the RUNNING transport, then probe through it.
+
+        Both halves are required (2026-10-22, PR #1). The credential has to reach the API
+        session's cookie jar, not just `transport.credential`, or every request keeps sending
+        the previous cookie until a restart. And the verdict has to come from a probe through
+        that same connection: `validate_cookie` ran on a throwaway transport, so it proves
+        RTINGS accepts the value, not that this process sends it.
+
+        Callers branch on `probe.logged_in`, never on `probe.session`: an
+        `RTINGS_SESSION_OVERRIDE` rewrites `session` and leaves `logged_in` as RTINGS said it.
+
+        The `stored_at` baseline must belong to THIS value. It is what the rotation write-back
+        compares against so a stale process cannot clobber a newer file. The verify path's
+        value was read before `validate_cookie` went to the network, and another process can
+        store a different cookie meanwhile. Pairing our value with that file's stamp would let
+        our next rotation overwrite it. So a file that has moved on gets a zero baseline, which
+        makes every write-back yield to it.
+        """
+        ctx = self.ctx
+        stored = load_credential(ctx.config)
+        if stored.configured == cookie_value:
+            credential = replace(stored, jar_mismatch=False)
+        else:
+            credential = CredentialState(configured=cookie_value, source="file", stored_at=0.0)
+        await ctx.transport.replace_credential(credential)
+        return await ctx.auth.session_probe(force=True)
 
     # --- rt_auth_status ---------------------------------------------------------------
     async def status(self, wait_s: int = 0) -> dict[str, Any]:

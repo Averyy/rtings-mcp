@@ -6,7 +6,7 @@ can consult RTINGS test data the way it consults any other data source.
 Status: **The anonymous server is built and working (2026-09-05).** All eight data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 483 offline tests and 9 live anonymous tests pass, and **both** release
+`rtings-mcp auth`). 512 offline tests and 9 live anonymous tests pass, and **both** release
 gates reproduce their snapshots exactly — `rtings-mcp scan` the 12-enforcing / 16-open map,
 `rtings-mcp drift` 28 / 28 best-of extraction (26 props / 2 static). **Published on PyPI as
 `rtings-mcp` 0.3.1 (2026-09-08)** through GitHub-Actions trusted publishing; the install is
@@ -858,6 +858,19 @@ browser watches the same field the server-side probe reads, and the captured val
 validated against RTINGS before anything is written: `capture_session()` → `validate_cookie()` →
 `store_credential()`.
 
+**IMPORTANT: storing is not adopting, and only the running connection can say `active`.**
+`validate_cookie()` probes on a throwaway transport, so it proves RTINGS accepts the value, not
+that this process sends it. And every request sends what the API session's cookie **jar** holds,
+which is seeded once, when the session is built. So after storing, `Transport.replace_credential`
+drains in-flight requests and injects the cookie into the **existing** jar (rebuilding the session
+would reset `product-previews`). A forced probe through that connection then decides the outcome.
+`probe.logged_in` ⇒ `active`. A logged-out reading ⇒ `failed:stored_session_not_active`. A probe
+that never got an answer ⇒ `failed:could_not_confirm:<note>`, which is no verdict on the cookie.
+Either way the cookie is left stored. The check reads `logged_in`, never `session`, because `RTINGS_SESSION_OVERRIDE`
+rewrites `session`. The verify path below adopts the same way before it answers `session_active`.
+Until 2026-11-02 the sign-in assigned the credential's metadata only: a process that had already
+made a request kept the old cookie until a restart, while `rt_sign_in` reported `active`.
+
 **`free` counts as signed in** (a real difference from CR, where only `member` does). A free
 account is what the metered preview budget exists for, so discarding one would throw away a
 working credential.
@@ -1607,7 +1620,8 @@ one graph per silo. "All 28, all-or-nothing" (§2) is only honest if all 28 are 
 
 **The smoke test doubles as the release-time enforcement re-scan.** It recomputes the per-silo
 paywall map from observed `unblurred` and diffs it against `docs/enforcement-snapshot.json` (baseline
-`scanned_at` 2026-09-04, re-verified 2026-09-06 with no diff: 12 enforcing / 16 open). **A diff is
+`scanned_at` 2026-11-02, after re-verifications 2026-09-06 and 2026-09-09; the split has not moved since
+the 2026-09-04 baseline: 12 enforcing / 16 open). **A diff is
 a spec change, not a test failure** — enforcement
 tracks category maturity and moves silently, so a stale map makes the server misdescribe what
 anonymous gets, which is the product's central claim. It also re-checks the invariants the normalizer

@@ -362,6 +362,28 @@ async def test_cancel_stores_nothing(ctx):
     assert f.phase == "failed"
     assert f.reason == "cancelled"
     assert stored(ctx) is None
+    assert "nothing changed" in f._failure_text(f.reason)
+
+
+async def test_a_cancel_after_the_store_does_not_claim_nothing_changed(ctx, monkeypatch):
+    """After the write the flow still drains requests and probes, which can take up to a
+    request timeout. A shutdown in that window leaves the cookie on disk, so "nothing
+    changed" would be false: the next start loads it."""
+    adopting, release = asyncio.Event(), asyncio.Event()
+
+    async def hang(credential):
+        adopting.set()
+        await release.wait()
+
+    monkeypatch.setattr(ctx.transport, "replace_credential", hang)
+    f = flow(ctx)
+    await f.start()
+    await asyncio.wait_for(adopting.wait(), 5)
+    await f.cancel()
+    assert (f.phase, f.reason) == ("failed", "cancelled")
+    assert stored(ctx) == CAPTURED
+    text = f._failure_text(f.reason)
+    assert "nothing changed" not in text and "stored" in text
 
 
 # -- the envelope never leaks the value ---------------------------------------------

@@ -187,3 +187,32 @@
   persists its probe under the cache root, so an `anonymous` probe written there would clobber the
   real one), removes that dir afterwards, and asserts the stored credential is untouched. A crash
   or an `unknown` probe returns `could_not_check:<reason>` — no verdict on the cookie either way.
+
+- **A sign-in must reach the running session's COOKIE JAR, and only a probe through that
+  connection may call it `active` (reported 2026-10-22 in PR #1 by jezdez; fixed 2026-11-02).**
+  The jar is seeded once, when the API session is built, and every request sends what it
+  holds. The sign-in assigned `transport.credential` and nothing else, so a process that had
+  made any request beforehand kept sending the previous cookie, or RTINGS' anonymous re-mint
+  of it, until a restart. Meanwhile `rt_sign_in` said `active`, because the outcome came from
+  `validate_cookie`'s throwaway transport and the forced probe's own verdict was ignored.
+  `Transport.replace_credential` drains in-flight requests (a response still on the wire
+  carries a `Set-Cookie` for the old session and would land over the new one), then injects
+  into the **existing** jar. Rebuilding the session would reset `product-previews`. RTINGS
+  scopes `_rtings_session` to `Domain=rtings.com; Path=/` (measured 2026-11-02 through wafer's
+  `cookie_scope_summary`), which is the scope `_inject_credential` writes, so the jar ends up
+  with one copy, not two. `active` and `session_active` now require `probe.logged_in` from the
+  forced probe. That means `logged_in`, never `session`: an `RTINGS_SESSION_OVERRIDE` rewrites
+  `session` and leaves `logged_in` as RTINGS said it. A logged-out reading is
+  `failed:stored_session_not_active`. A probe that never got an answer (`unknown`: a cooldown,
+  a 429, a timeout) is `failed:could_not_confirm:<note>`, which is no verdict on the cookie.
+  The throwaway check keeps its own cooldown dir, so it can accept a cookie while this
+  connection is still cooling. Either way the cookie stays stored for the next start, and a
+  shutdown that cancels the flow after the write says so rather than "nothing changed". The
+  verify path had the same defect: a cookie `rtings-mcp auth` stored while the server ran was
+  validated and answered `session_active` ("confirmed it live in this process") although the
+  process never sent it, so it is now adopted and probed first. **The adopted credential's
+  `stored_at` must belong to the adopted value.** The verify path read the cookie before
+  `validate_cookie` went to the network. If another process stores a different one meanwhile,
+  borrowing that file's stamp lets the next rotation write-back overwrite the newer cookie.
+  So a file that has moved on gets a zero baseline, and every write-back yields to it (found
+  in review 2026-11-02).

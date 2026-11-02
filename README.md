@@ -46,8 +46,9 @@ Every category reports `has_paywall: true`, so that flag carries no information.
 data shows the split (the per-category `access_level` on the landing page agrees with it). It will change, so the server never hardcodes
 it; `rt_silos()` reports what your machine observed. The map is re-scanned before each release
 against [`docs/enforcement-snapshot.json`](docs/enforcement-snapshot.json) (baseline 2026-09-03,
-re-verified 2026-09-06: 12/16, unchanged — and re-verified *with* a membership stored, which the
-scan ignores by construction, so the map stays an anonymous measurement).
+re-verified 2026-09-06 and re-scanned 2026-11-02: 12/16, unchanged — and re-verified *with* a
+membership stored, which the scan ignores by construction, so the map stays an anonymous
+measurement).
 
 ## Honest nulls
 

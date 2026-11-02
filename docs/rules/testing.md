@@ -22,6 +22,11 @@
   shipped transport is actually exercised** — it injects a fake wafer session at `_api_session` so
   `_perform`, the cooldown and the JSON handling all run. A contract the stub *mirrors* is not a
   contract the suite *tests*; if you change transport behaviour, the test belongs there.
+- **`StubTransport` has no cookie jar either (2026-11-02).** Its `current_jar_cookie` returns
+  `credential.configured`, so "the running transport adopted the sign-in" was asserted against
+  metadata and passed while every real request still sent the previous cookie. A test of what
+  the jar *sends* replaces only `AsyncSession.request` (the wire) and keeps wafer's real jar;
+  `FakeRtings` in `tests/test_http.py` re-issues `_rtings_session` the way RTINGS does.
 - **Mutation-test the safety-critical branches rather than trusting the count.** The three gaps found
   this way (status precedence, `errors[]`, `should_demote`'s free/reviews branch) were all invisible
   to line coverage — the lines ran, nothing asserted on them.
@@ -37,9 +42,9 @@
   /tmp/py312/bin/python -m pytest tests/ -q
   ```
 - **The offline suite does not exercise the MCP wire.** `services.*` calls skip the server, the
-  output models and the JSON envelope, so a shape change can pass 483 tests and still reach the
-  client wrong. Before a release, drive a **fresh stdio server** with a scratch cache and call the
-  tools as a client does — that is how the `data.results` nesting, the response budget and the
+  output models and the JSON envelope, so a shape change can pass every offline test and still
+  reach the client wrong. Before a release, drive a **fresh stdio server** with a scratch cache and
+  call the tools as a client does — that is how the `data.results` nesting, the response budget and the
   `instructions` cut were each confirmed end to end (2026-09-08).
 - **Anything the client receives has a 2048-character cut: tool descriptions AND the server's
   `instructions`** (both measured 2026-09-08). Two tests guard it —
@@ -47,5 +52,5 @@
   `test_the_instructions_fit_the_client_budget`. A doc-vs-doc guard,
   `test_the_instructions_gated_list_matches_the_enforcement_snapshot`, keeps the named gated list
   in step with the snapshot; it has no runtime fallback, which is why it is a test and not a note.
-- **Test counts as of 2026-09-08: 483 offline, 9 live** (`-m live`, anonymous by construction),
+- **Test counts as of 2026-11-02: 512 offline, 9 live** (`-m live`, anonymous by construction),
   plus the two release-gate CLIs, `rtings-mcp scan` and `rtings-mcp drift`.
