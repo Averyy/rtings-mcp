@@ -7,8 +7,8 @@
 > evidence.
 
 - **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Raised to
-  the then-latest releases and locked there on 2026-11-02: `mcp>=2.3.0`, `wafer-py>=0.7.10`,
-  `pytest>=9.2`, `pytest-asyncio>=1.4.1`, `ruff>=0.17.3`, and `playwright>=1.64.1` in the optional
+  the then-latest releases and locked there on 2026-11-02: `mcp>=2.3.0`, `wafer-py>=0.7.11`
+  (0.7.11 shipped that day; why it matters is in `http.md`), `pytest>=9.2`, `pytest-asyncio>=1.4.1`, `ruff>=0.17.3`, and `playwright>=1.64.1` in the optional
   `[browser]` extra. The suite passed on the old floors and on the new lock, on Python 3.12 and
   3.14, before the floors moved. Re-check at each release re-scan (below).
 - **Fixtures come from anonymous fetches. Never commit a fixture containing unblurred member values.**

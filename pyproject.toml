@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2.3.0",
-    "wafer-py>=0.7.10",
+    "wafer-py>=0.7.11",
 ]
 
 [project.optional-dependencies]

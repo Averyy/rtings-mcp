@@ -111,3 +111,17 @@
   `state.remaining`. A local-server contract check (one case per `_perform`/`_classify` branch,
   with server-side hit counts) confirmed every other mapping, and exactly one request per call,
   on wafer 0.7.10 / wreq 0.13.
+
+- **wafer-py floor 0.7.11, not 0.7.10 (2026-11-02, released the day the floors were raised).**
+  0.7.11 stops an AIA certificate-chain completion, or an AIA intermediate expiring, from
+  rebuilding the client with an EMPTY cookie jar. That rebuild would have silently dropped the
+  injected `_rtings_session` and turned a member session anonymous mid-process, the failure
+  `check_credential_identity` exists to catch. Its other change, seeding `add_cookie()`
+  cookies into wafer's browser solves, cannot reach this server, which never solves
+  (`max_rotations=0`). Re-tested on 0.7.11 before the floor moved:
+  - the 525 offline tests;
+  - the 22-case local-server transport contract;
+  - the live jar check: RTINGS' scope, one copy after `replace_credential`,
+    `product-previews` kept;
+  - the MCP round trip through every tool;
+  - the 9 live tests and the release gate.

@@ -1454,7 +1454,7 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   model: it is what carries the seven-state `status` enum into the client's schema, where an
   agent can see the distinction before it ever makes a call.
 - **Pin floors, not exact versions** (this is a library-style app, and `uv.lock` handles
-  reproducibility): `mcp>=2.3.0`, `wafer-py>=0.7.10`, dev extras `pytest>=9.2`,
+  reproducibility): `mcp>=2.3.0`, `wafer-py>=0.7.11`, dev extras `pytest>=9.2`,
   `pytest-asyncio>=1.4.1`, `ruff>=0.17.3`, and `playwright>=1.64.1` in `[browser]`. Raised to the
   then-latest releases and locked there on 2026-11-02 (first set 2026-09-03); re-check at the release
   re-scan (CLAUDE.md > Release).
