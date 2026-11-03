@@ -448,6 +448,8 @@ def stub_build(monkeypatch, payloads):
         # knob for exactly that.
         transport.session_page = built.get("page", "member")
         transport.credential.configured = config.session_cookie_env
+        transport.credential.source = "env"  # what `load_credential` makes of the candidate
+        transport.jar_cookie = built.get("jar")  # RTINGS re-issues it on every response
         cache = Cache(config)
         auth = AuthManager(config=config, cache=cache, transport=transport)
         built["config"] = config
@@ -475,6 +477,23 @@ async def test_validate_cookie_calls_a_cookie_rtings_logs_out_expired(ctx, stub_
 async def test_validate_cookie_confirms_a_live_member_cookie(ctx, stub_build):
     stub_build["page"] = "member"
     assert await auth_tools.validate_cookie(ctx.config, CAPTURED) == "member"
+
+
+async def test_the_cookie_check_does_not_warn_about_an_env_var_nobody_set(
+    ctx, stub_build, caplog
+):
+    """The candidate rides in on `session_cookie_env` so nothing is written, and RTINGS
+    re-issues the cookie on that very probe. That used to log "RTINGS_SESSION_COOKIE cannot
+    be refreshed" on every sign-in, about a variable the user never set (seen in the live
+    sign-in check, 2026-11-02)."""
+    stub_build["page"] = "member"
+    stub_build["jar"] = "REISSUED-BY-RTINGS"
+    with caplog.at_level("WARNING", logger="rtings_mcp.auth"):
+        assert await auth_tools.validate_cookie(ctx.config, CAPTURED) == "member"
+    assert stub_build["transport"].credential.configured == "REISSUED-BY-RTINGS", (
+        "the rotation path ran, so its silence is the suppression, not a skipped branch"
+    )
+    assert "RTINGS_SESSION_COOKIE" not in caplog.text
 
 
 async def test_validate_cookie_never_writes_to_the_real_cache_or_credential(

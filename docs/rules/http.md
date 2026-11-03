@@ -32,7 +32,7 @@
   Single-flight dedupes only identical keys.
 - **TWO sessions: `www.rtings.com` (credentialed) and `i.rtings.com` (never).** One session forces the
   origin's floor onto 2–361 KB static files and offers `_rtings_session` to the CDN for nothing
-  (confirmed: `add_cookie` with an explicit `Domain` sets `host_only=False`, `wafer/_base.py:2542`).
+  (confirmed: `add_cookie` with an explicit `Domain` sets `host_only=False`, `wafer/_base.py:3155` in 0.7.10).
   API session: `max_retries=0, max_rotations=0, max_failures=None` — `max_retries=0` also stops wafer
   retrying a 5xx or empty 200 **three times inside one of our bucket tokens** while never consulting
   `Retry-After` on that path. CDN session: **`max_rotations=0` here too** (otherwise a CDN
@@ -102,3 +102,12 @@
 - **An unknown best-of slug answers 200 with a landing page, not 404 (2026-09-08).** So "the GET
   succeeded" is not "the list is there": the fetch loop only stops when a template actually
   matches, which is what lets the brand shape be tried after the `/best/` one misses.
+
+- **`retry_after` reports the wait the server will ENFORCE, never RTINGS' raw `Retry-After`
+  (found 2026-11-02, while re-testing the transport on wafer 0.7.10).** The cooldown floors at
+  30 s (`max(retry_after, 30)`, doubling). `_classify` and the `RateLimited` branch still passed
+  RTINGS' own number through, so an agent told `retry_after: 5` came back at 5 s to a
+  `cooldown_active` refusal that cost a call and said "25 more". Both now report
+  `state.remaining`. A local-server contract check (one case per `_perform`/`_classify` branch,
+  with server-side hit counts) confirmed every other mapping, and exactly one request per call,
+  on wafer 0.7.10 / wreq 0.13.

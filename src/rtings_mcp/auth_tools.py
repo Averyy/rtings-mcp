@@ -112,6 +112,12 @@ async def validate_cookie(config: Config, cookie_value: str) -> str:
         warnings=[],
     )
     ctx = Context.build(probe_config)
+    # The candidate rides in on `session_cookie_env` so that nothing is ever written: an
+    # env-sourced credential is the one kind the rotation write-back never stores. But that
+    # path also warns "RTINGS_SESSION_COOKIE cannot be refreshed", and RTINGS re-issues the
+    # cookie on this very probe, so every sign-in logged a warning about a variable the user
+    # never set (seen in the live sign-in check, 2026-11-02). This context is not the user's.
+    ctx.auth._warned_env_rotation = True
     try:
         probe = await ctx.auth.session_probe(force=True)
     except Exception as exc:  # a crash in the probe is not a verdict on the cookie

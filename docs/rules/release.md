@@ -40,8 +40,12 @@ So, as a release gate, before every version bump:
    **Do not change `config.KNOWN_SILOS` for this** — that hint is about which silos *exist*, not
    which gate, and a silo outside it already warns `silo_hint_drift` rather than failing.
 4. **Re-check dependency currency** — `mcp`, `wafer-py`, `ruff`, `pytest`, `pytest-asyncio`,
-   `playwright` (the `[browser]` extra), and the Python floor against what is actually current. Floors were set 2026-09-03; a floor that has
-   drifted two majors is a bug waiting to surface.
+   `playwright` (the `[browser]` extra), and the Python floor against what is actually current. Floors were set 2026-09-03 and raised to the
+   then-latest releases on 2026-11-02 (v0.3.5); a floor that has drifted two majors is a bug
+   waiting to surface. Raising one means exercising that package, not reading its changelog:
+   for 0.3.5 that was a local-server wafer contract check, an SDK-client round trip through
+   every tool with schema validation, a headed launch of the installed browser, the suite on
+   3.12/3.13/3.14, a fresh wheel install, the gate, and a real sign-in.
 5. **Re-check the invariants too, not just the split** — they are what the normalizer is built on:
    - blur is still **approximately** `published:false ∨ (insider_only ∧ silo enforces)`. It is
      not exact: measured 2026-09-08 (`RECON.md` §12.21), headphones legacy bench 4 serves test

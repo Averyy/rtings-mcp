@@ -323,7 +323,9 @@ class Transport:
             raise RtingsError(
                 errors.RATE_LIMITED,
                 f"RTINGS returned {status}",
-                retry_after=round(retry_after if retry_after else state.remaining, 1),
+                # The wait we will ENFORCE, not RTINGS' number: the cooldown floors at 30 s,
+                # so an agent told "5" would come back to a `cooldown_active` refusal.
+                retry_after=round(state.remaining, 1),
                 details={"status": status},
             )
 
@@ -407,7 +409,7 @@ class Transport:
                 raise RtingsError(
                     errors.RATE_LIMITED,
                     "RTINGS rate-limited the request",
-                    retry_after=round(exc.retry_after or state.remaining, 1),
+                    retry_after=round(state.remaining, 1),  # the enforced wait, as above
                 ) from exc
             except wafer.EmptyResponse as exc:
                 self._telemetry(query_label, host, None, time.monotonic() - started,

@@ -112,7 +112,11 @@ async def test_429_is_rate_limited_and_carries_retry_after(transport):
     with pytest.raises(RtingsError) as exc:
         await post(transport)
     assert exc.value.code == errors.RATE_LIMITED
-    assert exc.value.retry_after == 17
+    # The wait the server will enforce, not RTINGS' raw 17: the cooldown floors at 30 s, and
+    # reporting 17 sent an agent back into a `cooldown_active` refusal (found 2026-11-02).
+    enforced = transport.cooldown.remaining("www.rtings.com")
+    assert enforced > 29  # floors at 30 s; it has ticked down a little since
+    assert exc.value.retry_after == pytest.approx(enforced, abs=1.0)
 
 
 async def test_503_with_retry_after_is_rate_limited(transport):
@@ -120,6 +124,7 @@ async def test_503_with_retry_after_is_rate_limited(transport):
     with pytest.raises(RtingsError) as exc:
         await post(transport)
     assert exc.value.code == errors.RATE_LIMITED
+    assert exc.value.retry_after > 29, "the enforced wait, not the raw Retry-After"
 
 
 async def test_a_bare_503_is_fetch_failed_and_installs_no_cooldown(transport):

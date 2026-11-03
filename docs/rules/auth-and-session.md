@@ -21,8 +21,9 @@
   metered preview. Member-vs-free is decided by the **HTML probe only**, never by the data.
 - **IMPORTANT: `max_retries` is a CONSTRUCTOR kwarg — "set it on that POST specifically" does not
   work.** `AsyncSession.request()` pops only `headers, params, timeout, attempt_timeout,
-  max_response_size` (`wafer/_async.py:1323-1328`); `max_retries` lives on `BaseSession.__init__`
-  (`_base.py:660, 766`) and is read from `self` (`_async.py:1419`). A per-request value is a
+  max_response_size` (`wafer/_async.py:1835-1840` in 0.7.10); `max_retries` lives on
+  `BaseSession.__init__` (`_base.py:715, 822`) and is read from `self` (`_async.py:1965`); re-checked
+  2026-11-02. A per-request value is a
   `TypeError` at best, ignored at worst — and `page_body` would then run at the default 3 retries =
   **3 consumed previews**. So `max_retries=0` goes on the **API session**.
 - **`rt_product` spends the user's metered previews — that needs a BUDGET, not a timer.** It *is*

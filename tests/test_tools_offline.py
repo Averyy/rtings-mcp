@@ -1725,7 +1725,7 @@ async def test_a_rotated_cookie_is_NOT_persisted_when_the_response_is_logged_out
     assert ctx.transport.credential.jar_mismatch is True
 
 
-async def test_an_env_var_credential_is_never_written_to_disk(member_ctx):
+async def test_an_env_var_credential_is_never_written_to_disk(member_ctx, caplog):
     """It cannot be refreshed, so the user is warned rather than silently degraded."""
     from rtings_mcp.auth import load_credential
 
@@ -1734,9 +1734,13 @@ async def test_an_env_var_credential_is_never_written_to_disk(member_ctx):
     member_ctx.transport.session_page = "member"
     member_ctx.transport.jar_cookie = "REISSUED"
 
-    await member_ctx.auth.session_probe(force=True)
+    with caplog.at_level("WARNING", logger="rtings_mcp.auth"):
+        await member_ctx.auth.session_probe(force=True)
     assert member_ctx.transport.credential.configured == "REISSUED"  # in memory only
     assert load_credential(member_ctx.config).configured is None
+    # The sign-in's cookie check silences this on its throwaway context; a real env var
+    # must still hear it.
+    assert "RTINGS_SESSION_COOKIE cannot be refreshed" in caplog.text
 
 
 async def test_partial_field_errors_do_not_discard_the_data(ctx):

@@ -6,7 +6,7 @@ can consult RTINGS test data the way it consults any other data source.
 Status: **The anonymous server is built and working (2026-09-05).** All eight data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 512 offline tests and 9 live anonymous tests pass, and **both** release
+`rtings-mcp auth`). 513 offline tests and 9 live anonymous tests pass, and **both** release
 gates reproduce their snapshots exactly — `rtings-mcp scan` the 12-enforcing / 16-open map,
 `rtings-mcp drift` 28 / 28 best-of extraction (26 props / 2 static). **Published on PyPI as
 `rtings-mcp` 0.3.1 (2026-09-08)** through GitHub-Actions trusted publishing; the install is
@@ -1342,9 +1342,9 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
 - **IMPORTANT: `max_retries` is a CONSTRUCTOR kwarg, not a per-request one — so "set `max_retries=0`
   on the `page_body` POST specifically" was never implementable.** `AsyncSession.request()` pops
   exactly `headers, params, timeout, attempt_timeout, max_response_size`
-  (`wafer/_async.py:1323-1328`) and forwards the rest to the underlying client; `max_retries` lives on
-  `BaseSession.__init__` (`wafer/_base.py:660, 766`) and is read from `self` into `RetryState`
-  (`_async.py:1419`). A per-request value is a `TypeError` at best and silently ignored at worst —
+  (`wafer/_async.py:1835-1840` in 0.7.10; 1323-1328 in 0.5.0) and forwards the rest to the underlying
+  client; `max_retries` lives on `BaseSession.__init__` (`wafer/_base.py:715, 822`) and is read from
+  `self` into `RetryState` (`_async.py:1965`). Re-checked against 0.7.10 on 2026-11-02. A per-request value is a `TypeError` at best and silently ignored at worst —
   either way `app/product_vue_page__page_body` would have run at the default of **3 retries = up to 3
   consumed previews**, the exact harm the rule exists to prevent. The control has to be a session
   property.
@@ -1353,11 +1353,11 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   small end, speaker's "Raw Frequency Response Graph" the large, `RECON.md` §4). One
   session would force a floor meant for the origin onto static files **and** offer `_rtings_session`
   (`Domain=.rtings.com`) to the CDN for nothing (confirmed: `add_cookie` with an explicit `Domain`
-  records `host_only=False`, `wafer/_base.py:2542`).
+  records `host_only=False`, `wafer/_base.py:3155` in 0.7.10).
   - **API session** — cookie injected. `max_retries=0, max_rotations=0, max_failures=None`,
     `rate_limit=0.0`, `max_response_size` set (below). `max_retries=0` both makes the preview control
     real and stops wafer retrying a 5xx or an empty 200 **three times inside one of our bucket
-    tokens** (`_async.py:1866-1889`) — four origin hits per token, the semaphore held ~7 s, and
+    tokens** (`_async.py:2432-2457` in 0.7.10) — four origin hits per token, the semaphore held ~7 s, and
     `Retry-After` never consulted on the 5xx path, so our `cooldown_until` would only ever see the
     *fourth* failure.
   - **CDN session** — **a cookie is never injected**; the per-session jar gives the uncredentialed
@@ -1441,7 +1441,7 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   `variables` wrapper** (`RECON.md` §1). `named_version` is always `"public"`.
 - **Never log or return a response body** — a WAF challenge page carries tokens and a member page
   carries profile data. Status, `reason` and `<title>` only.
-- **The official `mcp` SDK (`mcp>=2.1.1`), NOT the standalone `fastmcp` package.** They are now
+- **The official `mcp` SDK (`mcp>=2.3.0`), NOT the standalone `fastmcp` package.** They are now
   separate, diverged projects — `mcp` is the canonical SDK from modelcontextprotocol.io, `fastmcp`
   (4.x, gofastmcp.com) is a third-party layer with more ergonomics and its own release cadence. For a
   public server whose value is protocol correctness, take the canonical one and the smaller dependency
@@ -1454,9 +1454,10 @@ with it, the "never infer auth from null data" rule is preserved exactly, becaus
   model: it is what carries the seven-state `status` enum into the client's schema, where an
   agent can see the distinction before it ever makes a call.
 - **Pin floors, not exact versions** (this is a library-style app, and `uv.lock` handles
-  reproducibility): `mcp>=2.1.1`, `wafer-py`, and dev extras `pytest>=9.1`, `pytest-asyncio>=1.4`,
-  `ruff>=0.16`. Versions verified current 2026-09-03; re-check at the release re-scan (CLAUDE.md >
-  Release).
+  reproducibility): `mcp>=2.3.0`, `wafer-py>=0.7.10`, dev extras `pytest>=9.2`,
+  `pytest-asyncio>=1.4.1`, `ruff>=0.17.3`, and `playwright>=1.64.1` in `[browser]`. Raised to the
+  then-latest releases and locked there on 2026-11-02 (first set 2026-09-03); re-check at the release
+  re-scan (CLAUDE.md > Release).
 - Logs to **stderr** (stdout is the protocol channel). No browser automation in v1.
   Cache-first: network only on a miss or explicit `refresh`.
 - Registered by absolute path to the user's own checkout, e.g.

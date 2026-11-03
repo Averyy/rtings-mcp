@@ -6,10 +6,11 @@
 > touching before changing it; add new rules here, one bullet each, with the date and the
 > evidence.
 
-- **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Verified
-  current 2026-09-03: `mcp>=2.1.1`, `pytest>=9.1`, `pytest-asyncio>=1.4`, `ruff>=0.16`, and
-  `playwright>=1.40` in the optional `[browser]` extra (added 2026-09-06). Re-check at
-  each release re-scan (below).
+- **Pin dependency FLOORS, not exact versions** — `uv.lock` provides reproducibility. Raised to
+  the then-latest releases and locked there on 2026-11-02: `mcp>=2.3.0`, `wafer-py>=0.7.10`,
+  `pytest>=9.2`, `pytest-asyncio>=1.4.1`, `ruff>=0.17.3`, and `playwright>=1.64.1` in the optional
+  `[browser]` extra. The suite passed on the old floors and on the new lock, on Python 3.12 and
+  3.14, before the floors moved. Re-check at each release re-scan (below).
 - **Fixtures come from anonymous fetches. Never commit a fixture containing unblurred member values.**
 - **Redact every `GLOBALS.session` fixture before committing.** The member/free auth-state fixtures
   are captured from a real logged-in session, so `current_user` carries the user's own name, email
@@ -52,5 +53,5 @@
   `test_the_instructions_fit_the_client_budget`. A doc-vs-doc guard,
   `test_the_instructions_gated_list_matches_the_enforcement_snapshot`, keeps the named gated list
   in step with the snapshot; it has no runtime fallback, which is why it is a test and not a note.
-- **Test counts as of 2026-11-02: 512 offline, 9 live** (`-m live`, anonymous by construction),
+- **Test counts as of 2026-11-02: 513 offline, 9 live** (`-m live`, anonymous by construction),
   plus the two release-gate CLIs, `rtings-mcp scan` and `rtings-mcp drift`.
