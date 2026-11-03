@@ -6,7 +6,7 @@ can consult RTINGS test data the way it consults any other data source.
 Status: **The anonymous server is built and working (2026-09-05).** All eight data tools run
 against the live API, and `rt_sign_in` / `rt_auth_status` connect a membership from inside a
 conversation (which is the only route Claude Desktop has: it offers no terminal for
-`rtings-mcp auth`). 513 offline tests and 9 live anonymous tests pass, and **both** release
+`rtings-mcp auth`). 525 offline tests and 9 live anonymous tests pass, and **both** release
 gates reproduce their snapshots exactly — `rtings-mcp scan` the 12-enforcing / 16-open map,
 `rtings-mcp drift` 28 / 28 best-of extraction (26 props / 2 static). **Published on PyPI as
 `rtings-mcp` 0.3.1 (2026-09-08)** through GitHub-Actions trusted publishing; the install is

@@ -6,6 +6,7 @@ Each function returns a finished envelope dict; ``server.py`` only wires them to
 
 from __future__ import annotations
 
+import difflib
 import functools
 import json
 import math
@@ -1016,20 +1017,96 @@ def _warn(warn: Any, message: str) -> None:
         warn(message)
 
 
-def _name_or_id(schema: SiloSchema, raw: Any, *, kind: str) -> str:
+#: How many near matches an unknown name's error carries. Enough to contain the right one for
+#: a near miss, few enough that the error stays an error and not a schema dump.
+NAME_SUGGESTIONS = 8
+
+
+def _name_or_id(schema: SiloSchema, raw: Any, *, kind: str, graph_only: bool = False) -> str:
     """Accept a name wherever an ``original_id`` is accepted.
 
     ``filters`` and ``sort`` have always taken either, so rejecting a name in ``tests=``
     made the documented remedy for an unapplied filter — "request it too" — fail with
     ``unknown_test`` on the very string the filter had just accepted.
+
+    A name that does not resolve says what it might have meant. The bare "no test named
+    'Frequency Response'" was a dead end: headphones has no test by that name, but seven graph
+    tests live under groups that carry it, and only a separate ``rt_schema(find=)`` round trip
+    would find them (measured 2026-11-02). ``graph_only`` narrows the suggestions to tests
+    that have a curve, for ``rt_graph``, which cannot use any other kind.
     """
     text = str(raw).strip()
     if text.isdigit():
         return validate_id(text, what=f"{kind} original_id")
     resolved = _field_lookup(schema, text)
     if resolved is None or resolved[0] != kind:
-        raise RtingsError(errors.UNKNOWN_TEST, f"no {kind} named {text!r}")
+        near = _near_names(schema, text, kind=kind, graph_only=graph_only)
+        what = "graph test" if graph_only else kind
+        message = f"no {kind} named {text!r}"
+        if near:
+            message += "; closest " + what + "s: " + ", ".join(
+                f"{n['name']!r} ({n['original_id']})" for n in near
+            )
+        message += f". rt_schema(silo, find={text!r}) searches every {kind} by name and group."
+        raise RtingsError(
+            errors.UNKNOWN_TEST, message, details={f"{kind}s": near, "find": text}
+        )
     return resolved[1]
+
+
+def _near_names(
+    schema: SiloSchema, text: str, *, kind: str, graph_only: bool = False
+) -> list[dict[str, str]]:
+    """The names an unresolved one most likely meant, ranked as ``rt_schema(find=)`` ranks.
+
+    Same scorer as ``find`` (word starts, over the category/group/name path), so a suggestion
+    and a search never disagree; ``difflib`` only when no word hits at all, which catches a
+    misspelling ("Native Contrst") that word matching cannot.
+
+    Ties are common, since most near misses hit one word, so they break in two steps, both
+    measured live on 2026-11-02:
+    - Current-bench entries first. Legacy rows like "Frequency Response (legacy v1.3.1)"
+      crowded out the current ones.
+    - Then closeness to the whole query, taken against EVERY part of the path, group names
+      included. "Input Lagg" otherwise ranked the "Inputs" group's ports above the "Input
+      Lag" group's leaves, since both hit only "input".
+
+    For usages the word "usage" is dropped first: it is the one word "Gaming Usage" shared
+    with "Mixed Usage", and it tells usages apart not at all.
+    """
+    if kind == "usage":
+        kept = [w for w in re.split(r"\s+", text) if w.lower() not in {"usage", "usages", "use"}]
+        text = " ".join(kept) or text
+    words, phrase = _find_words(text), text.lower()
+    current = schema.bench(schema.current_bench_id) if schema.current_bench_id else None
+    if kind == "usage":
+        on_current = set(current.usage_ids) if current else set()
+        pool = [(u.original_id, u.name, [u.name]) for u in schema.usages.values()]
+    else:
+        on_current = set(current.test_ids) if current else set()
+        pool = [
+            (t.original_id, t.name, [*schema.ancestry(t.original_id), t.name])
+            for t in schema.tests.values()
+            if (t.has_graph if graph_only else (t.is_leaf_value or t.has_graph))
+        ]
+    scored = sorted(
+        (
+            -_find_score(words, phrase, " ".join(parts).lower()),
+            ident not in on_current,
+            -max(difflib.SequenceMatcher(None, phrase, p.lower()).ratio() for p in parts),
+            index,
+            ident,
+            name,
+        )
+        for index, (ident, name, parts) in enumerate(pool)
+    )
+    hits = [(ident, name) for score, _, _, _, ident, name in scored if score < 0]
+    if not hits:
+        names = {name.lower(): (ident, name) for ident, name, _ in pool}
+        hits = [
+            names[n] for n in difflib.get_close_matches(phrase, list(names), n=NAME_SUGGESTIONS)
+        ]
+    return [{"original_id": ident, "name": name} for ident, name in hits[:NAME_SUGGESTIONS]]
 
 
 def _group_name_or_id(schema: SiloSchema, raw: Any) -> str:
@@ -3200,7 +3277,7 @@ async def rt_graph(
     # A name works wherever an original_id does. `rt_schema` is how a caller discovers a
     # graph test, and it prints the name beside the id, so rejecting the name here failed on
     # the exact string the discovery step just handed over.
-    test_id = _name_or_id(schema, test, kind="test")
+    test_id = _name_or_id(schema, test, kind="test", graph_only=True)
     definition = schema.test(test_id)
 
     if definition is None:

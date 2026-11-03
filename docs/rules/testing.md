@@ -53,5 +53,5 @@
   `test_the_instructions_fit_the_client_budget`. A doc-vs-doc guard,
   `test_the_instructions_gated_list_matches_the_enforcement_snapshot`, keeps the named gated list
   in step with the snapshot; it has no runtime fallback, which is why it is a test and not a note.
-- **Test counts as of 2026-11-02: 513 offline, 9 live** (`-m live`, anonymous by construction),
+- **Test counts as of 2026-11-02: 525 offline, 9 live** (`-m live`, anonymous by construction),
   plus the two release-gate CLIs, `rtings-mcp scan` and `rtings-mcp drift`.

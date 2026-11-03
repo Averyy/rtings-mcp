@@ -406,3 +406,19 @@
   (capped at 25) so `tests=[...]` reaches it, and the warning says so. The addressable entries
   are unchanged — the ids are the exception, not the shape.
 
+
+- **An unknown test or usage NAME says what it probably meant (2026-11-02).** The bare "no
+  test named 'Frequency Response'" was a dead end. No headphones test has that name, but its
+  graph tests sit under groups that do, and only a separate `rt_schema(find=)` round trip
+  would find them. `_name_or_id` now returns up to 8 near matches in `details.tests` /
+  `details.usages`, the shape the group-row error already uses, and points at `find=`.
+  - **Ranking:** they are scored as `find` scores them, so a suggestion and a search never
+    disagree, with `difflib` only when no word hits (a misspelling).
+  - **Ties** (most near misses hit one word) go to current-bench entries first. Then they go
+    to the closest match against every part of the category/group/name path. "Input Lagg"
+    otherwise ranked the Inputs group's ports above the Input Lag group's leaves.
+  - **For usages**, the class word "usage" is dropped first. It was all "Gaming Usage" shared
+    with "Mixed Usage".
+  - **`rt_graph`** suggests only tests with a curve, since anything else sends the caller
+    straight into `no_graph`.
+  All measured live, and the first suggestion was retried as input each time.

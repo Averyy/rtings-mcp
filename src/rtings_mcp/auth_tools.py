@@ -55,7 +55,10 @@ log = logging.getLogger(__name__)
 SIGN_IN_TIMEOUT_S = 300  # how long the window stays open
 LAUNCH_WAIT_S = 1.5  # rt_sign_in waits this long for the browser to report before answering
 STATUS_WAIT_MAX_S = 45  # the long-poll cap: under Claude Desktop's 60 s tool-call limit
-CANCEL_WAIT_S = 10
+#: Shutdown's wait for a sign-in to stop. It must outlast the capture's whole teardown
+#: (browser close + two abandon graces + driver stop), or `cancel()` gives up while the window
+#: is still closing. Raised from 10 with `browser_auth.CLOSE_TIMEOUT_S` (5 → 8, 2026-11-02).
+CANCEL_WAIT_S = 12
 
 #: The probe verdicts that mean "RTINGS looked at this cookie and it is signed in". `free` is
 #: a real logged-in state here, unlike Consumer Reports: a free account is what the metered

@@ -217,3 +217,17 @@
   borrowing that file's stamp lets the next rotation write-back overwrite the newer cookie.
   So a file that has moved on gets a zero baseline, and every write-back yields to it (found
   in review 2026-11-02).
+
+- **The sign-in window's close budget is 8 s, not 5 (measured 2026-11-02).** Chrome's own
+  main process usually exits ~0.4 s after `browser.close()`. About one exit in three or four
+  takes 1.4–5.1 s, on Playwright 1.62.0, 1.63.0, 1.64.0 and 1.64.1 alike, and whatever the
+  page was doing (a blank page too). So it is Chrome's shutdown, not a Playwright regression,
+  and not the RTINGS page. `browser.close()` returns ~0.13 s after Chrome exits, so Playwright
+  adds nothing. At 5 s the tail overran, and an ordinary slow exit was treated as a hang and
+  SIGKILLed: the "did not close on its own; terminated pid" line. `CANCEL_WAIT_S` rose 10 → 12
+  so shutdown's cancel still outlasts the whole teardown (8 + 2×0.2 + 3 s). A teardown that
+  overran and was killed was re-tested for a leaked temp profile on all three paths: graceful,
+  pre-spent budget and overrun-then-kill. It left none in 11 runs. The
+  `playwright_chromiumdev_profile-*` dirs that accumulate in `$TMPDIR` come from other
+  Playwright users on the machine; one was traced to a live fetchaller-mcp patchright Chrome.
+  `tests/test_browser_auth.py` covers the teardown, which had no offline test at all.

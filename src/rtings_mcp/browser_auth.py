@@ -94,7 +94,13 @@ IGNORE_DEFAULT_ARGS = ("--enable-automation",)
 # out and nothing of the user's own browsing is touched.
 CONTEXT_OPTIONS: Mapping[str, Any] = MappingProxyType({"no_viewport": True})
 
-CLOSE_TIMEOUT_S = 5.0
+#: Measured 2026-11-02 on macOS with an installed Chrome, Playwright 1.62.0-1.64.1: Chrome's
+#: own main process usually exits ~0.4 s after `browser.close()`, but one exit in three or four
+#: takes 1.4-5.1 s, on every Playwright version and whatever the page was doing (a blank page
+#: too). At 5.0 s the tail overran the budget, and an ordinary slow exit was treated as a hang
+#: and SIGKILLed. 8.0 s clears the slowest seen (5.08 s) with room; the kill stays the last
+#: resort. `test_the_close_budget_clears_chromes_slowest_measured_exit` holds both bounds.
+CLOSE_TIMEOUT_S = 8.0
 DRIVER_STOP_TIMEOUT_S = 3.0
 ABANDON_GRACE_S = 0.2
 PROFILE_MARKER = "--user-data-dir="

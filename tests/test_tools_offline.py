@@ -927,6 +927,66 @@ async def test_rt_graph_accepts_a_test_name_like_every_other_entry_point(ctx):
     assert by_name["data"]["points"] == by_id["data"]["points"]
 
 
+async def test_an_unknown_test_name_says_what_it_probably_meant(ctx):
+    """The bare "no test named 'Frequency Response'" was a dead end: no headphones test has
+    that name, but seven graph tests sit under groups that do, and only a separate
+    `rt_schema(find=)` call would find them (2026-11-02). The error now carries the near
+    matches, ranked as `find` ranks them, in the shape the group-row error already uses."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", tests=["Brightness"], limit=1)
+    err = excinfo.value
+    assert err.code == "unknown_test"
+    assert {"original_id": "12000", "name": "Peak Brightness"} in err.details["tests"]
+    assert "Peak Brightness" in err.message and "find=" in err.message
+    assert err.details["find"] == "Brightness"
+
+
+async def test_rt_graph_suggests_only_tests_that_have_a_curve(ctx):
+    """A word or number test is no use to `rt_graph`, which refuses anything without a
+    curve, so suggesting one would send the caller straight into `no_graph`."""
+    with pytest.raises(RtingsError) as excinfo:
+        # matches every test under the Picture category by word, and names none of them
+        await services.rt_graph(ctx, "/tv/reviews/alpha/alpha-one", "Picture Curve")
+    suggested = {s["original_id"] for s in excinfo.value.details["tests"]}
+    assert suggested == {"13907"}, "the one graph test; never Resolution, Contrast or Firmware"
+
+
+async def test_a_misspelt_name_still_finds_its_test(ctx):
+    """Word matching cannot see "Contrst"; the close-match fallback can."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", tests=["Native Contrst"], limit=1)
+    assert excinfo.value.details["tests"][0] == {"original_id": "11", "name": "Native Contrast"}
+
+
+async def test_an_unknown_usage_name_suggests_usages(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", usages=["Theater"], limit=1)
+    assert {"original_id": "12", "name": "Home Theater"} in excinfo.value.details["usages"]
+
+
+async def test_suggestion_ties_go_to_the_current_bench_then_the_closest_name(ctx):
+    """Both rules measured live 2026-11-02. "Bright Peak" hits one word of each of the
+    current "Peak Brightness" and the legacy-only "Bright Room", and the current bench wins,
+    although by name alone "Bright Room" is the closer of the two.
+    "Theater Usage" drops the class word "usage", which otherwise tied "Mixed Usage" with
+    "Home Theater"."""
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", tests=["Bright Peak"], limit=1)
+    ids = [s["original_id"] for s in excinfo.value.details["tests"]]
+    assert ids.index("12000") < ids.index("5")
+
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", usages=["Theater Usage"], limit=1)
+    assert excinfo.value.details["usages"][0] == {"original_id": "12", "name": "Home Theater"}
+
+
+async def test_a_name_with_no_near_match_still_points_at_find(ctx):
+    with pytest.raises(RtingsError) as excinfo:
+        await services.rt_ratings(ctx, "tv", tests=["zzqx"], limit=1)
+    assert excinfo.value.details["tests"] == []
+    assert "find='zzqx'" in excinfo.value.message
+
+
 async def test_a_group_and_a_leaf_sharing_a_name_each_resolve_to_the_right_one(ctx):
     """The two lookups lean opposite ways on purpose: `group=` addresses a section, while
     `tests=`/`filters`/`sort`/`rt_graph` address a measurement."""
